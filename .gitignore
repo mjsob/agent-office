@@ -1,0 +1,9 @@
+# 대화 기록·실행 상태 (개인 데이터, 공개 금지)
+.office/
+status/
+
+# 빌드 산출물
+dist/
+*.tar.gz
+*.sha256
+__pycache__/

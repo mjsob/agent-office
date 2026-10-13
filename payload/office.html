@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Office</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 24x24 32x32 48x48 64x64 256x256">
+<link rel="apple-touch-icon" href="/icon.png">
+<script>try { const t = new URLSearchParams(location.search).get("theme") || localStorage.officeTheme; if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+<style>
+:root {
+  --bg: #f5f5f3; --panel: #ffffff; --line: #e4e3df; --text: #1d1d1b; --muted: #6a6862; --faint: #85827b;
+  --claude: #9c4a20; --claude-soft: #f6e8df; --codex: #2c64b0; --codex-soft: #e2ebf7;
+  --user-soft: #ecebe7; --accent: #1d1d1b; --on-accent: #ffffff; --warn: #8a5f00; --warn-soft: #fbf1d9;
+  --ok: #2f7d4f; --chip: #f0efeb;
+}
+/* 테마: 기본은 OS 설정 따라감, 헤더 버튼으로 밝게/어둡게 고정(data-theme) */
+:root[data-theme="dark"] { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
+  --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
+  --user-soft: #2a2a27; --accent: #ecebe6; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
+  --ok: #6cc290; --chip: #262624; color-scheme: dark; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
+    --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
+    --user-soft: #2a2a27; --accent: #ecebe6; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
+    --ok: #6cc290; --chip: #262624; color-scheme: dark; }
+}
+:root[data-theme="light"] { color-scheme: light; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.55 "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  display: grid; grid-template-rows: auto 1fr auto; -webkit-font-smoothing: antialiased;
+  word-break: keep-all; overflow-wrap: anywhere; }   /* 한글이 '4 / 분'처럼 낱글자로 끊기지 않게, 긴 경로는 아무 데서나 줄바꿈 */
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
+svg.sm { width: 14px; height: 14px; }
+
+header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+.brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
+.version { color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.brand .mark svg { width: 14px; height: 14px; }
+.root { color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn { font-size: 12px; color: var(--warn); }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+button:hover { background: var(--chip); }
+button.ghost { border-color: transparent; background: none; color: var(--muted); padding: 4px; }
+button.ghost:hover { color: var(--text); background: var(--chip); }
+
+main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
+
+/* 대화 목록 */
+.sessions { background: var(--panel); display: flex; flex-direction: column; padding: 12px 10px; }
+.newbtn { width: 100%; justify-content: center; background: var(--accent); color: var(--on-accent); border-color: var(--accent); margin-bottom: 12px; }
+.newbtn:hover { background: var(--accent); opacity: .88; }
+.slist { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.sitem { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.sitem:hover { background: var(--chip); }
+.sitem.on { background: var(--chip); box-shadow: inset 2px 0 0 var(--accent); }
+.sitem .sm-meta { flex: 1; min-width: 0; }
+.sitem .stitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.sitem.on .stitle { font-weight: 600; }
+.sitem .ssub { font-size: 11px; color: var(--faint); display: flex; gap: 6px; align-items: center; }
+.sitem .ssub .live { color: var(--ok); }
+.sitem .acts { display: none; }
+.sitem:hover .acts, .sitem.on .acts { display: flex; }
+.sitem .acts button { padding: 3px; }
+.trash { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.trash summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; display: flex; gap: 6px; align-items: center; }
+.trash summary::-webkit-details-marker { display: none; }
+.trash .sitem { cursor: default; opacity: .8; }
+.trash .acts { display: flex; }
+.trash summary .emptyTrash { margin-left: auto; font-size: 12px; padding: 2px 6px; }
+.toast { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); background: var(--accent); color: var(--on-accent);
+  width: max-content; max-width: calc(100vw - 32px); padding: 8px 8px 8px 14px; border-radius: 10px; display: flex; gap: 10px; align-items: center; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.toast button { background: none; border-color: transparent; color: var(--on-accent); font-weight: 600; text-decoration: underline; white-space: nowrap; flex: none; }
+.toast button:hover { background: none; opacity: .8; }
+.toast .toast-x { text-decoration: none; font-weight: 400; font-size: 16px; line-height: 1; padding: 2px 6px; }
+section { min-height: 0; overflow: auto; padding: 14px; }
+section + section { border-left: 1px solid var(--line); }
+h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
+
+/* 에이전트 */
+.agent { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+.agent .top { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.avatar { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-weight: 700; font-size: 11.5px; letter-spacing: .02em; }
+.agent .meta { flex: 1; min-width: 0; }.agent .name { font-weight: 600; }
+.agent .st { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.working { animation: pulse 1.2s ease-in-out infinite; }
+.dot.paused { background: var(--warn); }
+@keyframes pulse { 50% { opacity: .25; } }
+.usage { border-top: 1px solid var(--line); padding: 8px 12px; display: grid; gap: 5px; font-size: 11.5px; color: var(--muted); }
+.usage .u { display: grid; grid-template-columns: 38px 1fr 34px; gap: 8px; align-items: center; }
+.usage .bar { height: 5px; border-radius: 3px; background: var(--chip); overflow: hidden; }
+.usage .bar i { display: block; height: 100%; border-radius: 3px; }
+.usage .pct { text-align: right; font-variant-numeric: tabular-nums; }
+.usage .tok { display: flex; justify-content: space-between; }
+.sitem:focus-within .acts { display: flex; }
+.sitem input.rename { width: 100%; font: inherit; font-size: 13px; padding: 2px 6px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); color: var(--text); }
+.toast span { white-space: pre-line; }
+.task .tno { color: var(--muted); font-variant-numeric: tabular-nums; }
+.trash .acts button.txt { font-size: 11.5px; padding: 2px 6px; }
+.trash .acts button.danger { color: var(--warn); }
+.sitem .ssub .stop { color: var(--warn); font-weight: 600; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.event, .task .note, .summary, details.turn pre, .gitbox .row span, .msg .body { overflow-wrap: anywhere; }
+.conn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+@media (prefers-reduced-motion: reduce) { .dot.working, .task.doing > svg { animation: none; } }
+/* 실제 캡처에서 상태줄('일하는 중 · 작업 진행 · 2분')이 카드 폭에 잘려 보여서 줄바꿈 허용 */
+/* 상태줄은 '● 일하는 중 · 29초' 한 줄 고정, 하는 일은 아랫줄에 따로 (중간에서 어색하게 끊기지 않게) */
+.agent .st { display: block; line-height: 1.45; }
+/* 버튼(잠시 멈춤·중단)은 한 줄에 나란히, 남는 폭은 이름·하는 일이 쓰고 넘치면 하는 일만 말줄임 */
+/* 한도 배지·버튼은 한 묶음(.ctl): 이름·하는 일이 최소 6em을 못 지키면 묶음째 오른쪽 아랫줄로 */
+.agent .top { flex-wrap: wrap; row-gap: 4px; }
+.agent .meta { flex: 1 1 6em; min-width: 0; }
+.agent .ctl { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; }
+.agent .ctl button.ghost { padding: 3px 7px; }
+.nw { white-space: nowrap; }
+/* 카드 머리: 1줄 '이름 · 경과시간(작게)', 2줄 '● 하는 일' — 일하는 중이면 점이 움직이니 '일하는 중' 글자는 생략, 하는 일이 주 정보 */
+.agent .name { display: flex; align-items: baseline; gap: 6px; }
+.agent .name .el { font-weight: 400; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agent .st { display: flex !important; align-items: center; gap: 6px; min-width: 0; }
+.agent .st .dot { flex: none; margin: 0 !important; }
+.agent .st .what { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent .st.now .what { color: var(--text); }
+.agent .st.now .dot { animation: pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .agent .st.now .dot { animation: none; } }
+.agent .st .dot { display: inline-block; vertical-align: middle; margin: -2px 6px 0 0; }
+.agent .top button.ghost { font-size: 12px; padding: 3px 8px; white-space: nowrap; }
+.agent .hot { font-size: 11px; font-weight: 600; color: var(--warn); background: var(--warn-soft); padding: 1px 6px; border-radius: 99px; white-space: nowrap; }
+.agerr { display: flex; gap: 6px; align-items: flex-start; margin: 0 12px 8px; padding: 6px 8px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 12px; word-break: break-word; }
+.agerr svg { margin-top: 2px; }
+.agerr .how { color: var(--text); margin-top: 2px; }
+.agerr details.raw summary { cursor: pointer; color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+.agerr details.raw code { display: block; white-space: pre-wrap; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pulse { margin: 0 12px 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.pulse::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
+/* 오래 조용한 건 오류가 아님(긴 생각·긴 명령 실행 중) — 경고색 없이 차분하게. 진짜 오류는 서버가 error/notice로 따로 알림 */
+.pulse.quiet { color: var(--muted); }
+.pulse.quiet::before { background: var(--faint); }
+.agent details.subs { margin: 0 12px 6px; }
+.subchip { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--text); }
+.subrow { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0 3px 18px; }
+.subrow .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subrow .ts { color: var(--faint); font-variant-numeric: tabular-nums; }
+.agnote { margin: 0 12px 8px; padding: 5px 8px; border-radius: 8px; background: var(--chip); color: var(--muted); font-size: 12px; }
+.feed.now { max-height: none; padding: 4px 12px 6px; }
+.agent details.more-info { border-top: 1px solid var(--line); }
+.agent details.more-info > summary { padding: 6px 12px; font-size: 12px; }
+.side h2 + #agents { margin-bottom: 18px; }
+.feed { border-top: 1px solid var(--line); max-height: 300px; overflow: auto; padding: 6px 12px; font-size: 12px; }
+.feed .row { display: flex; gap: 8px; padding: 3px 0; align-items: flex-start; }
+.feed .row svg { margin-top: 2px; color: var(--muted); }
+.feed .tx { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+.feed .more { color: var(--faint); padding-left: 22px; }
+.feed .more .last { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; color: var(--muted); }
+.feed .say { padding-left: 22px; color: var(--text); }
+.feed .more .tx, .feed .say .tx { -webkit-line-clamp: 1; }
+.feed details.more { display: block; }
+.feed details.more > summary { cursor: pointer; list-style: none; display: flex; }
+.feed details.more > summary::-webkit-details-marker { display: none; }
+.feed details.more > summary:hover .tx { color: var(--text); }
+.feed details.more[open] > summary .last { display: none; }
+.feed .cmds { margin: 2px 0 4px; border-left: 2px solid var(--line); padding-left: 8px; }
+.feed .cmd { display: flex; gap: 8px; padding: 1px 0; }
+.feed .cmd code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.feed .edit .tx { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; }
+.feed .tx { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.feed .start { color: var(--text); font-weight: 600; }
+.feed .sep { border-bottom: 1px dashed var(--line); margin: 4px 0; }
+.feed .ts { color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* 대화 */
+#timeline { display: flex; flex-direction: column; gap: 10px; max-width: 860px; margin: 0 auto; }
+.msg { max-width: 80%; padding: 9px 13px; border-radius: 14px; word-break: break-word; }
+.msg .body { white-space: pre-wrap; }
+.msg .who { font-size: 12px; font-weight: 600; margin-bottom: 2px; display: flex; gap: 6px; align-items: center; }
+.msg .who .ts { color: var(--faint); font-weight: 400; }
+.msg.user { align-self: flex-end; background: var(--user-soft); border-bottom-right-radius: 4px; }
+.msg.claude { background: var(--claude-soft); border-bottom-left-radius: 4px; }
+.msg.codex { background: var(--codex-soft); border-bottom-left-radius: 4px; }
+.msg .who .nm.claude, .event .nm.claude { color: var(--claude); }
+.msg .who .nm.codex, .event .nm.codex { color: var(--codex); }
+.msg .who .nm.user { color: var(--text); }
+.msg .who .arrow { color: var(--faint); font-weight: 400; }
+/* 이름·시각이 긴 본문에 밀려 한 글자 폭으로 찌그러지지 않게: 이름·시각은 줄바꿈 금지, 알림 줄은 일반 글 흐름으로 */
+.msg .who > * { flex: none; white-space: nowrap; }
+.event { display: block !important; }
+.event > b, .event > span:last-child { white-space: nowrap; }
+.event > b { margin-right: 6px; }
+.event > span:last-child { margin-left: 6px; color: var(--faint); }
+.event > svg { margin-right: 6px; }
+.msg.toUser { box-shadow: inset 3px 0 0 var(--warn); }
+.event { align-self: center; color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; text-align: center; max-width: 90%; }
+.event b { font-weight: 600; }
+.event.claude b { color: var(--claude); } .event.codex b { color: var(--codex); }
+.event.alert { color: var(--warn); background: var(--warn-soft); padding: 4px 10px; border-radius: 8px; }
+.msg .body code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+.msg .body { line-height: 1.65; }
+.msg .body .gap { height: 8px; }
+/* 보고의 목차 제목('**바뀐 것**' 등): 섹션 사이를 확실히 띄우고 작은 머리글처럼 */
+/* 목차 제목은 본문보다 눈에 띄게(흐리면 위계가 뒤집혀 안 읽힘): 진하게 + 왼쪽 색 막대, 제목 바로 뒤 빈 줄은 접음 */
+.msg .body .h { font-weight: 700; font-size: 13.5px; color: var(--text); margin: 14px 0 4px; padding-left: 8px; border-left: 3px solid var(--accent); line-height: 1.3; }
+.msg .body .gap + .h { margin-top: 8px; }
+.msg .body .h + .gap { display: none; }
+.msg.report .body .li { color: var(--text); }
+.msg .body .h:first-child { margin-top: 0; }
+.msg .body .li { position: relative; padding-left: 16px; margin: 3px 0; }
+.msg .body .li::before { content: "•"; position: absolute; left: 3px; color: var(--muted); }
+.msg .body .li.num { padding-left: 22px; }
+.msg .body .li.num::before { content: none; }
+.msg .body .li .n { position: absolute; left: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.msg .body .quote { border-left: 3px solid var(--line); padding-left: 10px; color: var(--muted); }
+.msg .body .lead1 { font-weight: 700; font-size: 14.5px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.msg.report { max-width: 92%; background: var(--panel); border: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--ok); border-radius: 12px; }
+.msg.report .who .pill { color: var(--ok); }
+.msg.toUser { box-shadow: inset 3px 0 0 var(--warn); }
+.msg.compact { max-width: 100%; padding: 6px 10px; font-size: 12.5px; }
+.thread { display: flex; flex-direction: column; gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.thread:last-child { border-bottom: 0; }
+.thread .msg.user { align-self: flex-end; }
+details.fold { font-size: 12px; color: var(--muted); }
+details.fold summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; padding: 2px 0; }
+details.fold summary:hover { color: var(--text); }
+details.fold summary::-webkit-details-marker { display: none; }
+details.fold[open] > summary svg { transform: rotate(90deg); }
+details.progress .steps { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px 7px; padding-left: 12px; border-left: 2px solid var(--line); }
+details.progress .steps .event { align-self: flex-start; text-align: left; }
+.tobottom { position: sticky; bottom: 8px; display: flex; width: max-content; margin: 8px auto 0; box-shadow: 0 4px 16px rgba(0,0,0,.14); border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
+.tobottom .newmark { display: none; color: var(--ok); font-weight: 600; }
+.tobottom.new .newmark { display: inline; }
+details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 6px 0 0; }
+
+/* 요청 현황 */
+.resvs { margin-bottom: 10px; font-size: 12.5px; }
+.resvs summary { cursor: pointer; list-style: none; display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.resvs summary::-webkit-details-marker { display: none; }
+.resvhint { color: var(--faint); font-size: 12px; margin: 4px 0 6px; }
+.resvsub { color: var(--faint); font-size: 12px; margin: 6px 0 2px; }
+.resv { display: flex; gap: 8px; align-items: center; padding: 3px 0; min-width: 0; }
+.resv code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resv .muted { color: var(--faint); margin-left: auto; white-space: nowrap; }
+.job { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+.job.closed { opacity: .72; }
+.job .hd { display: flex; gap: 8px; align-items: flex-start; }
+.job .tx { font-weight: 600; flex: 1; min-width: 0; }
+.job .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
+.pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.pill.working, .pill.planning, .pill.review { color: var(--text); }
+.pill.done { color: var(--ok); }
+.pill.claude { background: var(--claude-soft); color: var(--claude); }
+.pill.codex { background: var(--codex-soft); color: var(--codex); }
+.task { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--line); }
+.task > svg { margin-top: 2px; color: var(--muted); }
+.task.doing > svg { color: var(--text); animation: spin 2.4s linear infinite; }
+.task.done > svg { color: var(--ok); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.task .ti { flex: 1; min-width: 0; }
+.task.done .ti .t { color: var(--muted); }
+.task .note { display: block; font-size: 11.5px; color: var(--muted); }
+.gitbox { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 16px; font-size: 12.5px; }
+.gitbox .br { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitbox .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); }
+.gitbox .row span { flex: 1; }
+.gitbox.note { color: var(--muted); }
+.donejobs { margin-top: 6px; font-size: 12.5px; }
+.donejobs summary { cursor: pointer; color: var(--muted); display: flex; align-items: center; gap: 6px; list-style: none; padding: 4px 0; }
+.donejobs[open] summary svg { transform: rotate(90deg); }
+.djob { padding: 7px 8px; margin: 0 -8px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+.djob:hover { background: var(--chip); }
+.job .tx.jump { cursor: pointer; }
+.job .tx.jump:hover { text-decoration: underline; }
+.djob .q { display: flex; gap: 6px; align-items: center; }
+.djob .q span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.djob .no { color: var(--faint); font-variant-numeric: tabular-nums; min-width: 16px; }
+.djob .a { color: var(--muted); padding-left: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+h2.donehd { margin-top: 18px; }
+.job .tx, .task .ti .t { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.job .tx { -webkit-line-clamp: 2; }
+.task .ti .t { -webkit-line-clamp: 2; }
+details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.oldlist { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.oldrow { display: flex; gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 12.5px; min-width: 0; }
+.oldrow:hover { background: var(--chip); }
+.oldrow .no { color: var(--faint); min-width: 18px; font-variant-numeric: tabular-nums; }
+.oldrow .q { color: var(--text); flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oldrow .a { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oldlist .thread { margin: 6px 0; }
+.livebar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); background: var(--chip); border-radius: 8px; padding: 5px 6px 5px 10px; }
+.livebar { flex-wrap: wrap; }
+.livebar .lb-text { flex: 1; min-width: 180px; }
+.livebar .stage { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
+.livebar .stage .st { padding: 1px 7px; border-radius: 99px; color: var(--faint); }
+.livebar .stage .st.past { color: var(--ok); }
+.livebar .stage .st.now { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 0 0 1px var(--line); }
+.livebar .stage .arr { color: var(--faint); }
+.livebar.warn { background: var(--warn-soft); color: var(--warn); }
+.livebar .cancel { font-size: 12px; padding: 3px 8px; }
+/* 대화 맨 끝 '돌아가는 중' 줄: 마지막 메시지 아래에 붙고 스크롤은 따라오지 않음 */
+#typing { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); }
+#typing .tp { display: flex; align-items: center; gap: 6px; }
+#typing .tp::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--ok)); animation: pulse 1.2s ease-in-out infinite; }
+#typing .tp.quiet { color: var(--muted); }
+#typing .tp.err { color: var(--warn); }
+#typing .tp.err::before { animation: none; }
+#typing .tp-act { margin: 0 0 4px 12px; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (prefers-reduced-motion: reduce) { #typing .tp::before { animation: none; } }
+.thread.cancelled .pill.done { color: var(--muted); }
+.thread.flash { animation: flash 1.2s; }
+@keyframes flash { 0%, 40% { background: var(--warn-soft); } 100% { background: none; } }
+.summary { font-size: 12.5px; white-space: pre-wrap; margin-top: 8px; padding: 8px 10px; background: var(--chip); border-radius: 8px; }
+.empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.empty.center { text-align: center; padding: 48px 0; }
+
+/* 입력 */
+footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
+.bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; gap: 2px; }
+.seg button { border: 0; border-radius: 7px; padding: 4px 10px; color: var(--muted); }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+.lead { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+select { font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
+.inrow { display: flex; gap: 8px; align-items: stretch; }
+textarea { flex: 1; resize: none; height: 56px; font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.send { background: var(--accent); color: var(--on-accent); border-color: var(--accent); padding: 0 16px; }
+.send:hover { background: var(--accent); opacity: .88; }
+.hint { font-size: 11.5px; color: var(--faint); }
+@media (max-width: 1300px) { main { grid-template-columns: 190px 1fr 300px; } }
+/* 좁은 화면: 대화창만 꽉 채우고, 대화 목록·현황은 헤더 버튼으로 여는 서랍 */
+.narrow-only { display: none; }
+@media (max-width: 1100px) {
+  .narrow-only { display: inline-flex; }
+  main { grid-template-columns: 1fr; position: relative; }
+  main > .sessions, main > .side { position: absolute; top: 0; bottom: 0; width: min(340px, 88vw); z-index: 5; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,.22); background: var(--bg); border: 0; }
+  main > .sessions { left: 0; background: var(--panel); }
+  main > .side { right: 0; }
+  body.show-sessions main > .sessions, body.show-side main > .side { display: flex; flex-direction: column; }
+  body.show-side main > .side { display: block; }
+  .lead { margin-left: 0; }
+}
+/* ── 길이가 바뀌는 문구는 길어질 걸 전제로: '제목 — 상세'는 제목 굵게 한 줄 + 상세 아랫줄, 짧은 메타는 한 줄 고정 ── */
+.event.alert { display: flex !important; align-items: flex-start; gap: 8px; text-align: left; max-width: min(640px, 92%); padding: 8px 12px; line-height: 1.5; }
+.event.alert > svg { flex: none; margin: 3px 0 0; }
+.event.alert .ev-body { flex: 1; min-width: 0; }
+.event.alert .ev-head { font-weight: 600; }
+.event.alert .ev-detail { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.event.alert > span.ts { flex: none; margin-left: 4px; color: var(--faint); white-space: nowrap; }
+.livebar.warn .lb-text { flex-basis: 100%; order: 3; line-height: 1.5; }
+.livebar .w-head { font-weight: 600; }
+.livebar .w-detail { display: block; font-size: 11.5px; opacity: .85; }
+.sitem .ssub { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+.sitem .ssub > * { white-space: nowrap; }
+.sitem .ssub > :last-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-office" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 7h1M14 7h1M9 11h1M14 11h1M10 21v-4h4v4"/></symbol>
+  <symbol id="i-todo" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></symbol>
+  <symbol id="i-doing" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" opacity=".3"/><path d="M12 4a8 8 0 0 1 8 8"/></symbol>
+  <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 5h14v10H10l-5 4z"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M5 19h4L19 9l-4-4L5 15z"/></symbol>
+  <symbol id="i-start" viewBox="0 0 24 24"><path d="M8 5.5v13L18.5 12z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4v8"/><path d="M7 7a7 7 0 1 0 10 0"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12 19 5l-4 14-3-6z"/><path d="m12 13 7-8"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m10 7 5 5-5 5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17v.5"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21V4M6 4h11l-2 4 2 4H6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7 5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-3"/></symbol>
+</svg>
+
+<header>
+  <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
+  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<span id="version" class="version" hidden></span></div>
+  <span class="root" id="root"></span>
+  <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
+  <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
+  <button id="theme" class="ghost" onclick="cycleTheme()"></button>
+  <button id="quit" class="ghost" title="에이전트와 서버를 모두 종료합니다"><svg class="i sm"><use href="#i-power"/></svg>Office 끄기</button>
+</header>
+
+<main>
+  <section class="sessions">
+    <button class="newbtn" id="newSession"><svg class="i sm"><use href="#i-plus"/></svg>새 대화</button>
+    <div class="slist" id="slist"></div>
+    <details class="trash" id="trashBox"><summary><svg class="i sm"><use href="#i-trash"/></svg><span id="trashLabel">휴지통</span>
+      <button class="ghost emptyTrash" id="emptyTrash" hidden onclick="event.preventDefault();emptyTrash()">비우기</button></summary><div id="tlist"></div></details>
+  </section>
+  <section id="tlsec" onscroll="onTimelineScroll()"><div id="timeline"></div><div id="typing" hidden></div>
+    <button class="tobottom" id="toBottom" hidden onclick="const s=$('#tlsec');s.scrollTop=s.scrollHeight">↓ 맨 아래로<span class="newmark">새 메시지</span></button></section>
+  <section class="side"><h2>에이전트</h2><div id="agents"></div>
+    <div id="gitbox"></div><h2>요청 현황</h2><div id="board"></div></section>
+</main>
+
+<footer>
+  <div class="bar">
+    <div class="seg" id="modes" role="group" aria-label="보낼 대상">
+      <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두에게</button>
+      <button data-m="claude">Claude에게</button>
+      <button data-m="codex">Codex에게</button>
+    </div>
+    <label class="lead" id="leadBox" title="일을 나누고 마지막에 결과를 확인해 보고하는 쪽">리더
+      <select id="lead"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+    </label>
+  </div>
+  <div class="inrow">
+    <textarea id="input" aria-label="메시지 입력"></textarea>
+    <button class="send" id="send" title="보내기 (Enter)"><svg class="i"><use href="#i-send"/></svg>보내기</button>
+  </div>
+  <div class="hint" id="hint"></div>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const nm = n => NAME[n] ?? esc(n ?? "—");
+// 이름에 각자 색: 'Codex → Claude'처럼 보낸 쪽·받는 쪽이 한눈에 구분되게
+const tag = n => `<span class="nm ${["claude", "codex", "user"].includes(n) ? n : ""}">${nm(n)}</span>`;   // 이름표에 없는 값이 와도 'undefined' 대신 원문(이스케이프)
+const icon = (n, cls = "") => `<svg class="i ${cls}"><use href="#i-${n}"/></svg>`;
+const NAME = {claude: "Claude", codex: "Codex", user: "나", system: "시스템", all: "전체"};
+const STATUS = {idle: "쉬는 중", working: "일하는 중", paused: "멈춤"};
+const DOING = {plan: j => `요청 ${j} 작업 계획 수립`, review: j => `요청 ${j} 결과 검수`,
+               reply: () => "메시지 확인", work: () => "작업 진행", continue: () => "작업 이어서 진행"};
+const STEP = {look: "살펴보는 중", edit: "고치는 중", check: "확인하는 중", wrap: "마무리하는 중"};
+function doingText(doing) {
+  if (!doing) return "";
+  const label = DOING[doing.kind]?.(doing.job) || "";
+  const step = ["work", "continue", "plan"].includes(doing.kind) ? STEP[doing.step] : "";
+  return label && step ? `${label} · ${step}` : label;
+}
+const JOBST = {planning: "계획 세우는 중", working: "작업 중", review: "결과 확인 중", done: "완료"};
+const PH = {
+  job: "무엇을 할까요?",
+  claude: "Claude가 뭘 할까요?",
+  codex: "Codex가 뭘 할까요?",
+};
+const HINT = {
+  job: "Claude·Codex에게 맡깁니다 · Enter 보내기 · Shift+Enter 줄바꿈",
+  claude: "Claude에게 맡깁니다 · Enter 보내기 · Shift+Enter 줄바꿈",
+  codex: "Codex에게 맡깁니다 · Enter 보내기 · Shift+Enter 줄바꿈",
+};
+let mode = "job", lastSig = "", lastSess = "", curSession = new URLSearchParams(location.search).get("session") || null, followGen = 0, followDone = 0, openTurns = new Set(), expandedOld = new Set(), openDone = false, lastMsgs = 0, toastTimer;
+
+// 리더 선택은 이 PC에 기억 (새로고침마다 Claude로 돌아가 Codex 리더 요청이 실수로 Claude에게 가던 비대칭)
+if (["claude", "codex"].includes(localStorage.officeLead)) $("#lead").value = localStorage.officeLead;
+$("#lead").addEventListener("change", e => localStorage.officeLead = e.target.value);
+function setMode(m) {
+  mode = m;
+  localStorage.officeMode = m;
+  document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-pressed", b.dataset.m === m); });
+  $("#input").placeholder = PH[m];
+  $("#leadBox").style.visibility = m === "job" ? "visible" : "hidden";
+  $("#hint").textContent = HINT[m];
+  $("#input").focus();
+}
+document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
+
+async function api(body) {
+  let ok = false;
+  try {
+    // 지금 화면에 떠 있는 대화를 명시 — 탭 전환과 전송이 겹쳐도 엉뚱한 대화로 안 감
+    const res = await fetch("/api", {method: "POST", body: JSON.stringify({session: curSession, ...body}),
+                                     signal: AbortSignal.timeout(body.action === "merge" ? 120000 : 15000)});
+    const r = await res.json().catch(() => ({}));   // 서버가 처리했는데 본문만 깨진 경우 '실패'로 오인해 중복 전송하지 않게
+    if (!res.ok || r.error) toast(r.error || `처리하지 못했습니다 (서버 오류 ${res.status}).`);
+    else { ok = true; if (r.ok) toast(r.ok); if (["switch", "new_session", "restore", "delete", "purge", "empty_trash"].includes(body.action)) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
+  } catch (e) {
+    if (body.action === "quit" && e.name === "TypeError") return true;   // 종료 직후 연결이 끊길 수 있음. 시간 초과는 성공으로 간주하지 않음
+    toast(e.name === "TimeoutError" ? "서버 응답이 너무 늦습니다. 잠시 뒤 다시 시도하세요. 쓴 내용은 그대로 남아 있습니다."
+                                    : "서버에 보내지 못했습니다. office를 띄운 콘솔이 켜져 있는지 확인하세요. 쓴 내용은 그대로 남아 있습니다.");
+  }
+  refresh();
+  return ok;
+}
+// 서버가 받았을 때만 입력창을 비움 — 통신 실패 시 쓴 내용 보존, 전송 중 중복 전송 막음
+let sending = false;
+const drafts = {};
+async function send() {
+  const text = $("#input").value.trim();
+  if (!text || sending) return;
+  sending = true; $("#send").disabled = true;
+  const from = curSession;
+  const ok = mode === "job" ? await api({action: "job", text, lead: $("#lead").value})
+                            : await api({action: "msg", text, to: mode});
+  if (ok && curSession === from && $("#input").value.trim() === text) { $("#input").value = ""; grow(); }
+  else if (ok) delete drafts[from];   // 보내는 사이 다른 대화로 옮겼으면 그 대화 초안은 건드리지 않음
+  sending = false; $("#send").disabled = false;
+}
+$("#send").onclick = send;
+// 좁은 화면 서랍: 대화창을 누르거나 대화를 고르면 닫힘
+$("#tlsec").addEventListener("click", () => document.body.classList.remove("show-sessions", "show-side"));
+$("#slist").addEventListener("click", () => document.body.classList.remove("show-sessions"));
+// 입력창은 내용 따라 늘어남 (최대 200px)
+const grow = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(Math.max(t.scrollHeight, 56), 200) + "px"; };
+$("#input").addEventListener("input", grow);
+$("#input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
+});
+$("#newSession").onclick = () => api({action: "new_session"}).then(() => $("#input").focus());
+
+function toast(text, undo) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.innerHTML = `<span>${esc(text)}</span>` + (undo ? `<button class="toast-undo">되돌리기</button>` : "")
+    + `<button class="toast-x" aria-label="알림 닫기" title="닫기">✕</button>`;
+  if (undo) t.querySelector(".toast-undo").onclick = () => { t.remove(); undo(); };
+  t.querySelector(".toast-x").onclick = () => { clearTimeout(toastTimer); t.remove(); };
+  t.setAttribute("role", "status");
+  t.style.bottom = (document.querySelector("footer")?.offsetHeight || 98) + 12 + "px";   // 입력창이 늘어나도 안 가리게
+  document.body.appendChild(t);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.remove(), undo ? 10000 : 6000);
+}
+function sessionAct(action, id) {
+  if (action === "rename") {
+    startRename(id);
+  } else if (action === "delete") {
+    const cur = window._sessions.find(x => x.id === id);
+    if (cur?.open && !confirm(`이 대화에 진행 중인 요청 ${cur.open}건이 있습니다.\n휴지통으로 옮기면 작업이 멈춥니다. 옮길까요?`)) return;
+    api({action, id}).then(ok => ok && toast("대화를 휴지통으로 옮겼습니다.", () => api({action: "restore", id})));
+  } else if (action === "purge") {
+    if (confirm("이 대화를 영구 삭제할까요?\n기록과 에이전트 세션이 모두 지워지며 되돌릴 수 없습니다.")) api({action, id});
+  } else api({action, id});
+}
+
+// 대화 이름을 목록 그 자리에서 수정 (더블클릭 또는 연필). Enter 저장, Esc 취소. 수정 중엔 목록 다시 그리기 멈춤
+let renaming = null;
+function startRename(id) {
+  const el = document.querySelector(`.sitem[data-id="${CSS.escape(id)}"] .stitle`);
+  if (!el) return;
+  const cur = window._sessions.find(x => x.id === id), inp = document.createElement("input");
+  inp.className = "rename"; inp.value = cur?.title ?? ""; inp.setAttribute("aria-label", "대화 이름");
+  renaming = id; el.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = save => {
+    if (done) return; done = true; renaming = null;
+    const t = inp.value.trim();
+    if (save && t && t !== cur?.title) api({action: "rename", id, title: t}); else { lastSess = ""; refresh(); }
+  };
+  inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" && !e.isComposing) finish(true); if (e.key === "Escape") finish(false); };
+  inp.onclick = e => e.stopPropagation();
+  inp.onblur = () => finish(true);
+}
+// 헤더 테마 버튼: 자동(OS 따라감) → 밝게 → 어둡게 순환, 이 PC에 기억
+const THEMES = {auto: "◐ 자동", light: "☀ 밝게", dark: "☾ 어둡게"};
+function applyTheme(t) {
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const b = $("#theme");
+  if (b) { b.textContent = THEMES[t] || THEMES.auto; b.title = "화면 밝기 바꾸기 (자동은 윈도우 설정 따라감)"; }
+}
+function cycleTheme() {
+  const order = ["auto", "light", "dark"], cur = localStorage.officeTheme || "auto";
+  const next = order[(order.indexOf(cur) + 1) % 3];
+  localStorage.officeTheme = next; applyTheme(next);
+}
+applyTheme(new URLSearchParams(location.search).get("theme") || localStorage.officeTheme);   // ?theme=는 캡처 점검용(저장 안 함)
+function emptyTrash() {
+  const n = window._sessions.filter(x => x.deleted).length;
+  if (n && confirm(`휴지통의 대화 ${n}개를 모두 영구 삭제할까요?\n되돌릴 수 없습니다.`)) api({action: "empty_trash"});
+}
+
+// 키보드: 누를 수 있는 div(role=button)는 Enter/Space로 실행, Escape는 좁은 화면 서랍 닫기
+document.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("[role=button]")) { e.preventDefault(); e.target.click(); }
+  if (e.key === "Escape") document.body.classList.remove("show-sessions", "show-side");
+});
+// Edge 앱 창에서도 F5 / Ctrl+R 새로고침이 확실히 되게
+document.addEventListener("keydown", e => {
+  if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) { e.preventDefault(); location.reload(); }
+});
+
+function ago(t) {
+  const s = Math.floor(Date.now() / 1000 - t);
+  if (s < 60) return "방금";
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
+  return new Date(t * 1000).toLocaleDateString("ko-KR", {month: "short", day: "numeric"});
+}
+
+function renderSessions(list, cur) {
+  window._sessions = list;
+  const live = list.filter(x => !x.deleted).sort((a, b) => b.updated - a.updated);
+  const dead = list.filter(x => x.deleted).sort((a, b) => b.deleted_at - a.deleted_at);
+  if (renaming) return false;   // 이름 고치는 중엔 입력칸이 사라지지 않게 다시 그리지 않음
+  $("#slist").innerHTML = live.map(x => `<div class="sitem ${x.id === cur ? "on" : ""}" data-id="${esc(x.id)}" role="button" tabindex="0" onclick='sessionAct("switch","${esc(x.id)}")'>
+      <div class="sm-meta"><div class="stitle" title="더블클릭하면 이름 바꾸기" ondblclick='event.stopPropagation();startRename("${esc(x.id)}")'>${esc(x.title)}</div>
+        <div class="ssub">${x.stopped ? `<span class="stop" title="이 대화의 에이전트가 멈춤 — 열어서 확인">⚠ 멈춤</span>` : ""}${x.busy ? `<span class="dot working" style="background:var(--ok)"></span>` : ""}${x.open ? `<span class="live">진행 중 ${x.open}</span>` : ""}<span>${ago(x.updated)}</span></div></div>
+      <div class="acts" onclick="event.stopPropagation()">
+        <button class="ghost" title="이름 바꾸기" onclick='sessionAct("rename","${x.id}")'>${icon("edit", "sm")}</button>
+        <button class="ghost" title="삭제" onclick='sessionAct("delete","${x.id}")'>${icon("trash", "sm")}</button></div>
+    </div>`).join("");
+  $("#trashLabel").textContent = dead.length ? `휴지통 (${dead.length})` : "휴지통";
+  $("#emptyTrash").hidden = !dead.length;
+  const curTitle = list.find(x => x.id === cur)?.title;
+  document.title = curTitle && curTitle !== "새 대화" ? `${curTitle} — Office` : "Office";
+  $("#tlist").innerHTML = dead.map(x => `<div class="sitem">
+      <div class="sm-meta"><div class="stitle" title="${esc(x.title)}">${esc(x.title)}</div><div class="ssub">${ago(x.deleted_at)} 삭제</div></div>
+      <div class="acts">
+        <button class="ghost txt" onclick='sessionAct("restore","${x.id}")'>복원</button>
+        <button class="ghost txt danger" onclick='sessionAct("purge","${x.id}")'>완전 삭제</button></div>
+    </div>`).join("") || '<div class="empty">비어 있습니다.</div>';
+}
+
+$("#quit").onclick = () => {
+  if (!confirm("Office를 종료할까요?\n진행 중인 작업은 중단됩니다.")) return;
+  api({action: "quit"}).then(ok => {
+    if (ok) clearInterval(refreshTimer);
+    if (ok) { document.body.innerHTML = "<p style='padding:32px;color:var(--muted)'>Office가 종료되었습니다. 이 창은 닫아도 됩니다.</p>"; window.close(); }
+  });
+};
+
+function elapsed(t) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - t));
+  return s < 60 ? `${s}초` : s < 3600 ? `${Math.floor(s / 60)}분` : `${Math.floor(s / 3600)}시간`;
+}
+// 대화창 바닥 진행 줄용: 매초 바뀌게 초까지 (1분 넘어가도 '1분 23초', 1시간 넘으면 '1시간 5분')
+function elapsedLive(t) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - t));
+  return s < 60 ? `${s}초` : s < 3600 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${Math.floor(s / 3600)}시간 ${Math.floor(s % 3600 / 60)}분`;
+}
+
+function fmtTok(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n || 0); }
+function resetIn(t) {
+  if (!t) return "";
+  const m = Math.max(0, Math.round((t * 1000 - Date.now()) / 60000));
+  return m < 60 ? `${m}분 후 초기화` : m < 1440 ? `${Math.floor(m / 60)}시간 ${m % 60}분 후 초기화` : `${Math.floor(m / 1440)}일 ${Math.floor(m % 1440 / 60)}시간 후 초기화`;
+}
+function usageBlock(n, a) {
+  const L = a.limits || {};
+  const rows = [["five_hour", "5시간"], ["seven_day", "7일"]].filter(([k]) => L[k]).map(([k, lbl]) => {
+    const u = L[k].used, col = u >= 90 ? "var(--warn)" : `var(--${n})`;
+    return `<div class="u" title="${resetIn(L[k].resets)}"><span>${lbl}</span><div class="bar"><i style="width:${Math.min(u, 100)}%;background:${col}"></i></div><span class="pct">${u}%</span></div>`;
+  }).join("");
+  const asof = L.at ? `<div class="tok"><span>한도 기준</span><span>${ago(L.at)}</span></div>` : "";
+  return `<div class="usage">${rows ? rows + asof : '<div>사용 한도 정보 아직 없음</div>'}
+    ${a.usage_since != null
+      ? `<div class="tok" title="${ago(a.usage_since)}부터 셈 · 캐시 읽기 ${fmtTok(a.cached_tokens)}는 비용이 낮아 따로 뺌"><span>이 대화에서 쓴 양</span><span>${fmtTok(a.tokens)} 토큰</span></div>`
+      : `<div class="tok" title="Claude/Codex 집계 기준이 달라 비교 불가 — 서버 재시작 후 같은 기준으로 새로 셈"><span>이 대화에서 쓴 양 (예전 기준)</span><span>${fmtTok(a.tokens)} 토큰</span></div>`}</div>`;
+}
+
+// 활동 피드엔 사용자가 볼 것만: 차례 시작, 고친 파일, 작업판/메신저 동작. 읽기·검색·일반 명령·중간 독백은 횟수만
+const OFFICE_ACT = {
+  claim: r => `작업 #${r.split(/\s/)[0]} 시작`,
+  done: r => `작업 #${r.split(/\s/)[0]} 완료`,
+  handoff: r => { const m = r.match(/^(\S+).*?--to\s+(\S+)/); return m ? `작업 #${m[1]} → ${NAME[m[2]] ?? m[2]}에게 넘김` : "작업 넘김"; },
+  say: r => { const m = r.match(/--to\s+(\S+)/); return m ? `${NAME[m[1]] ?? m[1]}에게 메시지` : "메시지"; },
+  add: r => { const m = r.match(/--to\s+(\S+)/); return m ? `작업 추가 → ${NAME[m[1]] ?? m[1]}` : "작업 추가"; },
+  finish: () => "최종 보고",
+  title: () => "대화 제목 갱신",
+};
+function feedRows(activity) {
+  // 일반 읽기·명령은 횟수로 접되 가장 최근 것 한 줄은 보여줌 (일하는 동안 카드 맨 아래 줄이 명령마다 바뀌게)
+  // 접힌 줄을 누르면 그 묶음의 명령 목록이 펼쳐짐 (Codex는 활동 대부분이 명령이라 접기만 하면 상세가 안 보였음)
+  const out = []; let tools = [], lastEdit = "";
+  const one = t => esc(t.replace(/^\$ /, "").split("\n")[0].slice(0, 160));
+  const flush = () => {
+    if (!tools.length) return;
+    const key = tools[0].ts + "|" + tools[0].text.slice(0, 60), last = tools.at(-1).text;
+    out.push(`<details class="row more" data-more="${esc(key)}" ${openMore.has(key) ? "open" : ""}><summary title="눌러서 명령 ${tools.length}개 펼치기"><span class="tx">명령 기록 ${tools.length}건 ·<span class="last">${one(last)}</span></span></summary>
+      <div class="cmds">${tools.map(t => `<div class="cmd" title="${esc(t.text)}"><span class="ts">${esc(t.ts || "")}</span><code>${one(t.text)}</code></div>`).join("")}</div></details>`);
+    tools = [];
+  };
+  for (const x of activity) {
+    if (x.kind === "end") { flush(); lastEdit = ""; out.push(`<div class="sep"></div>`); continue; }
+    if (x.kind === "start") { out.push(`<div class="row start">${icon("start", "sm")}<span class="tx">${esc((([k, j]) => DOING[k]?.(j) ?? k)(x.text.split("|")))}</span><span class="ts">${x.ts}</span></div>`); continue; }
+    if (x.kind === "edit") {
+      const f = x.text.replace(/^(Edit|Write|MultiEdit): /, "");
+      if (f !== lastEdit) out.push(`<div class="row edit" title="${esc(f)}">${icon("edit", "sm")}<span class="tx">${esc(f)}</span></div>`);
+      lastEdit = f; continue;
+    }
+    const m = x.kind === "tool" && x.text.match(/\boffice\s+(claim|done|handoff|say|add|finish|title)\b\s*(.*)/s);
+    if (m) out.push(`<div class="row tool">${icon("tool", "sm")}<span class="tx">${esc(OFFICE_ACT[m[1]](m[2].replace(/^["']|["']$/g, "")))}</span></div>`);
+    else if (x.kind === "tool") tools.push(x);
+    else if (x.kind === "text" && x.text.trim()) {   // 에이전트가 중간에 한 말 (최종 답 포함) — 첫 줄만
+      flush();
+      out.push(`<div class="row say" title="${esc(x.text)}"><span class="tx">${esc(x.text.trim().split("\n")[0].slice(0, 200))}</span></div>`);
+    }
+  }
+  flush();
+  return out;
+}
+
+// 오류 종류별 사람 말 안내 (서버 agents.<n>.error_kind). 카드·진행 줄이 같은 문구를 씀
+const KIND_HELP = {
+  auth: {title: "로그인이 만료됐어요", how: n => n === "codex"
+    ? "office를 띄운 터미널에서 codex login 실행 → 로그인 후 여기서 [다시 시도]"
+    : "office를 띄운 터미널에서 claude 실행 → /login 입력해 로그인 → 여기서 [다시 시도]"},
+  capacity: {title: "모델이 붐벼요", how: () => "다른 모델로도 막혔어요. 몇 분 뒤 [다시 시도]하거나 요청을 취소하고 다른 쪽을 리더로 다시 보내세요"},
+  network: {title: "인터넷 연결이 불안정해요", how: () => "연결을 확인한 뒤 [다시 시도]"},
+  timeout: {title: "너무 오래 응답이 없어 멈췄어요", how: () => "[다시 시도]하거나 요청을 더 잘게 나눠 보내세요"},
+  crash: {title: "실행 중 프로그램이 비정상 종료됐어요", how: () => "[다시 시도]. 계속되면 아래 원문을 복사해 알려주세요"},
+  unfinished: {title: "작업 완료 확인이 필요해요", how: () => "작업 완료 표시가 없어 자동으로 멈췄어요. 남은 작업을 확인한 뒤 [다시 시도]를 누르세요"},
+  unknown: {title: "알 수 없는 오류로 멈췄어요", how: () => "[다시 시도]. 계속되면 아래 원문을 복사해 알려주세요"},
+};
+const errHelp = (n, a) => a.error && String(a.error).startsWith("남은 작업 확인 필요")
+  ? KIND_HELP.unfinished : KIND_HELP[a.error_kind] || (a.error ? KIND_HELP.unknown : null);
+// Codex CLI가 내보내는 접속 재시도 원문을 사람 말로 (자동 재시도라 사용자가 할 일 없음)
+const friendlyErr = s => {
+  const m = String(s ?? "").match(/Reconnecting\.\.\.\s*(\d+)\/(\d+)/);
+  return m ? `서버 연결이 끊겨 다시 접속 중 (${m[1]}/${m[2]}) — 자동으로 재시도합니다` : s;
+};
+// 에이전트 카드는 한 줄 상태 + 최근 활동 1줄만. 활동 기록·사용량은 접어둠 (매초 다시 그려서 열림 상태는 따로 기억)
+const openAgent = new Set(), openMore = new Set();
+let lastAgentSig = "";
+function renderAgents(agents) {
+  // 바뀐 게 없으면 다시 그리지 않음(포커스·선택·클릭이 매초 날아가던 문제). 경과 시간만 글자 교체
+  const sig = JSON.stringify(agents);   // since는 차례 시작 시각이라 고정값 — 경과 시간은 아래에서 따로 갱신
+  if (sig === lastAgentSig) {
+    document.querySelectorAll("#agents span[data-since]").forEach(e => e.textContent = elapsed(+e.dataset.since));
+    updatePulses();
+    return;
+  }
+  lastAgentSig = sig;
+  setTimeout(updatePulses);
+  const keep = {};   // 매초 다시 그려도 피드 스크롤 위치 유지 (맨 아래 보던 중이면 계속 따라감)
+  document.querySelectorAll("#agents .feed[id]").forEach(f => keep[f.id] = f.scrollHeight - f.scrollTop - f.clientHeight < 20 ? null : f.scrollTop);
+  $("#agents").innerHTML = Object.entries(agents).map(([n, a]) => {
+    const doing = a.status === "working" ? doingText(a.doing) : "";
+    const out = feedRows(a.activity), rows = out.join("");
+    // 미리보기는 이번 차례만: 지난 최종 답("대기")이 새 작업 시작 때 다시 뜨지 않게 함.
+    const boundary = a.activity.findLastIndex(x => x.kind === "start" || x.kind === "end");
+    const current = a.activity.slice(boundary + 1).filter(x =>
+      !(x.kind === "text" && /^대기[.!。…\s]*$/.test(x.text.trim())));
+    const last = a.status === "working" ? feedRows(current).at(-1) : "";
+    // 경고 뱃지는 가장 많이 찬 창 기준 (Codex처럼 7일 한도만 있는 경우도 잡히게)
+    const [wk, L] = [["five_hour", "5시간"], ["seven_day", "7일"]].map(([k, lbl]) => [lbl, a.limits?.[k]])
+      .filter(([, w]) => w && w.used != null).sort((x, y) => y[1].used - x[1].used)[0] || [];
+    const hot = L && L.used >= 80 ? `<span class="hot" title="${wk} 한도 ${L.used}% 사용 · 100%가 되면 이 에이전트가 멈춤 · ${resetIn(L.resets)}">한도 ${L.used}%</span>` : "";
+    return `<div class="agent">
+      <div class="top">
+        <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
+        <div class="meta">
+          <div class="name">${NAME[n]}${a.status === "working" ? `<span class="el" data-since="${a.since}">${elapsed(a.since)}</span>` : ""}</div>
+          <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || "")}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
+            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div></div>
+        <div class="ctl">${hot}
+        <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "재개" : a.status === "working" ? "지금 하는 차례가 끝나면 일시정지 (진행 중인 작업은 마저 끝냄)" : "일시정지"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}${a.paused ? "다시 시작" : "잠시 멈춤"}</button>
+        ${a.status === "working" && !a.paused ? `<button class="ghost" title="지금 하는 차례를 바로 끊고 일시정지 (이미 고친 파일은 남음, 다시 시작하면 이어서 함)" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>중단</button>` : ""}</div>
+      </div>
+      ${a.error ? (h => `<div class="agerr">${icon("alert", "sm")}<div><b>${h.title}</b>${a.fail_count > 1 ? ` (같은 오류 ${a.fail_count}번째)` : ""}
+          <div class="how">${esc(h.how(n))}</div>
+          <details class="raw"><summary>원문 보기</summary><code>${esc(friendlyErr(a.error))}</code></details></div></div>`)(errHelp(n, a)) : ""}
+      ${a.notice && !a.error ? (([h, d]) => `<div class="agnote"><b>${esc(h)}</b>${d ? `<div class="how">${esc(d)}</div>` : ""}</div>`)(splitMsg(a.notice)) : ""}
+      ${a.status === "working" ? `<div class="pulse" data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}"></div>` : ""}
+      ${(a.subs || []).length ? `<details class="fold subs" data-a="sub-${n}" ${openAgent.has("sub-" + n) ? "open" : ""}>
+        <summary>${icon("chevron", "sm")}<span class="subchip">보조 ${a.subs.length}개 돌리는 중</span></summary>
+        ${a.subs.map(x => `<div class="subrow"><span class="dot working" style="background:var(--${n})"></span><span class="tx">${esc(x.desc || "보조 작업")}</span><span class="ts" data-since="${x.since}">${elapsed(x.since)}</span></div>`).join("")}</details>` : ""}
+      ${last ? `<div class="feed now">${last}</div>` : ""}
+      <details class="fold more-info" data-a="${n}" ${openAgent.has(n) ? "open" : ""}><summary>${icon("chevron", "sm")}활동 기록 · 사용량</summary>
+        ${usageBlock(n, a)}
+        <div class="feed" id="feed-${n}">${rows || '<div class="empty">아직 활동이 없습니다.</div>'}</div></details>
+    </div>`;
+  }).join("");
+  Object.keys(agents).forEach(n => { const f = $("#feed-" + n); f.scrollTop = keep[f.id] ?? f.scrollHeight; });
+  document.querySelectorAll("#agents details[data-more]").forEach(d => d.ontoggle = () =>
+    d.open ? openMore.add(d.dataset.more) : openMore.delete(d.dataset.more));
+  document.querySelectorAll("#agents details[data-a]").forEach(d => d.ontoggle = () => {
+    d.open ? openAgent.add(d.dataset.a) : openAgent.delete(d.dataset.a);
+  });
+}
+
+// 가벼운 마크다운: **굵게**, `코드`, "- " 목록. 나머지는 줄바꿈 그대로
+// 줄 단위로: # 제목, - 목록, 1. 번호목록, > 인용, 빈 줄은 문단 간격. 원문 줄바꿈은 그대로 두고 임의로 쪼개지 않음
+// 셸 인자로 넘어오며 줄바꿈이 글자 그대로 '\n'이 된 보고(예: office finish "...\n- ...")를 진짜 줄바꿈으로
+// 진짜 줄바꿈이 하나도 없고 '\n- ' 같은 보고 목록 꼴일 때만 바꿈 (코드 속 글자 '\n'은 그대로 둠)
+const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n)?\s*[-•*]\s/.test(s) ? s.replace(/\\n/g, "\n") : s; };
+function md(s, lead) {
+  const inline = t => t.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const lines = esc(String(s ?? "").trim()).split("\n");
+  return lines.map((l, i) => {
+    let m;
+    if (lead && i === 0) return `<div class="lead1">${inline(l)}</div>`;
+    if (!l.trim()) return '<div class="gap"></div>';
+    if ((m = l.match(/^#{1,3}\s+(.*)/)) || (m = l.match(/^\*\*([^*]+)\*\*:?$/))) return `<div class="h">${inline(m[1])}</div>`;
+    if ((m = l.match(/^\s*[-•*]\s+(.*)/))) return `<div class="li">${inline(m[1])}</div>`;
+    if ((m = l.match(/^\s*(\d+[.)]|[①-⑳])\s+(.*)/))) return `<div class="li num"><span class="n">${m[1]}</span>${inline(m[2])}</div>`;
+    if ((m = l.match(/^&gt;\s?(.*)/))) return `<div class="quote">${inline(m[1])}</div>`;
+    return `<div class="p">${inline(l)}</div>`;
+  }).join("");
+}
+// 요청현황용 한 줄 요약: 서버가 준 brief → 없으면 보고 첫 줄
+const firstLine = s => String(s ?? "").replace(/[*`#>]/g, "").split("\n").map(x => x.trim()).find(Boolean) || "";
+const briefOf = j => firstLine(j.brief || j.summary);
+const fold = (key, summary, body, cls = "") => `<details class="fold ${cls}" data-k="${key}" ${openTurns.has(key) ? "open" : ""}>
+  <summary>${icon("chevron", "sm")}${summary}</summary>${body}</details>`;
+
+function msgHtml(m, compact) {
+  if (m.kind === "event") {
+    const alert = m.to === "user";
+    const who = m.from === "system" ? "" : `<b>${tag(m.from)}</b>`;
+    if (alert) {   // 경고는 '제목 — 상세'를 두 줄로: 문구가 길어져도 가운데 정렬로 들쭉날쭉 깨지지 않게
+      const [head, detail] = splitMsg(m.text);
+      return `<div class="event ${m.from} alert">${icon("alert", "sm")}<div class="ev-body">${who}<span class="ev-head">${esc(head)}</span>${detail ? `<span class="ev-detail">${esc(detail)}</span>` : ""}</div><span class="ts">${m.ts}</span></div>`;
+    }
+    return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${m.ts}</span></div>`;
+  }
+  if (m.kind === "turn") {
+    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${m.ts}`, `<pre>${esc(m.text)}</pre>`, "turn");
+    // 단독 대화의 답변은 클릭 없이 본문으로 표시한다. 기존 기록에도 적용.
+    m = {...m, kind: "msg", to: "user", job: null};
+  }
+  const to = m.to === "all" ? "" : `<span class="arrow">→</span>${tag(m.to)}`;
+  // 결과 카드는 kind=report만. job 필드 없는 예전 기록은 에이전트→사용자 메시지를 보고로 추정
+  const report = m.kind === "report" || (!("job" in m) && m.from !== "user" && m.to === "user");
+  const ask = !report && m.from !== "user" && m.to === "user";
+  return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(m.ts)}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div></div>`;
+}
+
+// 대화창을 요청 단위로 묶음: 요청 → (진행 과정은 접어둠) → 결과 보고
+// 메시지에 job이 없으면(예전 기록) 요청 순서·"요청 N" 이벤트로 추정
+function threads(msgs, jobs) {
+  const items = [], byJob = {};
+  let reqN = 0, cur = null, chat = false;   // chat: 직전 요청 뒤에 단독 대화(사용자 직접 메시지)가 시작됐는지
+  for (let m of msgs) {
+    // 한 명에게 보낸 사용자 메시지는 진행 중 요청 번호가 붙어 있어도 접지 않고 본문으로 표시(기존 기록 포함)
+    const direct = m.from === "user" && m.kind === "msg" && m.to !== "all";
+    let j = direct ? null : m.job;
+    if (m.kind === "request") { j ??= jobs[reqN]?.id; reqN++; }
+    j ??= +(m.kind === "event" && m.text.match(/^요청 (\d+) /)?.[1]) || null;
+    // 직전 요청에 붙이는 추정은 job 필드 자체가 없는 예전 기록만. 명시적 job:null은 단독 대화로 둔다
+    if (j == null && !("job" in m) && !(m.from === "user" && m.kind === "msg") && m.kind !== "turn") j = cur;
+    // 요청이 끝난 뒤 남은 뒷정리(재시작으로 다시 돈 차례의 안내·에이전트끼리 메시지·혼잣말)는 단독 대화가 아니면 직전 요청 진행 과정으로 접음
+    if (j == null && cur != null && !chat && m.from !== "user" && m.re == null && m.kind !== "request") { j = cur; m = {...m, tail: true}; }
+    if (m.kind === "request") { cur = j; chat = false; }
+    if (direct) chat = true;
+    if (j == null) { items.push({m}); continue; }
+    if (!byJob[j]) items.push(byJob[j] = {job: jobs.find(x => x.id === j) || {id: j}, req: null, steps: [], reports: []});
+    const t = byJob[j];
+    if (m.kind === "request" && !t.req) t.req = m;
+    else if (m.tail) t.steps.push(m);
+    else if (m.kind === "report" || (m.kind === "msg" && m.from !== "user" && m.to === "user") || (m.kind === "event" && m.to === "user")) t.reports.push(m);
+    else t.steps.push(m);
+  }
+  // 단독 대화의 답장(re=답한 사용자 메시지 id)은 시간순 대신 그 질문 바로 아래(앞선 답장 뒤)로 옮긴다
+  const replies = items.filter(x => x.m?.re != null && items.some(y => y.m && y.m.id === x.m.re && y.m.from === "user"));
+  for (const x of replies) {
+    items.splice(items.indexOf(x), 1);
+    let at = items.findIndex(y => y.m?.id === x.m.re) + 1;
+    while (at < items.length && items[at].m?.re === x.m.re) at++;
+    items.splice(at, 0, x);
+  }
+  return items;
+}
+
+function threadHtml(t) {
+  // 지나간 경고(예: 'Codex 일시정지')는 그 에이전트가 이후에 다시 움직였으면 해결된 것 → 결과 자리에서 빼서 진행 과정으로 접음
+  const all = [...t.steps, ...t.reports];
+  // '파일 대기 중 — 파일명…' 경고는 같은 파일의 '파일 예약 풀림 — 파일명…' 알림이 뒤에 오면 해결
+  const waitFile = (m, head) => m.kind === "event" && m.to === "user" && m.text.startsWith(head) && m.text.slice(head.length).match(/^(\S+?)(?:을|를)?(?:\s|$)/)?.[1];
+  const resolved = m => m.kind === "event" && m.to === "user" && (() => {
+    if (m.resolved) return true;   // 서버가 해결 표시한 경고(예: 예약 해제된 파일 대기)
+    const file = waitFile(m, "파일 대기 중 — ");
+    if (file) return all.some(x => x.id > m.id && waitFile(x, "파일 예약 풀림 — ") === file);
+    const who = ["claude", "codex"].find(n => m.text.startsWith(NAME[n]));
+    return who && all.some(x => x.from === who && x.id > m.id);
+  })();
+  t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
+  const j = t.job, st = j.cancelled ? "취소됨" : JOBST[j.status] ?? "";
+  const live = j.status && j.status !== "done";
+  const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${t.req.ts}</span></div><div class="body">${md(t.req.text)}</div></div>` : "";
+  const steps = t.steps.filter(m => !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
+  const sum = `<span class="pill ${j.status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (멈춰서 ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
+  // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
+  const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${esc(t.req?.ts || "")}"><span class="stage"></span><span class="lb-text">진행 중</span>
+      <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
+  return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${bar}
+    ${steps.length ? fold("j" + j.id, sum, `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
+    ${t.reports.map(m => msgHtml(m)).join("")}
+    ${j.status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
+      ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}</div>`;
+}
+
+function renderTimeline(msgs, jobs) {
+  const tl = $("#timeline"), sec = tl.parentElement;
+  const stick = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  // 위쪽을 읽던 중이면, 보던 요청 묶음이 다시 그린 뒤에도 같은 위치에 오게 기억 (위 요청이 접혀도 화면이 안 튀게)
+  const anchor = stick ? null : [...tl.querySelectorAll(".thread[id]")].find(el => el.getBoundingClientRect().bottom > sec.getBoundingClientRect().top);
+  const anchorId = anchor?.id, anchorTop = anchor?.getBoundingClientRect().top;
+  // 끝난 요청이 쌓이면 최근 KEEP개만 펼치고, 그 이전은 맨 위 '이전 요청 N건'에 한 줄씩 압축 (눌러서 개별로 펼침)
+  const items = threads(msgs, jobs), KEEP = 5;
+  const tIdx = items.map((x, i) => x.m ? -1 : i).filter(i => i >= 0);
+  const cut = tIdx.length > KEEP ? tIdx[tIdx.length - KEEP] : 0;
+  const old = items.slice(0, cut).filter(x => !x.m && x.job.status === "done");
+  const rest = items.slice(0, cut).filter(x => !x.m && x.job.status !== "done").concat(items.slice(cut));
+  const oldRow = x => expandedOld.has(x.job.id) ? threadHtml(x)
+    : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()" title="눌러서 펼치기">
+        <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
+        ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
+  const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
+  tl.innerHTML = oldBlock + rest.map(x => x.m ? msgHtml(x.m) : threadHtml(x)).join("");
+  tl.querySelectorAll("details.fold").forEach(d => d.ontoggle = () => {
+    d.open ? openTurns.add(d.dataset.k) : openTurns.delete(d.dataset.k);
+  });
+  if (stick) sec.scrollTop = sec.scrollHeight;
+  else {
+    const again = anchorId && document.getElementById(anchorId);
+    if (again) sec.scrollTop += again.getBoundingClientRect().top - anchorTop;
+    if (msgs.length > lastMsgs && lastMsgs) $("#toBottom").classList.add("new");
+  }
+  lastMsgs = msgs.length;
+  onTimelineScroll();
+}
+function onTimelineScroll() {
+  const sec = $("#timeline").parentElement, atBottom = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  $("#toBottom").hidden = atBottom;
+  if (atBottom) $("#toBottom").classList.remove("new");
+}
+
+// 파일 수정 담당(서버 file_reservations): 같은 파일은 한 명만 고치고 나머지는 읽기·검수만. 예약 있을 때만 접힌 한 줄
+let openResv = false;
+function resvHtml(list, cur) {
+  if (!list?.length) return "";
+  const title = id => window._sessions?.find(x => x.id === id)?.title || "다른 대화";
+  const row = r => `<div class="resv" title="${esc(r.path)}"><span class="pill ${r.owner || ""}">${nm(r.owner)}</span><code>${esc(r.path.split("/").pop())}</code>
+    <span class="muted">${r.session === cur ? (r.job ? `요청 ${r.job}` : "") : esc(title(r.session))}${r.since ? ` · ${elapsed(r.since)}` : ""}</span></div>`;
+  const mine = list.filter(r => r.session === cur), other = list.filter(r => r.session !== cur);
+  return `<details class="resvs" ${openResv ? "open" : ""} ontoggle="openResv=this.open"><summary>${icon("chevron", "sm")}수정 중인 파일 ${list.length}개${other.length ? ` (다른 대화 ${other.length})` : ""}</summary>
+    <div class="resvhint">파일마다 고치는 쪽은 한 명. 다른 쪽은 끝날 때까지 기다리거나 읽고 검수만 함</div>
+    ${mine.map(row).join("")}${other.length ? `<div class="resvsub">다른 대화</div>${other.map(row).join("")}` : ""}</details>`;
+}
+function renderBoard(jobs, tasks, resv = [], cur = "") {
+  // 작업 번호는 '요청번호-순번'(3-1)으로: '요청 3'과 '작업 #3'이 헷갈리던 문제. 원래 번호는 툴팁에
+  const taskRow = (t, i) => `<div class="task ${t.status}">${icon(t.status)}
+    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}</span>${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}</span>
+    <span class="pill ${t.owner || ""}">${t.owner ? nm(t.owner) : "미배정"}</span></div>`;
+  const orphan = tasks.filter(t => !t.job);
+  // 진행 중인 요청만 카드로. 끝난 건 접어둔 한 줄 목록 (결과 보고는 대화창에 이미 있음)
+  // 마감된 요청이라도 남은 작업이 있으면 진행 중으로 보여줌 (마감 뒤 추가된 후속 작업이 숨지 않게)
+  const pending = j => tasks.some(t => t.job === j.id && t.status !== "done");
+  const isOpen = j => j.status !== "done" || pending(j);
+  const active = jobs.filter(isOpen), closed = jobs.filter(j => !isOpen(j)).reverse();
+  const html = [...active].reverse().map(j => {
+    const st = j.cancelled ? "취소됨" : JOBST[j.status] ?? j.status;
+    const jt = tasks.filter(t => t.job === j.id);
+    return `<div class="job ${j.status === "done" ? "closed" : ""}">
+      <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}&#10;— 눌러서 대화창에서 보기" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${j.status}">${st}</span>
+        ${j.status !== "done" ? `<button class="ghost" title="요청 취소" onclick='cancelJob(${j.id})'>${icon("x", "sm")}</button>` : ""}</div>
+      <div class="sub">요청 ${j.id} · 리더 ${nm(j.lead)}${j.acting_lead ? ` → ${nm(j.acting_lead)} 대행` : ""} · 작업 ${jt.filter(t => t.status === "done").length}/${jt.length}</div>
+      ${jt.map(taskRow).join("")}
+    </div>`;
+  }).join("") + (orphan.filter(t => t.status !== "done").length ? `<div class="job"><div class="hd"><span class="tx">개별 작업</span></div>${orphan.filter(t => t.status !== "done").map(taskRow).join("")}</div>` : "");
+  // 끝난 요청: 최근 5건은 '요청 한 줄 + ↳ 답변 한 줄'로 펼쳐 보여주고, 나머지는 접음. 누르면 대화창의 그 요청으로 이동
+  const drow = j => `<div class="djob" role="button" tabindex="0" onclick="jumpTo(${j.id})" title="대화창에서 보기">
+      <div class="q"><span class="no">${j.id}</span><span>${esc(firstLine(j.text))}</span>${j.cancelled ? '<span class="pill">취소됨</span>' : ""}</div>
+      ${briefOf(j) ? `<div class="a">↳ ${esc(briefOf(j))}</div>` : ""}</div>`;
+  const done = closed.length ? `<h2 class="donehd">끝난 요청</h2>${closed.slice(0, 5).map(drow).join("")}
+      ${closed.length > 5 ? `<details class="donejobs" ${openDone ? "open" : ""} ontoggle="openDone=this.open"><summary>${icon("chevron", "sm")}이전 요청 ${closed.length - 5}건</summary>${closed.slice(5).map(drow).join("")}</details>` : ""}` : "";
+  $("#board").innerHTML = resvHtml(resv, cur) + (html || '<div class="empty">진행 중인 요청이 없습니다.</div>') + done;
+}
+// 'HH:MM:SS'(오늘) → 지금으로부터 몇 초 전
+// 서버(WSL)와 브라우저(Windows) 시계가 몇 초 어긋나 막 찍힌 시각이 '미래'로 보이면 0으로 봄. 자정 넘김만 전날로 처리
+function secsAgo(hms) {
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(String(hms || ""))) return null;
+  const [h, m, s] = String(hms || "").split(":").map(Number);
+  if (h > 23 || m > 59 || s > 59) return null;
+  const now = new Date(), t = new Date(now); t.setHours(h, m, s || 0, 0);
+  let d = (now - t) / 1000;
+  if (d < -43200) d += 86400; else if (d < 0) d = 0;
+  return d;
+}
+// 일하는 중인 에이전트의 '살아있음' 표시: 마지막 움직임이 2분 넘게 없으면 회색 경고
+// 마지막 움직임까지 몇 초: 이번 차례 시작(since) 전의 옛 활동은 무시 (그대로 쓰면 '1분 작업 중 · 94초 전'처럼 어긋남)
+const quietSecs = (ts, since) => Math.min(secsAgo(ts) ?? Infinity, Math.max(0, Date.now() / 1000 - since));
+const dur = d => d < 60 ? `${Math.floor(d)}초` : d < 3600 ? `${Math.floor(d / 60)}분` : `${Math.floor(d / 3600)}시간`;
+const pulseText = d => d >= 120 ? `${dur(d)}째 생각·실행 중` : `마지막 움직임 ${d < 5 ? "방금" : dur(d) + " 전"}`;
+function updatePulses() {
+  document.querySelectorAll("#agents .pulse").forEach(el => {
+    const d = quietSecs(el.dataset.last, +el.dataset.since);
+    el.className = "pulse" + (d >= 120 ? " quiet" : "");
+    el.textContent = pulseText(d);
+  });
+}
+// 대화창 바닥의 '돌아가는 중' 표시: 일하는 에이전트마다 한 줄 (뭘 하는지·걸린 시간·마지막 움직임). 멈춤·일시정지도 같이
+function updateTyping(agents) {
+  const el = $("#typing"), sec = $("#tlsec");
+  const stick = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  const rows = Object.entries(agents || {}).map(([n, a]) => {
+    if (a.error) return `<div class="tp err" style="--c:var(--warn)">⚠ ${NAME[n]} ${errHelp(n, a).title} — 오른쪽 카드에 해결 방법</div>`;
+    if (a.paused && a.status !== "working") return `<div class="tp quiet">${NAME[n]} 일시정지됨 — 오른쪽 카드에서 재개</div>`;
+    if (a.status !== "working") return "";
+    // 마지막 움직임은 에이전트가 중간 신호를 드문드문 보내 믿을 게 못 됨 → 대화창엔 하는 일·걸린 시간만
+    const doing = doingText(a.doing);
+    // 이번 차례의 가장 최근 활동(중간에 한 말·명령·수정 파일)을 아랫줄에 — 에이전트가 따로 알리지 않아도 진행이 보이게
+    const turnSecs = Date.now() / 1000 - a.since;
+    const act = (a.activity || []).filter(x => ["text", "tool", "edit", "sub"].includes(x.kind)
+      && (secsAgo(x.ts) ?? Infinity) <= turnSecs + 2 && !/^\s*대기\s*$/.test(x.text || "")).at(-1);
+    const actText = !act ? "" : act.kind === "edit" ? "수정: " + act.text.replace(/^(Edit|Write|MultiEdit): /, "")
+      : act.kind === "tool" ? act.text.replace(/^\$ /, "").replace(/^Bash: /, "") : act.text;
+    const last = actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";
+    return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
+  }).join("");
+  el.innerHTML = rows; el.hidden = !rows;
+  if (stick) sec.scrollTop = sec.scrollHeight;
+}
+// '짧은 제목 — 상세 설명' 문구를 [제목, 상세]로 (구분자 없으면 상세 없음)
+const splitMsg = t => { const s = String(t ?? ""), i = s.indexOf(" — "); return i < 0 ? [s, ""] : [s.slice(0, i), s.slice(i + 3)]; };
+function cancelJob(id) {
+  if (confirm(`요청 ${id}을(를) 취소할까요?\n지금 하던 차례는 멈추고 이 요청을 닫습니다. 이미 바뀐 파일은 그대로 남습니다.`))
+    api({action: "cancel_job", id});
+}
+// 진행 중 요청 묶음의 한 줄 상태: 이 요청을 맡아 일하는 에이전트·멈춘 에이전트·요청 후 경과 시간 (매초 갱신, 다시 그리기 없이 글자만 교체)
+function updateLiveBars(agents) {
+  document.querySelectorAll(".livebar").forEach(el => {
+    const jid = +el.dataset.job, parts = [];
+    for (const [n, a] of Object.entries(agents || {})) {
+      if (a.error) parts.push(`⚠ ${NAME[n]}${lastJobs.find(x => x.id === jid)?.lead === n ? "(리더)" : ""} ${errHelp(n, a).title} — 오른쪽 카드의 해결 방법대로 한 뒤 [다시 시도]`);
+      else if (a.paused) parts.push(`${NAME[n]} 일시정지됨 — 재개해야 진행돼요`);
+      else if (a.status === "working" && a.doing?.job === jid)
+        parts.push(`${NAME[n]}: ${doingText(a.doing) || "작업 중"}${(a.subs || []).length ? ` (보조 ${a.subs.length})` : ""}`);
+    }
+    // 단계 점: 계획 → 작업(완료 작업 n/m) → 확인 → 완료
+    const job = lastJobs.find(x => x.id === jid), jt = lastTasks.filter(x => x.job === jid);
+    const order = ["planning", "working", "review", "done"], cur = Math.max(0, order.indexOf(job?.status));
+    const label = ["계획", jt.length ? `작업 ${jt.filter(x => x.status === "done").length}/${jt.length}` : "작업", "확인", "완료"];
+    el.querySelector(".stage").innerHTML = label.map((l, i) =>
+      `<span class="st ${i < cur ? "past" : i === cur ? "now" : ""}">${l}</span>`).join('<span class="arr">›</span>');
+    const sec = secsAgo(el.dataset.since);
+    const ago = sec == null ? "" : ` · 요청 후 ${elapsed(Date.now() / 1000 - sec)}`;
+    const warn = parts.some(p => p.startsWith("⚠") || p.includes("일시정지"));
+    el.classList.toggle("warn", warn);
+    // 경고가 있으면 줄을 통째로 아랫줄에 두고 경고마다 '제목 굵게 + 상세 작게' (길어져도 단계 칩 옆에서 꼬이지 않게)
+    el.querySelector(".lb-text").innerHTML = warn
+      ? parts.map(p => { const [h, d] = splitMsg(p); return `<span class="w-head">${esc(h)}</span>${d ? `<span class="w-detail">${esc(d)}</span>` : ""}`; }).join("<br>") + (ago ? `<span class="w-detail">${esc(ago.replace(/^ · /, ""))}</span>` : "")
+      : esc((parts.join(" · ") || "다음 차례 대기 중") + ago);
+  });
+}
+function jumpTo(id, again) {
+  const el = document.getElementById("th-" + id);
+  if (!el) {   // 압축된 이전 요청이면 펼친 뒤 다시 이동
+    if (again) return toast("대화창에서 이 요청을 찾지 못했습니다.");
+    expandedOld.add(id); openTurns.add("old"); lastSig = "";
+    return refresh().then(() => jumpTo(id, true));
+  }
+  document.body.classList.remove("show-side");
+  el.scrollIntoView({behavior: "smooth", block: "start"});
+  el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200);
+}
+
+function renderGit(g, parallel) {
+  if (!parallel) {
+    $("#gitbox").innerHTML = "";   // git 아닌 폴더: 병합할 게 없으니 아무것도 안 띄움
+    return;
+  }
+  if (!g) { $("#gitbox").innerHTML = ""; return; }
+  const pending = g.changed || g.ahead;
+  const what = [g.changed ? `변경 파일 ${g.changed}개` : "", g.ahead ? `커밋 ${g.ahead}개` : ""].filter(Boolean).join(" · ");
+  $("#gitbox").innerHTML = `<div class="gitbox">
+      <div class="br" title="작업 폴더: ${esc(g.path)}">브랜치 ${esc(g.branch)}</div>
+      <div class="row"><span>${pending ? `${what}이 ${esc(g.main)}에 아직 반영되지 않았습니다.` : `${esc(g.main)}와 같은 상태입니다.`}</span>
+        ${pending ? `<button onclick='if(confirm("이 대화의 작업 내용을 메인 폴더(${esc(g.main)})에 병합할까요?"))api({action:"merge"})'>메인에 병합</button>` : ""}</div>
+    </div>`;
+}
+
+let reqSeq = 0, appliedSeq = 0, inflight = null, inflightGen = 0;
+// 동시에 하나만 요청(서버가 느릴 때 1초마다 쌓이지 않게). 진행 중이면 그 요청을 같이 기다림
+// 진행 중 조회가 대화 전환 전에 시작됐으면 끝난 뒤 한 번 더 조회해 바로 새 대화를 보여줌
+function refresh() {
+  if (inflight && inflightGen < followGen) return inflight.then(refresh);
+  if (!inflight) { inflightGen = followGen; inflight = doRefresh().finally(() => { inflight = null; }); }
+  return inflight;
+}
+// 렌더 하나가 실패해도 나머지는 계속 그리고, '서버 끊김'으로 오인하지 않게 렌더 오류와 통신 오류를 나눔
+const safe = (name, f) => { try { f(); return true; } catch (e) { console.error(name, e); return false; } };
+async function doRefresh() {
+  const seq = ++reqSeq, gen = followGen, follow = gen > followDone;
+  let s;
+  try {
+    // 대화 전환·새 대화·복원 직후엔 옛 대화를 고정하지 말고 서버가 정한 현재 대화를 받아옴
+    // 바뀐 게 없으면 서버가 {unchanged} 만 보내게 마지막 rev를 같이 보냄 (같은 대화일 때만)
+    const q = curSession && !follow ? "?session=" + encodeURIComponent(curSession) + (lastRev != null && revSession === curSession && lastSig && lastSess ? "&since_rev=" + lastRev : "") : "";
+    const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(8000)});
+    s = await r.json().catch(() => ({}));
+    if (!r.ok || s.error) throw new Error(s.error || `서버 오류 ${r.status}`);   // 화면은 이전 상태 그대로 두고 문구만
+  } catch (e) {
+    // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
+    downCount = e.name === "TypeError" ? downCount + 1 : 0;
+    if (downCount >= 10) { clearInterval(refreshTimer); window.close(); }   // 잠깐 끊김에 창이 닫히지 않게 10초 연속 끊김일 때만
+    const conn = $("#conn");
+    if (conn) {
+      conn.textContent = e.name === "TypeError" || e.name === "TimeoutError"
+        ? "서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하면 새 창이 열립니다 (이 창은 닫아도 됨)"
+        : `서버가 상태를 못 보냈습니다: ${e.message}`;
+      conn.title = conn.textContent; conn.hidden = false;
+    }
+    return;
+  }
+  downCount = 0;
+  if (s.unchanged) {   // 상태 그대로: 다시 그리지 않고 경과 시간·진행 줄만 갱신
+    if (seq >= appliedSeq) { appliedSeq = seq; safe("agents", () => renderAgents(lastAgentState)); safe("livebars", () => updateLiveBars(lastAgentState)); safe("typing", () => updateTyping(lastAgentState)); }
+    return;
+  }
+  {
+    if (seq < appliedSeq) return;   // 늦게 도착한 옛 응답이 최신 화면을 되돌리지 않게
+    appliedSeq = seq;
+    lastRev = s.rev ?? null; revSession = s.session; lastAgentState = s.agents || {};
+    if (follow) followDone = Math.max(followDone, gen);   // 조회 시작 뒤 또 전환했으면 다음 조회도 서버를 따라감
+    // 서버가 보낸 경고(상태 파일 복구 등)는 헤더에 띄우고, 없으면 숨김
+    const warn = (s.warnings || []).join(" · ");
+    $("#conn").textContent = warn; $("#conn").title = warn; $("#conn").hidden = !warn;
+    $("#root").textContent = s.root;
+    const version = typeof s.version === "string" ? s.version.trim() : "";
+    $("#version").textContent = version ? "v" + version.replace(/^v/, "") : "";
+    $("#version").hidden = !version;
+    if (s.session !== curSession) {   // 대화 전환: 쓰던 초안은 그 대화에 남겨두고 새 대화 초안을 불러옴
+      if (curSession) drafts[curSession] = $("#input").value;
+      $("#input").value = drafts[s.session] || ""; grow();
+      curSession = s.session; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
+    }
+    const msgs = s.msgs || [], jobs = s.jobs || [], tasks = s.tasks || [];
+    lastJobs = jobs; lastTasks = tasks;
+    // 서명은 그리기에 성공한 뒤에만 저장 — 실패하면 다음 틱에 다시 시도
+    const ss = JSON.stringify(s.sessions) + s.session;
+    if ((ss !== lastSess || Date.now() - lastSessAt > 30000) && safe("sessions", () => renderSessions(s.sessions || [], s.session))) { lastSess = ss; lastSessAt = Date.now(); }
+    safe("agents", () => renderAgents(s.agents || {}));
+    safe("git", () => renderGit(s.git, s.parallel));
+    const last = msgs[msgs.length - 1];
+    const tsig = msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs);
+    if (tsig !== lastSig && safe("timeline", () => renderTimeline(msgs, jobs))) lastSig = tsig;
+    const resv = s.file_reservations || [];
+    const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업만 바뀌면 대화창은 그대로 두고 현황판만
+    if (bsig !== lastBoardSig && safe("board", () => renderBoard(jobs, tasks, resv, s.session))) lastBoardSig = bsig;
+    safe("livebars", () => updateLiveBars(s.agents));
+    safe("typing", () => updateTyping(s.agents));
+  }
+}
+let downCount = 0, lastSessAt = 0, lastBoardSig = "", lastJobs = [], lastTasks = [], lastRev = null, revSession = null, lastAgentState = {};
+setMode(["job", "claude", "codex"].includes(localStorage.officeMode) ? localStorage.officeMode : "job");
+// 최소화된 창도 서버 종료를 감지한다 (브라우저가 백그라운드 타이머를 늦출 수 있음).
+refresh(); const refreshTimer = setInterval(refresh, 1000);
+</script>
+</body>
+</html>
