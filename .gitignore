@@ -7,3 +7,6 @@ dist/
 *.tar.gz
 *.sha256
 __pycache__/
+
+# 실험실·검증 기록 (개인 경로 포함, 공개 안 함)
+soak/

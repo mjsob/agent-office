@@ -11,18 +11,18 @@
 :root {
   --bg: #f5f5f3; --panel: #ffffff; --line: #e4e3df; --text: #1d1d1b; --muted: #6a6862; --faint: #85827b;
   --claude: #9c4a20; --claude-soft: #f6e8df; --codex: #2c64b0; --codex-soft: #e2ebf7;
-  --user-soft: #ecebe7; --accent: #1d1d1b; --on-accent: #ffffff; --warn: #8a5f00; --warn-soft: #fbf1d9;
+  --user-soft: #ecebe7; --accent: #1d1d1b; --pin: #a07a52; --on-accent: #ffffff; --warn: #8a5f00; --warn-soft: #fbf1d9;
   --ok: #2f7d4f; --chip: #f0efeb;
 }
 /* 테마: 기본은 OS 설정 따라감, 헤더 버튼으로 밝게/어둡게 고정(data-theme) */
 :root[data-theme="dark"] { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
   --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
-  --user-soft: #2a2a27; --accent: #ecebe6; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
+  --user-soft: #2a2a27; --accent: #ecebe6; --pin: #c4a07c; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
   --ok: #6cc290; --chip: #262624; color-scheme: dark; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
     --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
-    --user-soft: #2a2a27; --accent: #ecebe6; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
+    --user-soft: #2a2a27; --accent: #ecebe6; --pin: #c4a07c; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
     --ok: #6cc290; --chip: #262624; color-scheme: dark; }
 }
 :root[data-theme="light"] { color-scheme: light; }
@@ -30,7 +30,7 @@
 [hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.55 "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
-  display: grid; grid-template-rows: auto 1fr auto; -webkit-font-smoothing: antialiased;
+  display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); -webkit-font-smoothing: antialiased;
   word-break: keep-all; overflow-wrap: anywhere; }   /* 한글이 '4 / 분'처럼 낱글자로 끊기지 않게, 긴 경로는 아무 데서나 줄바꿈 */
 svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
 svg.sm { width: 14px; height: 14px; }
@@ -59,6 +59,19 @@ main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
 .sitem.on { background: var(--chip); box-shadow: inset 2px 0 0 var(--accent); }
 .sitem .sm-meta { flex: 1; min-width: 0; }
 .sitem .stitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.sitem .stitle-row { display: flex; align-items: center; gap: 6px; }
+/* 고정 핀은 차분한 황토색으로 채워 구분. 고정 버튼이 보일 땐(마우스 오버·선택) 제목 옆 표시를 숨겨 핀이 하나만 보이게 */
+.sitem .pin-mark { color: var(--pin); display: inline-flex; flex: 0 0 12px; }
+.sitem .pin-mark svg { width: 12px; height: 12px; fill: currentColor; }
+.sitem:hover .pin-mark, .sitem.on .pin-mark, .sitem:focus-within .pin-mark { display: none; }
+.sitem .acts button[aria-pressed="true"] { color: var(--pin); }
+.sitem .acts button[aria-pressed="true"] svg { fill: currentColor; }
+.sitem .stitle-row .stitle { flex: 1; min-width: 0; }
+/* 새 소식이 온 대화: 항목 전체가 은은한 푸른빛으로 숨쉬듯 반짝 */
+.sitem.has-unread { background: rgba(76, 141, 255, .07); box-shadow: inset 2px 0 0 rgba(76, 141, 255, .7); animation: unread-glow 2.4s ease-in-out infinite; }
+.sitem.has-unread .stitle { font-weight: 600; }
+@keyframes unread-glow { 0%, 100% { background: rgba(76, 141, 255, .05); } 50% { background: rgba(76, 141, 255, .16); } }
+@media (prefers-reduced-motion: reduce) { .sitem.has-unread { animation: none; } }
 .sitem.on .stitle { font-weight: 600; }
 .sitem .ssub { font-size: 11px; color: var(--faint); display: flex; gap: 6px; align-items: center; }
 .sitem .ssub .live { color: var(--ok); }
@@ -322,6 +335,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 .lead { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 select { font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
 .inrow { display: flex; gap: 8px; align-items: stretch; }
+#tlsec, .inrow textarea { min-width: 0; }
 textarea { flex: 1; resize: none; height: 56px; font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .send { background: var(--accent); color: var(--on-accent); border-color: var(--accent); padding: 0 16px; }
@@ -332,7 +346,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .narrow-only { display: none; }
 @media (max-width: 1100px) {
   .narrow-only { display: inline-flex; }
-  main { grid-template-columns: 1fr; position: relative; }
+  main { grid-template-columns: minmax(0, 1fr); position: relative; }   /* 1fr 은 긴 한 줄(상태 줄 등)만큼 넓어져 화면 밖으로 넘침 */
   main > .sessions, main > .side { position: absolute; top: 0; bottom: 0; width: min(340px, 88vw); z-index: 5; display: none;
     box-shadow: 0 8px 32px rgba(0,0,0,.22); background: var(--bg); border: 0; }
   main > .sessions { left: 0; background: var(--panel); }
@@ -340,6 +354,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   body.show-sessions main > .sessions, body.show-side main > .side { display: flex; flex-direction: column; }
   body.show-side main > .side { display: block; }
   .lead { margin-left: 0; }
+}
+/* 아주 좁은 화면(폰 폭): 헤더는 꼭 필요한 버튼만, 글자 버튼은 아이콘으로 */
+@media (max-width: 600px) {
+  header { gap: 8px; padding: 8px 10px; }
+  header .root, header .version, #quit .lbl { display: none; }
+  footer { padding: 8px 10px 10px; }
+  .send { padding: 0 12px; }
+  .send .lbl { display: none; }
+  .msg { max-width: 92%; }
 }
 /* ── 길이가 바뀌는 문구는 길어질 걸 전제로: '제목 — 상세'는 제목 굵게 한 줄 + 상세 아랫줄, 짧은 메타는 한 줄 고정 ── */
 .event.alert { display: flex !important; align-items: flex-start; gap: 8px; text-align: left; max-width: min(640px, 92%); padding: 8px 12px; line-height: 1.5; }
@@ -364,6 +387,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></symbol>
   <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 5h14v10H10l-5 4z"/></symbol>
   <symbol id="i-tool" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="m15 3 6 6-4 1-4 4-1 4-6-6 4-1 4-4zM8 16l-5 5"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M5 19h4L19 9l-4-4L5 15z"/></symbol>
   <symbol id="i-start" viewBox="0 0 24 24"><path d="M8 5.5v13L18.5 12z"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></symbol>
@@ -385,7 +409,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
   <button id="theme" class="ghost" onclick="cycleTheme()"></button>
-  <button id="quit" class="ghost" title="에이전트와 서버를 모두 종료합니다"><svg class="i sm"><use href="#i-power"/></svg>Office 끄기</button>
+  <button id="quit" class="ghost" title="에이전트와 서버를 모두 종료합니다"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
 </header>
 
 <main>
@@ -414,7 +438,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   </div>
   <div class="inrow">
     <textarea id="input" aria-label="메시지 입력"></textarea>
-    <button class="send" id="send" title="보내기 (Enter)"><svg class="i"><use href="#i-send"/></svg>보내기</button>
+    <button class="send" id="send" title="보내기 (Enter)" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
@@ -448,6 +472,7 @@ const HINT = {
   claude: "Claude에게 맡깁니다 · Enter 보내기 · Shift+Enter 줄바꿈",
   codex: "Codex에게 맡깁니다 · Enter 보내기 · Shift+Enter 줄바꿈",
 };
+let lastDay = new Date().toDateString();   // 자정이 지나면 '오늘' 기준이 바뀌니 대화창을 다시 그림
 let mode = "job", lastSig = "", lastSess = "", curSession = new URLSearchParams(location.search).get("session") || null, followGen = 0, followDone = 0, openTurns = new Set(), expandedOld = new Set(), openDone = false, lastMsgs = 0, toastTimer;
 
 // 리더 선택은 이 PC에 기억 (새로고침마다 Claude로 돌아가 Codex 리더 요청이 실수로 Claude에게 가던 비대칭)
@@ -523,6 +548,9 @@ function toast(text, undo) {
 function sessionAct(action, id) {
   if (action === "rename") {
     startRename(id);
+  } else if (action === "pin") {
+    const cur = window._sessions.find(x => x.id === id);
+    if (cur) api({action, id, pinned: !cur.pinned});
   } else if (action === "delete") {
     const cur = window._sessions.find(x => x.id === id);
     if (cur?.open && !confirm(`이 대화에 진행 중인 요청 ${cur.open}건이 있습니다.\n휴지통으로 옮기면 작업이 멈춥니다. 옮길까요?`)) return;
@@ -589,13 +617,14 @@ function ago(t) {
 
 function renderSessions(list, cur) {
   window._sessions = list;
-  const live = list.filter(x => !x.deleted).sort((a, b) => b.updated - a.updated);
+  const live = list.filter(x => !x.deleted).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.pinned && b.pinned ? (a.pinned_at || 0) - (b.pinned_at || 0) || a.id.localeCompare(b.id) : b.updated - a.updated));
   const dead = list.filter(x => x.deleted).sort((a, b) => b.deleted_at - a.deleted_at);
   if (renaming) return false;   // 이름 고치는 중엔 입력칸이 사라지지 않게 다시 그리지 않음
-  $("#slist").innerHTML = live.map(x => `<div class="sitem ${x.id === cur ? "on" : ""}" data-id="${esc(x.id)}" role="button" tabindex="0" onclick='sessionAct("switch","${esc(x.id)}")'>
-      <div class="sm-meta"><div class="stitle" title="더블클릭하면 이름 바꾸기" ondblclick='event.stopPropagation();startRename("${esc(x.id)}")'>${esc(x.title)}</div>
+  $("#slist").innerHTML = live.map(x => `<div class="sitem ${x.id === cur ? "on" : ""} ${x.unread ? "has-unread" : ""}" ${x.unread ? 'title="새 소식"' : ""} data-id="${esc(x.id)}" role="button" tabindex="0" onclick='sessionAct("switch","${esc(x.id)}")'>
+      <div class="sm-meta"><div class="stitle-row"><div class="stitle" title="더블클릭하면 이름 바꾸기" ondblclick='event.stopPropagation();startRename("${esc(x.id)}")'>${esc(x.title)}</div>${x.pinned ? `<span class="pin-mark" role="img" aria-label="고정된 대화" title="고정된 대화">${icon("pin", "sm")}</span>` : ""}</div>
         <div class="ssub">${x.stopped ? `<span class="stop" title="이 대화의 에이전트가 멈춤 — 열어서 확인">⚠ 멈춤</span>` : ""}${x.busy ? `<span class="dot working" style="background:var(--ok)"></span>` : ""}${x.open ? `<span class="live">진행 중 ${x.open}</span>` : ""}<span>${ago(x.updated)}</span></div></div>
       <div class="acts" onclick="event.stopPropagation()">
+        <button class="ghost" title="${x.pinned ? "고정 해제" : "맨 위에 고정"}" aria-label="${x.pinned ? "고정 해제" : "맨 위에 고정"}" aria-pressed="${!!x.pinned}" onclick='sessionAct("pin","${x.id}")'>${icon("pin", "sm")}</button>
         <button class="ghost" title="이름 바꾸기" onclick='sessionAct("rename","${x.id}")'>${icon("edit", "sm")}</button>
         <button class="ghost" title="삭제" onclick='sessionAct("delete","${x.id}")'>${icon("trash", "sm")}</button></div>
     </div>`).join("");
@@ -618,6 +647,34 @@ $("#quit").onclick = () => {
     if (ok) { document.body.innerHTML = "<p style='padding:32px;color:var(--muted)'>Office가 종료되었습니다. 이 창은 닫아도 됩니다.</p>"; window.close(); }
   });
 };
+
+// 메시지 시각: 오늘이면 지금처럼 시:분:초, 아니면 '어제 23:50' · '10월 13일 23:50' · '2025년 10월 13일'
+// 예전 메시지에는 날짜(at)가 없어서, 요청 시작 시각을 기준으로 시각이 거꾸로 가면 하루씩 넘기며 날짜를 추정한다
+function stampMsgs(msgs, jobs) {
+  const start = Object.fromEntries((jobs || []).filter(j => j.started_at).map(j => [j.id, j.started_at]));
+  const dayOf = t => { const d = new Date(t * 1000); d.setHours(0, 0, 0, 0); return d.getTime() / 1000; };
+  const secOf = ts => /^\d{2}:\d{2}:\d{2}$/.test(ts || "") ? ts.split(":").reduce((a, x) => a * 60 + +x, 0) : null;
+  let day = null, prev = null;
+  for (const m of msgs) {
+    const sec = secOf(m.ts);
+    if (typeof m.at === "number") { m._at = m.at; day = dayOf(m.at); prev = sec; continue; }
+    // 요청이 바뀌면 그 요청의 시작 날짜로 다시 맞춘다 (날짜는 앞으로만 감: 기록은 시간 순)
+    const jd = start[m.job] ? dayOf(start[m.job]) : null;
+    if (jd != null && (day == null || jd > day)) { day = jd; prev = null; }
+    if (day == null || sec == null) continue;
+    if (prev != null && sec < prev - 60) day += 86400;   // 시각이 거꾸로 가면 자정을 넘긴 것
+    m._at = day + sec; prev = sec;
+  }
+}
+function when(m) {
+  if (!m?._at) return m?.ts || "";
+  const d = new Date(m._at * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (d.toDateString() === now.toDateString()) return m.ts || hm;
+  if (d.toDateString() === y.toDateString()) return `어제 ${hm}`;
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}월 ${d.getDate()}일 ${hm}`;
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
 
 function elapsed(t) {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - t));
@@ -800,12 +857,12 @@ function msgHtml(m, compact) {
     const who = m.from === "system" ? "" : `<b>${tag(m.from)}</b>`;
     if (alert) {   // 경고는 '제목 — 상세'를 두 줄로: 문구가 길어져도 가운데 정렬로 들쭉날쭉 깨지지 않게
       const [head, detail] = splitMsg(m.text);
-      return `<div class="event ${m.from} alert">${icon("alert", "sm")}<div class="ev-body">${who}<span class="ev-head">${esc(head)}</span>${detail ? `<span class="ev-detail">${esc(detail)}</span>` : ""}</div><span class="ts">${m.ts}</span></div>`;
+      return `<div class="event ${m.from} alert">${icon("alert", "sm")}<div class="ev-body">${who}<span class="ev-head">${esc(head)}</span>${detail ? `<span class="ev-detail">${esc(detail)}</span>` : ""}</div><span class="ts">${esc(when(m))}</span></div>`;
     }
-    return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${m.ts}</span></div>`;
+    return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${esc(when(m))}</span></div>`;
   }
   if (m.kind === "turn") {
-    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${m.ts}`, `<pre>${esc(m.text)}</pre>`, "turn");
+    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${esc(when(m))}`, `<pre>${esc(m.text)}</pre>`, "turn");
     // 단독 대화의 답변은 클릭 없이 본문으로 표시한다. 기존 기록에도 적용.
     m = {...m, kind: "msg", to: "user", job: null};
   }
@@ -813,7 +870,7 @@ function msgHtml(m, compact) {
   // 결과 카드는 kind=report만. job 필드 없는 예전 기록은 에이전트→사용자 메시지를 보고로 추정
   const report = m.kind === "report" || (!("job" in m) && m.from !== "user" && m.to === "user");
   const ask = !report && m.from !== "user" && m.to === "user";
-  return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(m.ts)}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div></div>`;
+  return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(when(m))}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div></div>`;
 }
 
 // 대화창을 요청 단위로 묶음: 요청 → (진행 과정은 접어둠) → 결과 보고
@@ -867,11 +924,11 @@ function threadHtml(t) {
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
   const j = t.job, st = j.cancelled ? "취소됨" : JOBST[j.status] ?? "";
   const live = j.status && j.status !== "done";
-  const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${t.req.ts}</span></div><div class="body">${md(t.req.text)}</div></div>` : "";
+  const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div></div>` : "";
   const steps = t.steps.filter(m => !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
   const sum = `<span class="pill ${j.status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (멈춰서 ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
   // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
-  const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${esc(t.req?.ts || "")}"><span class="stage"></span><span class="lb-text">진행 중</span>
+  const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
   return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${bar}
     ${steps.length ? fold("j" + j.id, sum, `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
@@ -1015,6 +1072,8 @@ function updateLiveBars(agents) {
     for (const [n, a] of Object.entries(agents || {})) {
       if (a.error) parts.push(`⚠ ${NAME[n]}${lastJobs.find(x => x.id === jid)?.lead === n ? "(리더)" : ""} ${errHelp(n, a).title} — 오른쪽 카드의 해결 방법대로 한 뒤 [다시 시도]`);
       else if (a.paused) parts.push(`${NAME[n]} 일시정지됨 — 재개해야 진행돼요`);
+      else if ((a.notice || "").startsWith("자동 재시도 대기"))   // 좁은 화면에선 에이전트 카드가 접혀 있어 여기에도 띄움
+        parts.push(`${NAME[n]} ${a.notice.replace(/^자동 재시도 대기 — /, "자동 재시도 대기 · ")}`);
       else if (a.status === "working" && a.doing?.job === jid)
         parts.push(`${NAME[n]}: ${doingText(a.doing) || "작업 중"}${(a.subs || []).length ? ` (보조 ${a.subs.length})` : ""}`);
     }
@@ -1024,8 +1083,8 @@ function updateLiveBars(agents) {
     const label = ["계획", jt.length ? `작업 ${jt.filter(x => x.status === "done").length}/${jt.length}` : "작업", "확인", "완료"];
     el.querySelector(".stage").innerHTML = label.map((l, i) =>
       `<span class="st ${i < cur ? "past" : i === cur ? "now" : ""}">${l}</span>`).join('<span class="arr">›</span>');
-    const sec = secsAgo(el.dataset.since);
-    const ago = sec == null ? "" : ` · 요청 후 ${elapsed(Date.now() / 1000 - sec)}`;
+    const since = +el.dataset.since;   // 요청 시각(날짜 포함): 자정을 넘겨도 경과 시간이 맞게
+    const ago = since ? ` · 요청 후 ${elapsed(since)}` : "";
     const warn = parts.some(p => p.startsWith("⚠") || p.includes("일시정지"));
     el.classList.toggle("warn", warn);
     // 경고가 있으면 줄을 통째로 아랫줄에 두고 경고마다 '제목 굵게 + 상세 작게' (길어져도 단계 칩 옆에서 꼬이지 않게)
@@ -1071,20 +1130,44 @@ function refresh() {
 }
 // 렌더 하나가 실패해도 나머지는 계속 그리고, '서버 끊김'으로 오인하지 않게 렌더 오류와 통신 오류를 나눔
 const safe = (name, f) => { try { f(); return true; } catch (e) { console.error(name, e); return false; } };
+const headlessClient = /HeadlessChrome/i.test(navigator.userAgent);
+const clientId = headlessClient ? "" : crypto.randomUUID();
+let officeClosed = false, clientReady = headlessClient;
+function closeOfficeWindow() {
+  if (officeClosed) return;
+  officeClosed = true;
+  clearInterval(refreshTimer);
+  window.close();
+  const cover = document.createElement("div");
+  cover.setAttribute("role", "alert");
+  cover.style.cssText = "position:fixed;inset:0;z-index:99999;display:grid;place-items:center;background:var(--bg);color:var(--text);padding:24px;text-align:center;font-size:16px";
+  cover.textContent = "Office가 종료됐어요. 이 창을 닫아 주세요.";
+  document.body.appendChild(cover);
+}
+async function registerClient() {
+  if (clientReady) return;
+  const r = await fetch("/api", {method: "POST", body: JSON.stringify({action: "hello", client: clientId}), signal: AbortSignal.timeout(8000)});
+  const data = await r.json();
+  if (!r.ok || data.error) throw new Error(data.error || "창을 등록하지 못했어요.");
+  clientReady = true;
+}
 async function doRefresh() {
+  if (officeClosed) return;
   const seq = ++reqSeq, gen = followGen, follow = gen > followDone;
   let s;
   try {
+    await registerClient();
     // 대화 전환·새 대화·복원 직후엔 옛 대화를 고정하지 말고 서버가 정한 현재 대화를 받아옴
     // 바뀐 게 없으면 서버가 {unchanged} 만 보내게 마지막 rev를 같이 보냄 (같은 대화일 때만)
-    const q = curSession && !follow ? "?session=" + encodeURIComponent(curSession) + (lastRev != null && revSession === curSession && lastSig && lastSess ? "&since_rev=" + lastRev : "") : "";
+    let q = curSession && !follow ? "?session=" + encodeURIComponent(curSession) + (lastRev != null && revSession === curSession && lastSig && lastSess ? "&since_rev=" + lastRev : "") : "";
+    if (clientId) q += (q ? "&" : "?") + "client=" + encodeURIComponent(clientId);
     const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(8000)});
     s = await r.json().catch(() => ({}));
     if (!r.ok || s.error) throw new Error(s.error || `서버 오류 ${r.status}`);   // 화면은 이전 상태 그대로 두고 문구만
   } catch (e) {
     // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
-    downCount = e.name === "TypeError" ? downCount + 1 : 0;
-    if (downCount >= 10) { clearInterval(refreshTimer); window.close(); }   // 잠깐 끊김에 창이 닫히지 않게 10초 연속 끊김일 때만
+    downCount++;
+    if (!headlessClient && downCount >= 3) { closeOfficeWindow(); return; }
     const conn = $("#conn");
     if (conn) {
       conn.textContent = e.name === "TypeError" || e.name === "TimeoutError"
@@ -1095,6 +1178,8 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
+  if (s.closing === true || (!headlessClient && s.owner === false)) { closeOfficeWindow(); return; }
+  if (s.unchanged && new Date().toDateString() !== lastDay) { lastRev = null; return; }   // 자정 지남: 다음 조회에서 전체를 받아 날짜 표시를 다시 그림
   if (s.unchanged) {   // 상태 그대로: 다시 그리지 않고 경과 시간·진행 줄만 갱신
     if (seq >= appliedSeq) { appliedSeq = seq; safe("agents", () => renderAgents(lastAgentState)); safe("livebars", () => updateLiveBars(lastAgentState)); safe("typing", () => updateTyping(lastAgentState)); }
     return;
@@ -1117,6 +1202,7 @@ async function doRefresh() {
       curSession = s.session; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
     }
     const msgs = s.msgs || [], jobs = s.jobs || [], tasks = s.tasks || [];
+    stampMsgs(msgs, jobs);
     lastJobs = jobs; lastTasks = tasks;
     // 서명은 그리기에 성공한 뒤에만 저장 — 실패하면 다음 틱에 다시 시도
     const ss = JSON.stringify(s.sessions) + s.session;
@@ -1124,7 +1210,8 @@ async function doRefresh() {
     safe("agents", () => renderAgents(s.agents || {}));
     safe("git", () => renderGit(s.git, s.parallel));
     const last = msgs[msgs.length - 1];
-    const tsig = msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs);
+    lastDay = new Date().toDateString();
+    const tsig = lastDay + "|" + msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs);
     if (tsig !== lastSig && safe("timeline", () => renderTimeline(msgs, jobs))) lastSig = tsig;
     const resv = s.file_reservations || [];
     const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업만 바뀌면 대화창은 그대로 두고 현황판만

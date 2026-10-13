@@ -29,6 +29,8 @@ POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반
 MODEL_FALLBACKS = {"codex": ["gpt-6-sol", "gpt-6-luna"], "claude": ["sonnet", "opus"]}
 MAX_CONT = 2          # 하던 일 남았는데 조용할 때 "이어서 해" 재촉 횟수
 MAX_CHATTER = 4       # 작업 변화 없이 둘이 말만 주고받는 연속 횟수 → 넘으면 사용자 호출
+AUTO_RETRY_DELAYS = (15, 60, 180)   # 초: 연결 끊김·서버 오류 같은 일시 오류는 이 간격으로 자동 재시도 후에야 멈춤
+STALL_NOTICE = 180    # 초: 열린 요청이 이 시간 동안 아무 진척 없이 멈춰 있으면 사용자에게 알리고 리더에게 점검 차례를 줌
 EDGE = "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"   # 있으면 우선 (Edge는 텍스트 선택 시 미니 메뉴가 뜸)
 LIMITS = {}         # 구독 사용 한도 + 관측시각 at(epoch)
@@ -58,6 +60,7 @@ MAX_BODY = 256 * 1024
 MAX_TEXT = 20000
 AGENT_QUIET_NOTICE = 25 * 60
 AGENT_QUIET_TIMEOUT = 30 * 60
+AGENT_TOOL_TIMEOUT = 3 * 60 * 60   # 명령·서브 에이전트가 도는 중엔 출력이 없어도 이 시간까지 기다림 (긴 빌드·테스트)
 
 
 def server_log(event, error=None):
@@ -304,6 +307,19 @@ def meta(write=False):
             atomic_json(f, m, meta_valid)
 
 
+def last_notice(msgs):
+    """사용자가 확인할 소식(보고·사용자에게 온 메시지·요청 완료)의 마지막 메시지 번호."""
+    last = 0
+    for x in msgs:
+        mid = x.get("id")
+        if type(mid) is not int:
+            continue
+        if (x.get("to") == "user" and x.get("from") != "user" and x.get("kind") in ("msg", "report")) \
+                or (x.get("kind") == "event" and re.match(r"요청 \d+ 완료", str(x.get("text", "")))):
+            last = max(last, mid)
+    return last
+
+
 def new_session(m, title="새 대화"):
     sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     sdir(sid).mkdir(parents=True)
@@ -380,7 +396,8 @@ def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
                           or kind == "turn" and job is None):
         if job is None or reply_to is not None:
             reply_to = reply_target(s, frm, reply_to)
-    row = {"id": len(s["msgs"]) + 1, "ts": time.strftime("%H:%M:%S"),
+    # ts 는 오늘 기준 시:분:초, at 은 날짜까지 알 수 있는 시각(화면에서 오늘이 아니면 날짜로 표시)
+    row = {"id": len(s["msgs"]) + 1, "ts": time.strftime("%H:%M:%S"), "at": round(time.time(), 3),
            "from": frm, "to": to, "text": text, "kind": kind, "job": job}
     if reply_to is not None:
         row["re"] = reply_to
@@ -727,7 +744,10 @@ def cmd_done(a):
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} 완료")
         released_job = t.get("job")
-    release_reservations(current_sid(), released_job, me())
+        remaining = any(x.get("job") == released_job and x.get("owner") == me() and x["status"] != "done" for x in s["tasks"])
+    # 같은 담당의 병렬 작업 예약까지 풀지 않는다. 개별 파일은 release, 차례 종료 때는 전체 정리한다.
+    if not remaining:
+        release_reservations(current_sid(), released_job, me())
 
 
 def cmd_handoff(a):
@@ -743,7 +763,10 @@ def cmd_handoff(a):
         event(s, f"작업 #{a.id}을(를) {disp(a.to)}에게 넘김" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} → {a.to}")
         released_job = t.get("job")
-    release_reservations(current_sid(), released_job, me())
+        remaining = any(x.get("job") == released_job and x.get("owner") == me() and x["status"] != "done" for x in s["tasks"])
+    # 같은 담당의 병렬 작업 예약까지 풀지 않는다. 개별 파일은 release, 차례 종료 때는 전체 정리한다.
+    if not remaining:
+        release_reservations(current_sid(), released_job, me())
 
 
 def cmd_say(a):
@@ -1047,7 +1070,13 @@ def checkpoint_valid(value):
             and (value.get("error_kind") is None or isinstance(value.get("error_kind"), str) and value.get("error_kind") in ERROR_KINDS)
             and (value.get("interrupted_turn") is None or isinstance(value.get("interrupted_turn"), dict))
             and type(value.get("fail_count", 0)) is int and value.get("fail_count", 0) >= 0
-            and (value.get("failure_key") is None or isinstance(value.get("failure_key"), str)))
+            and (value.get("failure_key") is None or isinstance(value.get("failure_key"), str))
+            and type(value.get("auto_retries", 0)) is int and value.get("auto_retries", 0) >= 0
+            and isinstance(value.get("retry_counts", {}), dict)
+            and all(isinstance(k, str) and (k == "direct" or k.isdecimal() and int(k) > 0)
+                    and type(v) is int and v >= 0 for k, v in value.get("retry_counts", {}).items())
+            and (value.get("retry_job") is None or type(value.get("retry_job")) is int and value["retry_job"] > 0)
+            and type(value.get("retry_at", 0)) in (int, float) and math.isfinite(value.get("retry_at", 0)) and value.get("retry_at", 0) >= 0)
 
 
 def usage_valid(value):
@@ -1194,6 +1223,13 @@ class Worker:
         if not self.error_kind or self.error_kind == "unknown":
             self.error_kind = classify_agent_error(self.error) if self.error else None
         self.resume_turn = saved.get("interrupted_turn")
+        self.auto_retries = saved.get("auto_retries", 0)
+        self.retry_job = saved.get("retry_job")
+        self.retry_counts = dict(saved.get("retry_counts", {}))
+        if self.auto_retries:
+            self.retry_counts.setdefault("direct" if self.retry_job is None else str(self.retry_job), self.auto_retries)
+        self.retry_at = saved.get("retry_at", 0)
+        self.retry_due = dict(self.resume_turn) if self.resume_turn and not self.paused and not self.retry_at else None
         self.fail_count = saved.get("fail_count", 0)
         self.failure_key = saved.get("failure_key")
         if self.error_kind == "auth":
@@ -1210,6 +1246,9 @@ class Worker:
             self.status = "paused"
         if recovered:
             self.notice = "중단된 작업 재개 — 이전 서버에서 남은 실행을 정리했습니다. 중단된 작업을 이어갑니다."
+        if self.retry_at and self.resume_turn:
+            delay = max(0, math.ceil(self.retry_at - time.time()))
+            self.notice = f"자동 재시도 대기 — 일시 오류로 {delay}초 뒤 다시 시도합니다."
         self.restart_reported = False
         self.cont = self.chatter = 0
         self.ufile = sdir(sid) / "usage.json"
@@ -1233,7 +1272,10 @@ class Worker:
         cursor = getattr(self, "turn_read_start", self.read_upto) if self.status == "working" and not processed else self.read_upto
         with self.checkpoint_lock:
             interrupted = self.doing if self.status == "working" and not processed else (getattr(self, "resume_turn", None) if not processed else None)
-            atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None)}, checkpoint_valid)
+            atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
+                         "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
+                         "retry_counts": dict(getattr(self, "retry_counts", {})),
+                         "retry_at": getattr(self, "retry_at", 0)}, checkpoint_valid)
 
     def add_tokens(self, n, cached=0):
         # 두 Worker가 동시에 쓰므로 usage.json 읽기·수정·저장을 잠금으로 보호.
@@ -1358,6 +1400,7 @@ class Worker:
     def run_agent(self, prompt, job, model_override=None):
         self.rc, self.error, self.notice = 0, None, None
         self.subs.clear()
+        self.open_tools = {}   # 결과를 아직 안 받은 도구 호출: 이게 있으면 조용해도 명령이 도는 중
         self.codex_message_rows.clear()
         self.claude_result_received = False
         if self.immediate_pause:
@@ -1408,6 +1451,10 @@ class Worker:
                 cmd += ["--model", model_override]
         final = ""
         with tempfile.TemporaryFile() as lg:
+            # 차례 준비 중 취소·중단됐으면 새 프로세스를 만들지 않는다.
+            if self.stop.is_set() or self.interrupted_job is not None or self.immediate_pause:
+                self.usage_tracking = False
+                return ""
             proc = subprocess.Popen(cmd, cwd=wdir(self.sid), env=env, stdout=subprocess.PIPE, stderr=lg,
                                     stdin=subprocess.DEVNULL, start_new_session=True, bufsize=0)
             proc._office_group = True
@@ -1431,12 +1478,13 @@ class Worker:
                         terminate_process(proc)
                         break
                     quiet = time.monotonic() - received
-                    if quiet >= AGENT_QUIET_TIMEOUT:
+                    running_tool = bool(self.open_tools or self.subs)
+                    if quiet >= (AGENT_TOOL_TIMEOUT if running_tool else AGENT_QUIET_TIMEOUT):
                         self.error = "응답 대기 시간 초과 — 오랫동안 새 응답이 없어 실행을 중단했습니다. 재개 버튼으로 다시 시도하세요."
                         server_log("agent.timeout")
                         terminate_process(proc)
                         break
-                    if quiet >= AGENT_QUIET_NOTICE:
+                    if quiet >= AGENT_QUIET_NOTICE and not running_tool:
                         self.notice = "응답 대기 중 — 새 응답을 기다리는 중입니다. 오래 걸리면 연결 상태를 확인하세요."
                     if not selector.select(.5):
                         if proc.poll() is not None:
@@ -1490,11 +1538,30 @@ class Worker:
     def parse_claude(self, ev):
         if ev.get("type") == "system" and ev.get("subtype") == "init" and isinstance(ev.get("model"), str):
             self.primary_model = ev["model"]
+        if ev.get("type") == "system" and ev.get("subtype") == "task_started":
+            # 서브 에이전트·백그라운드 작업 시작. 백그라운드로 띄우면 도구 결과가 바로 오므로 이 이벤트가 실제 시작이다
+            key = ev.get("tool_use_id") or ev.get("task_id")
+            if key:
+                if key not in self.subs:
+                    desc = str(ev.get("description") or "보조 작업")[:120]
+                    self.subs[key] = {"desc": desc, "since": time.time()}
+                    self.act("sub", "보조 시작: " + desc)
+                self.subs[key]["task"] = ev.get("task_id")
+        elif ev.get("type") == "system" and ev.get("subtype") in ("task_notification", "task_updated"):
+            status = ev.get("status") or (ev.get("patch") or {}).get("status")
+            if status in ("completed", "failed", "killed", "stopped", "cancelled", "error"):
+                key = ev.get("tool_use_id") if ev.get("tool_use_id") in self.subs else next(
+                    (k for k, v in self.subs.items() if ev.get("task_id") and v.get("task") == ev.get("task_id")), None)
+                sub = self.subs.pop(key, None) if key else None
+                if sub:
+                    self.act("sub", "보조 종료: " + sub["desc"])
         if ev.get("type") == "assistant":
             for c in ev.get("message", {}).get("content", []):
                 if c.get("type") == "text" and c["text"].strip():
                     self.act("text", c["text"].strip())
                 elif c.get("type") == "tool_use":
+                    if c.get("id"):
+                        self.open_tools[c["id"]] = time.time()
                     i = c.get("input", {})
                     if c.get("name") in ("Agent", "Task") and c.get("id"):
                         desc = str(i.get("description") or i.get("prompt") or "보조 작업")[:120]
@@ -1506,6 +1573,8 @@ class Worker:
         elif ev.get("type") == "user":
             for c in ev.get("message", {}).get("content", []):
                 if isinstance(c, dict) and c.get("type") == "tool_result":
+                    self.open_tools.pop(c.get("tool_use_id"), None)
+                if isinstance(c, dict) and c.get("type") == "tool_result" and not self.async_launch(c):
                     sub = self.subs.pop(c.get("tool_use_id"), None)
                     if sub:
                         self.act("sub", "보조 종료: " + sub["desc"])
@@ -1521,6 +1590,13 @@ class Worker:
             self.add_tokens(sum(u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "output_tokens")),
                             cached=u.get("cache_read_input_tokens", 0))
             return ev.get("result", "")
+
+    @staticmethod
+    def async_launch(result):
+        """백그라운드로 띄운 서브 에이전트의 '시작됨' 도구 결과인지 (이때는 아직 안 끝났다)"""
+        content = result.get("content")
+        text = content if isinstance(content, str) else " ".join(x.get("text", "") for x in content if isinstance(x, dict)) if isinstance(content, list) else ""
+        return text.lstrip().startswith("Async agent launched")
 
     def codex_public_message(self, item):
         text = item.get("text")
@@ -1592,7 +1668,11 @@ class Worker:
             self.codex_progress(it)
         elif t in ("item.started", "item.updated") and it.get("type") == "agent_message":
             self.codex_public_message(it)
-        elif t == "item.started" and it.get("type") == "command_execution":
+        if t == "item.started" and it.get("type") in ("command_execution", "mcp_tool_call", "dynamic_tool_call", "web_search", "collab_tool_call") and it.get("id"):
+            self.open_tools[it["id"]] = time.time()
+        elif t == "item.completed" and it.get("id"):
+            self.open_tools.pop(it["id"], None)
+        if t == "item.started" and it.get("type") == "command_execution":
             cmd = safe_agent_diagnostic(str(it.get("command", "")))
             m = re.match(r"^/bin/(?:ba)?sh -lc (['\"])(.*)\1$", cmd, re.S)   # codex가 씌우는 셸 껍데기 벗김
             self.act("tool", "$ " + (m.group(2) if m else cmd))
@@ -1631,7 +1711,9 @@ class Worker:
 
     def next_turn(self, s):
         """이번에 할 일 있으면 (prompt 꼬리, job id, 설명, 새 메시지) 반환"""
+        cancelled = {j["id"] for j in s["jobs"] if j.get("cancelled")}
         new = [m for m in s["msgs"][self.read_upto:] if m.get("kind", "msg") == "msg"
+               and m.get("job") not in cancelled
                and m["from"] not in (self.name, "system") and m["to"] in (self.name, "all")
                and not (m["from"] != "user" and m["text"].strip() in ("대기", "확인", "확인했음", "알겠습니다", "고마워"))]
         body = "\n".join(f"- {m['from']}: {m['text']}" for m in new)
@@ -1642,27 +1724,83 @@ class Worker:
         mine = [t for t in tasks if t["owner"] == self.name]
         free = [t for t in tasks if t["owner"] is None and t.get("job") not in planning]
 
+        open_ids = {j["id"] for j in jobs if not j.get("cancelled")}
+        self.retry_counts = {k: v for k, v in getattr(self, "retry_counts", {}).items() if k == "direct" or k in {str(j) for j in open_ids}}
+        retry = getattr(self, "retry_due", None)
+        if retry is not None:   # 일시 오류 자동 재시도: 기획·검수·기다림 판정보다 먼저 끊긴 차례를 다시 실행
+            self.retry_due = None
+            # 기획·검수·답장 차례가 아직 그대로 유효하면 아래에서 원래 프롬프트로 다시 골라진다(읽기 위치도 되돌림)
+            rj = next((j for j in jobs if j["id"] == retry.get("job")), None)
+            natural = retry.get("kind") == "reply" or rj is not None and (
+                retry.get("kind") == "plan" and rj["status"] == "planning"
+                or retry.get("kind") == "review" and all(t["status"] == "done" for t in s["tasks"] if t.get("job") == rj["id"]))
+            if not natural and (retry.get("job") is None or retry.get("job") in open_ids):
+                return "이전 차례가 일시 오류로 끊겼다. 이어서 해라." + (f"\n\n새로 온 메시지:\n{body}" if new else ""), retry.get("job"), retry.get("kind") or "work", new
         direct = [m for m in new if m["from"] == "user" and m["to"] == self.name and m.get("job") is None]
         if direct:
             self.cont = 0
             return f"직접 받은 단독 메시지를 처리해라. 팀 요청의 리더 작업과 별개다.\n새로 온 메시지:\n{body}", None, "reply", new
 
+        # 기획·검수 차례에도 그 사이 온 메시지를 실어 보낸다 (안 실으면 읽은 것으로 처리돼 사라짐)
+        extra = f"\n\n새로 온 메시지:\n{body}" if new else ""
         for j in mine_lead:
             if j["status"] == "planning":
-                return PLAN.format(jid=j["id"], text=j["text"]) + "\n지난 배분 교훈:\n" + lessons_text(), j["id"], "plan", new
+                return PLAN.format(jid=j["id"], text=j["text"]) + "\n지난 배분 교훈:\n" + lessons_text() + extra, j["id"], "plan", new
             jt = [t for t in s["tasks"] if t.get("job") == j["id"]]
             if j["status"] in ("working", "review") and all(t["status"] == "done" for t in jt):
-                return REVIEW.format(jid=j["id"], text=j["text"]) + "\n이번 배분 측정:\n" + task_metrics(s, j["id"]) + '\n배분 관점 교훈 한 줄을 office lesson "..."으로 남겨라. 누락된 시각은 미측정이므로 0초 성과로 해석하지 마라.', j["id"], "review", new
+                return REVIEW.format(jid=j["id"], text=j["text"]) + "\n이번 배분 측정:\n" + task_metrics(s, j["id"]) + '\n배분 관점 교훈 한 줄을 office lesson "..."으로 남겨라. 누락된 시각은 미측정이므로 0초 성과로 해석하지 마라.' + extra, j["id"], "review", new
         assigned = mine or free
         job = assigned[0].get("job") if assigned else (jobs[0]["id"] if jobs else None)
-        if new or free or any(t["status"] == "todo" for t in mine):
+        queue = [x for x in getattr(self, "stall_prompts", []) if x[1] in open_ids]   # 끝난·취소된 요청의 점검은 버림
+        if queue:   # 진행 멈춤 점검: 서버가 리더에게 주는 차례 (요청별로 하나씩)
+            text, stall_job = queue.pop(0)
+            self.stall_prompts = queue
+            return text + (f"\n\n새로 온 메시지:\n{body}" if new else ""), stall_job, "work", new
+        self.stall_prompts = []
+        if new:
             self.cont = 0
-            tail = f"새로 온 메시지:\n{body}" if new else "할 일이 있다. 작업판 보고 진행해라."
-            return tail, job, ("reply" if new and not mine and not free else "work"), new
-        if mine and self.cont < MAX_CONT:
-            self.cont += 1
-            return "하던 작업이 아직 안 끝났다. 이어서 해라.", job, "continue", new
+            self.nudge_state = {}
+            return f"새로 온 메시지:\n{body}", job, ("reply" if not mine and not free else "work"), new
+        if not (free or mine):
+            return None
+        # 새 메시지 없이 남은 작업만 있으면 요청별로 재촉한다. 재촉은 그 요청에 진척(작업 상태 변화·동료 활동)이
+        # 있을 때만 다시 한다. 진척 없이 되풀이하면 토큰만 쓰고, 멈춰 세우면 동료 답이 와도 못 깨어난다.
+        # 시작 안 한 작업이 있는 요청을 먼저 보고, 한 요청이 막혀도 다른 요청은 진행한다.
+        self.nudge_state = state_by_job = {k: v for k, v in getattr(self, "nudge_state", {}).items() if k in open_ids or k is None}
+        pending = free + mine
+        order = sorted({t.get("job") for t in pending}, key=lambda j: (not any(t["status"] == "todo" and t.get("job") == j for t in pending),
+                                                                       min(t["id"] for t in pending if t.get("job") == j)))
+        for jid in order:
+            tasks_here = [t for t in pending if t.get("job") == jid]
+            todo = any(t["status"] == "todo" for t in tasks_here)
+            related = sum(m.get("job") == jid and m["from"] not in (self.name, "system") for m in s["msgs"])
+            sig = (related, tuple((t["id"], t["status"], t["owner"]) for t in s["tasks"] if t.get("job") == jid))
+            prev_sig, count = state_by_job.get(jid, (None, 0))
+            if sig != prev_sig:
+                count = 0
+            if count >= MAX_CONT or not todo and self.waiting_on_peer(s, [t for t in tasks_here if t["owner"] == self.name]):
+                state_by_job[jid] = (sig, count)
+                continue
+            state_by_job[jid] = (sig, count + 1)
+            tail = "할 일이 있다. 작업판 보고 진행해라." if todo else "하던 작업이 아직 안 끝났다. 이어서 해라."
+            return tail, jid, ("work" if todo else "continue"), new
         return None
+
+    def waiting_on_peer(self, s, doing_tasks):
+        """이 요청에서 진행 중 작업을 잡은 뒤 동료에게 보낸 메시지에 아직 답이 없으면 답을 기다리는 중"""
+        doing = [t for t in doing_tasks if t["status"] == "doing"]
+        if not doing:
+            return False
+        jobs = {t.get("job") for t in doing}
+        since = min(t.get("claimed_at", 0) for t in doing)
+        for m in reversed(s["msgs"]):
+            if m.get("kind", "msg") != "msg" or m.get("job") not in jobs:
+                continue
+            if m["from"] == self.other and m["to"] in (self.name, "all"):
+                return False
+            if m["from"] == self.name and m["to"] in (self.other, "all"):
+                return m.get("at", time.time()) >= since
+        return False
 
     def idle(self, status="idle"):
         if self.status != status:
@@ -1680,8 +1818,19 @@ class Worker:
         self.idle("paused")
         self.save_checkpoint()
         with state(True, self.sid) as s:
-            post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason} 확인 후 재개 버튼으로 다시 시도하세요."),
+            guide = "" if re.search(r"(?:다시 시도|재개|시작)(?:하세요|을 누르세요)\.?$", reason.strip()) else " 확인 후 재개 버튼으로 다시 시도하세요."
+            post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason}{guide}"),
                  "event", job=job)
+
+    def transient_failure(self, why):
+        """잠깐 기다리면 풀릴 오류인지: 연결 끊김·시간 초과·혼잡·서버 5xx·결과 없이 끝난 실행"""
+        text = str(why or "")
+        kind = classify_agent_error(text, self.rc)
+        if kind in ("network", "timeout", "capacity"):
+            return True
+        if re.search(r"\b(?:500|502|503|504)\b|internal server error|bad gateway|service unavailable|overloaded", text, re.I):
+            return True
+        return not text or text.startswith("응답 없는 실행 종료")
 
     def terminate_agent(self):
         with self.proc_lock:
@@ -1718,8 +1867,15 @@ class Worker:
         while not (self.stop.is_set() or office.stop.is_set()):
             if hasattr(office, "reconcile_failover"):
                 office.reconcile_failover(sid)
+            if hasattr(office, "check_stall"):
+                office.check_stall(sid)
             if self.paused:
                 self.idle("paused"); time.sleep(1); continue
+            if getattr(self, "retry_at", 0) > time.time():   # 일시 오류 자동 재시도 대기
+                self.idle(); self.stop.wait(POLL); continue
+            if getattr(self, "retry_at", 0):   # 대기 끝: 다음 차례로 끊긴 차례를 다시 실행
+                self.retry_at = 0
+                self.retry_due = dict(self.resume_turn) if isinstance(self.resume_turn, dict) else None   # 취소로 지워졌으면 재시도 안 함
             with state(sid=sid) as s:
                 if self.read_upto is None:
                     self.read_upto = len(s["msgs"])
@@ -1728,11 +1884,7 @@ class Worker:
                 missed = missed_text(s["msgs"][self.read_upto:], self.name)
                 title_history = request_history(s["jobs"])
             if not nt:
-                unfinished = [t for t in s["tasks"] if t["owner"] == self.name and t["status"] != "done"]
-                if unfinished and self.cont >= MAX_CONT:
-                    self.pause_with_error("남은 작업 확인 필요 — 작업이 남아 있지만 이어서 실행해도 완료되지 않아 확인이 필요합니다.", unfinished[0].get("job"))
-                else:
-                    self.idle(); self.stop.wait(POLL)
+                self.idle(); self.stop.wait(POLL)
                 continue
             tail, job, desc, new = nt
             if self.resume_turn and not self.restart_reported:
@@ -1763,6 +1915,7 @@ class Worker:
                 prompt += f"네 지난 차례 이후 네가 직접 받지 못한 대화 (사용자·동료끼리 나눈 내용, 맥락 파악용):\n{missed}\n\n"
             if self.resume_turn and self.resume_turn.get("job") == job:
                 prompt += "이전 차례가 중단되어 이어서 시작한다. 이미 수정한 파일과 완료 작업을 먼저 확인하고, 반쯤 진행한 작업은 검증해서 이어가라. 같은 변경을 반복하거나 덮어쓰지 마라.\n"
+                prompt += "이전 실행의 파일 예약은 풀렸다. 파일을 고치기 전에 office reserve 를 다시 하고, office write 결과를 확인한 뒤에만 완료 처리해라.\n"
             prompt += "메시지에 이미지·파일 경로가 있으면 해당 파일을 직접 열어서 확인해라. Claude는 Read, Codex는 이미지 보기 도구를 사용한다.\n"
             prompt += f"{tail}\n\n대화 전체 요청 이력 (제목 요약 참고):\n{title_history}"
             turn_started = time.monotonic()
@@ -1829,21 +1982,61 @@ class Worker:
                     except (OSError, IndexError):
                         why = f"종료 코드 {self.rc}"
                 self.read_upto = previous_read
+                retry_key = "direct" if job is None else str(job)
+                retries = self.retry_counts.get(retry_key, 0)
+                if self.transient_failure(why) and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set():
+                    delay = AUTO_RETRY_DELAYS[retries]
+                    self.auto_retries = retries + 1
+                    self.retry_counts[retry_key] = retries + 1
+                    self.retry_job = job
+                    self.retry_at = time.time() + delay
+                    self.resume_turn = self.doing if isinstance(self.doing, dict) else self.resume_turn
+                    self.restart_reported = True
+                    self.error, self.error_kind = None, None
+                    self.notice = f"자동 재시도 대기 — 일시 오류로 {delay}초 뒤 다시 시도합니다."
+                    self.idle()
+                    self.save_checkpoint()
+                    with state(True, sid) as s:
+                        reason = re.sub(r"\s*(?:재개 버튼으로 다시 시도하세요|확인 후 재개 버튼으로 다시 시도하세요)\.?$", "", safe_agent_diagnostic(why or "응답 없이 실행이 끝났습니다.").strip())
+                        event(s, f"{disp(self.name)} 일시 오류 · {delay}초 뒤 자동으로 다시 시도합니다 ({retries + 1}/{len(AUTO_RETRY_DELAYS)}) — {reason[:160]}", job=job)
+                    server_log("agent.auto_retry." + self.name)
+                    self.act("end", ""); continue
                 self.pause_with_error(why or "응답 없는 실행 종료 — 응답 없이 실행이 끝났습니다.", job)
                 self.act("end", ""); continue
             with state(True, sid) as s:
                 sent_to_user = any(m["from"] == self.name and m["to"] == "user"
                                    and m.get("kind") in ("msg", "report") for m in s["msgs"][total:])
-                if out and out.strip() != "대기" and not (job is None and sent_to_user):
+                # 진행 알림(msg)은 최종 보고가 아니다. 이 요청의 report 가 있어야 보고한 것으로 본다
+                reported = any(m["from"] == self.name and m["to"] == "user" and m.get("kind") == "report"
+                               and m.get("job") == job for m in s["msgs"][total:])
+                # 검수 후 finish 안 했으면 자동 마감. 단 검수 중 이 요청에 사용자 메시지가 왔으면 다음 차례에 처리하도록 남김
+                closing = next((j for j in s["jobs"] if j["id"] == job and j["status"] == "review" and desc == "review"
+                                and all(t["status"] == "done" for t in s["tasks"] if t.get("job") == job)
+                                and not any(m["from"] == "user" and m.get("job") == job for m in s["msgs"][total:])), None)
+                report = None
+                if closing and not reported:   # 보고 없이 끝냈으면 사용자에게 결과를 대신 보고
+                    report = out if out.strip() not in ("", "대기") else (
+                        "리더가 보고 없이 검수를 마쳐 작업 결과로 대신 보고합니다.\n\n"
+                        + "\n".join(f"- #{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'}: {t.get('note') or t['title']}"
+                                    for t in s["tasks"] if t.get("job") == job))
+                if out and out.strip() != "대기" and not (job is None and sent_to_user) and report is None:
                     post(s, self.name, "log", out, "turn", job=job)
-                for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김 / 검수 후 finish 안 했으면 자동 마감
+                for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
                         j["status"] = "working"
-                    if j["id"] == job and j["status"] == "review" and desc == "review" and all(t["status"] == "done" for t in s["tasks"] if t.get("job") == job):
-                        j.update(status="done", finished_by=self.name, finished_at=time.time(), summary=out, brief=report_brief(out))
-                        event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
+                if closing:
+                    summary = report or out
+                    closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary))
+                    event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
+                    if report:
+                        post(s, self.name, "user", report, "report", job=job)
             self.resume_turn = None
             self.fail_count, self.failure_key = 0, None
+            self.retry_counts.pop("direct" if job is None else str(job), None)
+            if job == getattr(self, "retry_job", None) or not getattr(self, "auto_retries", 0):
+                self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
+            if (self.notice or "").startswith("자동 재시도 대기"):
+                self.notice = None
             self.save_checkpoint(processed=True)
             self.act("end", "")
         self.idle("paused" if self.paused else "idle")
@@ -2182,7 +2375,7 @@ class Office:
                     task["owner"] = original
                     task.pop("failover_from", None); task.pop("failover_to", None)
                     changes.append((task.get("job"), f"작업 #{task['id']} 원래 담당 {disp(original)} 복구"))
-                elif not original and task.get("owner") in failed and healthy:
+                elif not original and task.get("owner") in failed and healthy and not (task.get("handoffs") and task["handoffs"][-1].get("to") == task["owner"]):
                     source = task["owner"]; target = next(n for n in AGENTS if n in healthy)
                     task.update(owner=target, failover_from=source, failover_to=target, failover_at=time.time())
                     changes.append((task.get("job"), f"{disp(source)} 오류로 미착수 작업 #{task['id']}을 {disp(target)}에게 재배정"))
@@ -2207,6 +2400,49 @@ class Office:
         with state(True, sid) as record:
             for job, text in reconcile(record):
                 event(record, text, job=job)
+
+    def check_stall(self, sid):
+        """열린 요청이 STALL_NOTICE 초 동안 아무도 일하지 않고 진척도 없으면 사용자에게 한 번 알리고 리더에게 점검 차례를 준다"""
+        team = self.teams.get(sid)
+        now = time.time()
+        if not team or team["stop"].is_set() or now - team.get("stall_checked", 0) < 2:
+            return
+        team["stall_checked"] = now
+        workers = team["w"]
+        with state(sid=sid) as s:
+            jobs = [j for j in s["jobs"] if j["status"] != "done"]
+            tasks_sig = tuple((t["id"], t["status"], t["owner"]) for t in s["tasks"])
+            activity = (len(s["msgs"]), tasks_sig)
+            tasks = [t for t in s["tasks"] if t["status"] != "done"]
+        busy = any(w.status == "working" or getattr(w, "retry_at", 0) > now for w in workers.values())
+        prev = team.get("stall")
+        if not jobs or busy or not prev or prev[0] != activity:
+            team["stall"] = (activity, now)
+            return
+        if now - prev[1] < STALL_NOTICE or team.get("stall_notified") == (tasks_sig, tuple(j["id"] for j in jobs)):
+            return
+        team["stall_notified"] = (tasks_sig, tuple(j["id"] for j in jobs))
+        def who(w):
+            return f"{disp(w.name)}(" + ("오류로 멈춤" if w.error else "사용자가 멈춤") + ")"
+        stopped = [who(w) for w in workers.values() if w.paused]
+        for j in jobs:
+            left = [t for t in tasks if t.get("job") == j["id"]]
+            left_text = ", ".join(f"#{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'} {'진행 중' if t['status'] == 'doing' else '대기'}" for t in left) or "없음(검수 차례 대기)"
+            detail = f"남은 작업 {left_text}" + (f" · 멈춘 담당 {', '.join(stopped)}" if stopped else "")
+            lead_name = j.get("acting_lead", j["lead"])
+            lead = workers.get(lead_name)
+            nudged = lead is not None and not lead.paused
+            with state(True, sid) as record:
+                post(record, "system", "user", ui_notice(f"요청 {j['id']} 진행 멈춤",
+                     f"{int(now - prev[1])}초 동안 진척이 없습니다. {detail}." + (" 리더에게 점검을 요청했습니다." if nudged else " 멈춘 담당을 재개하거나 메시지로 지시하세요.")),
+                     "event", job=j["id"])
+            if nudged and not any(x[1] == j["id"] for x in getattr(lead, "stall_prompts", [])):
+                lead.stall_prompts = getattr(lead, "stall_prompts", []) + [(
+                    f"[진행 멈춤 점검] 요청 {j['id']}가 {int(now - prev[1])}초 동안 진척이 없다. {detail}.\n"
+                    "작업판을 보고 막힌 원인을 풀어라. 동료 답을 기다리는 중이면 필요한 내용을 다시 정리해 보내라.\n"
+                    f"오류로 멈춘 담당의 작업은 `office handoff 번호 --to {lead_name}` 로 넘겨받아 이어서 해도 된다.\n"
+                    "사용자 결정이 필요하면 `office say --to user` 로 묻고, 할 게 없으면 '대기'라고만 답해라.", j["id"])]
+                server_log("job.stall.nudge")
 
     def busy(self, sid):
         t = self.teams.get(sid)
@@ -2236,13 +2472,28 @@ class Office:
             data = dict(s)
         with meta() as m:
             sessions = [dict(x) for x in m["sessions"]]
+        notice = {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
             try:
                 st = read_json_file(sdir(x["id"]) / "state.json", {}, state_valid)
                 x["open"] = sum(j["status"] != "done" for j in st.get("jobs", []))
+                notice[x["id"]] = last_notice(st.get("msgs", []))
             except (OSError, ValueError, StorageError) as error:
                 server_log("snapshot.session", error)
                 x["open"] = 0
+                notice[x["id"]] = 0
+        # 알림 점: 사용자에게 온 보고·메시지·요청 완료가 있는데 아직 안 본 대화. 보고 있는 대화는 본 것으로 처리
+        if any("seen" not in x or (x["id"] == cur and x["seen"] < notice[x["id"]]) for x in sessions):
+            with meta(True) as m:
+                for y in m["sessions"]:
+                    if y["id"] in notice and ("seen" not in y or y["id"] == cur):
+                        y["seen"] = max(y.get("seen", 0), notice[y["id"]])
+                seen = {y["id"]: y["seen"] for y in m["sessions"] if "seen" in y}
+            for x in sessions:
+                x["seen"] = seen.get(x["id"], notice[x["id"]])
+        for x in sessions:
+            # 진행 중인 요청이 남아 있으면 중간 보고라도 반짝이지 않는다. 다 끝난 뒤(또는 요청 없이 온 결과)에만 알린다
+            x["unread"] = x["id"] != cur and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
             x["busy"] = self.busy(x["id"])
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
@@ -2321,11 +2572,11 @@ class Office:
         if not isinstance(p, dict) or not isinstance(p.get("action"), str):
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
-        known = {"new_session", "switch", "rename", "delete", "restore", "purge", "empty_trash",
+        known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
                  "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
-        if act in ("switch", "rename", "delete", "restore", "purge"):
+        if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
             target = p.get("id")
             if not valid_sid(target):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -2333,7 +2584,7 @@ class Office:
                 found = next((x for x in m["sessions"] if x["id"] == target), None)
                 if not found:
                     raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록을 새로고침하세요.")
-                if act in ("switch", "rename", "delete") and found["deleted"]:
+                if act in ("switch", "rename", "pin", "delete") and found["deleted"]:
                     raise UserError("삭제된 대화 — 삭제된 대화입니다. 휴지통에서 복원하세요.")
                 if act in ("restore", "purge") and not found["deleted"]:
                     raise UserError("휴지통 대화 확인 — 휴지통에 있는 대화만 처리할 수 있습니다.")
@@ -2358,6 +2609,12 @@ class Office:
                 raise UserError("리더 선택 확인 — 리더는 Claude 또는 Codex를 선택하세요.")
             if act == "msg" and p.get("to", "all") not in (*AGENTS, "all"):
                 raise UserError("받는 에이전트 확인 — 메시지를 받을 에이전트를 다시 선택하세요.")
+        if act == "hello":                      # 새로 열린 창이 주인. 이전 창은 owner:false 를 받고 스스로 닫힌다
+            client = p.get("client")
+            if not isinstance(client, str) or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", client):
+                raise UserError("창 확인 실패 — 화면을 새로고침하세요.")
+            self.window_owner, self.window_seen = client, time.time()
+            return msg
         if act == "new_session":
             with meta(True) as m:
                 created = new_session(m)
@@ -2381,6 +2638,17 @@ class Office:
                 for x in m["sessions"]:
                     if x["id"] == p["id"] and p.get("title", "").strip():
                         x["title"] = p["title"].strip()[:60]; x["renamed"] = True
+        elif act == "pin":                      # 목록 맨 위에 고정 / 고정 해제
+            if "pinned" in p and type(p["pinned"]) is not bool:
+                raise UserError("고정 설정 확인 — 고정 상태는 참 또는 거짓이어야 합니다.")
+            with meta(True) as m:
+                for x in m["sessions"]:
+                    if x["id"] == p["id"]:
+                        x["pinned"] = p.get("pinned", not x.get("pinned", False))
+                        if x["pinned"]:
+                            x.setdefault("pinned_at", time.time())
+                        else:
+                            x.pop("pinned_at", None)
         elif act in ("delete", "restore"):
             with meta(True) as m:
                 for x in m["sessions"]:
@@ -2443,6 +2711,12 @@ class Office:
                 w.error = None
                 w.error_kind = None
                 w.cont = w.chatter = 0
+                w.nudge_state = {}
+                if isinstance(w.resume_turn, dict):
+                    resumed_job = w.resume_turn.get("job")
+                    w.retry_counts.pop("direct" if resumed_job is None else str(resumed_job), None)
+                w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
+                w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
             w.save_checkpoint()
         elif act == "cancel_job":
             with state(True, sid=sid) as s:
@@ -2459,13 +2733,18 @@ class Office:
             if team:
                 for worker in team["w"].values():
                     if isinstance(worker.doing, dict) and worker.doing.get("job") == p["id"]:
-                        with worker.proc_lock:
-                            running = worker.proc is not None and worker.proc.poll() is None
-                        if worker.status == "working" and running:
+                        if worker.status == "working":
+                            # 아직 Popen 전이어도 취소 표시를 남겨 준비 중인 실행을 막는다.
                             worker.interrupted_job = p["id"]
                             worker.terminate_agent()
                     if getattr(worker, "resume_turn", None) and worker.resume_turn.get("job") == p["id"]:
                         worker.error, worker.error_kind, worker.resume_turn = None, None, None
+                        worker.retry_at, worker.retry_due = 0, None   # 취소한 요청의 자동 재시도 예약도 버림
+                        worker.retry_counts.pop(str(p["id"]), None)
+                        if getattr(worker, "retry_job", None) == p["id"]:
+                            worker.auto_retries, worker.retry_job = 0, None
+                        if (worker.notice or "").startswith("자동 재시도 대기"):
+                            worker.notice = None
                         worker.fail_count, worker.failure_key = 0, None
                         worker.save_checkpoint()
         elif act == "quit":
@@ -2560,7 +2839,18 @@ def make_handler(office):
                         snapshot = office.snapshot(selected, since_rev=previous)
                     else:
                         snapshot = office.snapshot(selected) if selected else office.snapshot()
+                    # 창은 하나만: 가장 최근에 인사한 창이 주인. 서버가 꺼지는 중이면 closing 으로 창을 닫게 한다
+                    client = query.get("client", [None])[0]
+                    if client:
+                        if getattr(office, "window_owner", None) is None:
+                            office.window_owner = client
+                        snapshot["owner"] = client == office.window_owner
+                        if snapshot["owner"]:
+                            office.window_seen = time.time()
+                    snapshot["closing"] = office.stop.is_set()
                     self.json_reply(200, snapshot)
+                elif path == "/api/window":
+                    self.json_reply(200, {"open": time.time() - getattr(office, "window_seen", 0) < 6})
                 else:
                     self.json_reply(404, {"error": "주소를 찾을 수 없음 — 주소를 찾을 수 없습니다."})
             except (UserError, OSError, ValueError) as error:
@@ -2816,8 +3106,19 @@ def open_window(port):
         return False
 
 
+def window_open(port):
+    try:
+        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/api/window", timeout=3) as response:
+            return bool(json.loads(response.read()).get("open"))
+    except (OSError, ValueError):
+        return False
+
+
 def cmd_gui(a):
     info = running()
+    if info and window_open(info["port"]):   # 서버도 창도 하나만: 이미 열린 창이 있으면 새로 띄우지 않는다
+        return print("Office가 이미 실행 중이에요 · 열려 있는 창을 쓰세요.")
     if info:                     # 다른 콘솔에서 이미 돌고 있으면 창만 다시 엶
         if open_window(info["port"]):
             return print("Office 실행 중 · 창을 다시 열었습니다.")
