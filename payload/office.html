@@ -331,7 +331,11 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .empty.center { text-align: center; padding: 48px 0; }
 
 /* 업데이트 알림 */
-.update-notice { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--chip); font-size: 12px; }
+.update-notice { padding: 12px 14px; border: 2px solid var(--codex); border-radius: 10px; background: var(--codex-soft); font-size: 13px; }
+#updateTitle { color: var(--codex); font-size: 14px; }
+#updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 700; padding: 7px 14px; }
+.update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 700; }
+@media (max-width: 600px) { body.has-update header { flex-wrap: wrap; } .update-badge { order: 10; width: 100%; justify-content: center; } }
 .update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .update-notice button { flex: none; }
 .update-notice button:disabled { cursor: default; opacity: .6; }
@@ -417,6 +421,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <header>
   <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
   <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<span id="version" class="version" hidden></span></div>
+  <button id="updateBadge" class="update-badge" onclick="showUpdateNotice()" hidden></button>
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
@@ -507,12 +512,20 @@ function setMode(m) {
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 
 let updateState = {}, updateSubmitting = false, updateSignature = "";
+function showUpdateNotice() {
+  $("#updateNotice").scrollIntoView({block: "nearest"});
+  $("#updateButton").focus({preventScroll: true});
+}
 function renderUpdate(u) {
   if (!u || typeof u !== "object") return;
   updateState = u;
   const busy = updateSubmitting || ["running", "restarting"].includes(u.state);
   const failed = u.state === "failed";
-  $("#updateNotice").hidden = !(u.available || busy || failed);
+  const visible = !!(u.available || busy || failed);
+  $("#updateNotice").hidden = !visible;
+  $("#updateBadge").hidden = !visible;
+  document.body.classList.toggle("has-update", visible);
+  $("#updateBadge").textContent = busy ? "업데이트하고 있어요" : failed ? "업데이트를 확인하세요" : `새 버전 ${u.latest || ""}이 나왔어요`;
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : `새 버전 ${u.latest || ""}이 나왔어요`;
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
