@@ -214,14 +214,25 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .event.claude b { color: var(--claude); } .event.codex b { color: var(--codex); }
 .event.alert { color: var(--warn); background: var(--warn-soft); padding: 4px 10px; border-radius: 8px; }
 .msg .body code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
-.msg .body { line-height: 1.65; }
+.msg .body { line-height: 1.65; white-space: normal; word-break: keep-all; }
+.msg .body .p { margin: 0; }
+.msg .body .p + .p { margin-top: 10px; }
+.msg .body .md-list { margin: 8px 0; padding-left: 22px; }
+.msg .body .md-list li { padding-left: 2px; margin: 4px 0; }
+.msg .body .md-list li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.msg .body .md-list .md-list { margin: 4px 0; padding-left: 22px; }
+.msg .body .table-wrap { max-width: 100%; min-width: 0; overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.msg .body table { border-collapse: collapse; width: 100%; min-width: max-content; font-size: 12.5px; line-height: 1.6; }
+.msg .body th, .msg .body td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.msg .body th { background: var(--chip); font-weight: 600; }
+.msg .body tbody tr:last-child td { border-bottom: 0; }
 .msg .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
 .msg .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
 .msg .body .code-lang { display: block; margin-bottom: 6px; color: var(--muted); font: 11px ui-monospace, monospace; }
 .msg .body .gap { height: 8px; }
 /* 보고의 목차 제목('**바뀐 것**' 등): 섹션 사이를 확실히 띄우고 작은 머리글처럼 */
 /* 목차 제목은 본문보다 눈에 띄게(흐리면 위계가 뒤집혀 안 읽힘): 진하게 + 왼쪽 색 막대, 제목 바로 뒤 빈 줄은 접음 */
-.msg .body .h { font-weight: 700; font-size: 13.5px; color: var(--text); margin: 14px 0 4px; padding-left: 8px; border-left: 3px solid var(--accent); line-height: 1.3; }
+.msg .body .h { font-weight: 700; font-size: 14.5px; color: var(--text); margin: 18px 0 7px; line-height: 1.5; }
 .msg .body .gap + .h { margin-top: 8px; }
 .msg .body .h + .gap { display: none; }
 .msg.report .body .li { color: var(--text); }
@@ -1092,29 +1103,62 @@ function renderAgents(agents) {
 const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n)?\s*[-•*]\s/.test(s) ? s.replace(/\\n/g, "\n") : s; };
 function md(s, lead) {
   const inline = t => t.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  const lines = esc(String(s ?? "").trim()).split("\n");
-  const out = [];
+  const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
+  const item = line => {
+    const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
+    return m ? {nested: m[1].replace(/\t/g, "  ").length >= 2, type: /^\d/.test(m[2]) ? "ol" : "ul", number: parseInt(m[2], 10), text: m[3], children: []} : null;
+  };
+  const list = items => {
+    let html = "", type = null;
+    for (const x of items) {
+      if (x.type !== type) { if (type) html += `</${type}>`; type = x.type; html += `<${type} class="md-list">`; }
+      html += `<li${type === "ol" ? ` value="${x.number}"` : ""}>${inline(x.text)}${x.children.length ? list(x.children) : ""}</li>`;
+    }
+    return html + (type ? `</${type}>` : "");
+  };
+  const cells = line => {
+    let value = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, ""), part = "", code = false, result = [];
+    for (let j = 0; j < value.length; j++) {
+      const c = value[j];
+      if (c === "\\" && value[j + 1] === "|") { part += "|"; j++; }
+      else if (c === "`") { code = !code; part += c; }
+      else if (c === "|" && !code) { result.push(part.trim()); part = ""; }
+      else part += c;
+    }
+    result.push(part.trim()); return result;
+  };
+  const table = i => lines[i]?.includes("|") && lines[i + 1]?.includes("|") && cells(lines[i + 1]).every(c => /^:?-{3,}:?$/.test(c)) && cells(lines[i]).length === cells(lines[i + 1]).length;
+  const block = i => !lines[i]?.trim() || !!item(lines[i]) || /^(#{1,3}\s|\*\*[^*]+\*\*:?$|&gt;| {0,3}`{3,})/.test(lines[i]) || table(i);
   for (let i = 0; i < lines.length; i++) {
     const fence = lines[i].match(/^ {0,3}(`{3,})([^`]*)$/);
     if (fence) {
-      const code = [];
-      const close = new RegExp("^ {0,3}`{" + fence[1].length + ",}\\s*$");
+      const code = [], close = new RegExp("^ {0,3}`{" + fence[1].length + ",}\\s*$");
       while (++i < lines.length && !close.test(lines[i])) code.push(lines[i]);
       const language = fence[2].trim();
-      out.push(`<div class="code-shell"><div class="code-toolbar"><span class="code-lang">${language || "코드"}</span><button class="copy-code" aria-label="코드 복사" onclick="copyCode(this)">복사</button></div><pre class="codeblock"><code>${code.join("\n")}</code></pre></div>`);
-      continue;
+      out.push(`<div class="code-shell"><div class="code-toolbar"><span class="code-lang">${language || "코드"}</span><button class="copy-code" aria-label="코드 복사" onclick="copyCode(this)">복사</button></div><pre class="codeblock"><code>${code.join("\n")}</code></pre></div>`); continue;
     }
-    const l = lines[i];
-    out.push((() => {
-    let m;
-    if (lead && i === 0) return `<div class="lead1">${inline(l)}</div>`;
-    if (!l.trim()) return '<div class="gap"></div>';
-    if ((m = l.match(/^#{1,3}\s+(.*)/)) || (m = l.match(/^\*\*([^*]+)\*\*:?$/))) return `<div class="h">${inline(m[1])}</div>`;
-    if ((m = l.match(/^\s*[-•*]\s+(.*)/))) return `<div class="li">${inline(m[1])}</div>`;
-    if ((m = l.match(/^\s*(\d+[.)]|[①-⑳])\s+(.*)/))) return `<div class="li num"><span class="n">${m[1]}</span>${inline(m[2])}</div>`;
-    if ((m = l.match(/^&gt;\s?(.*)/))) return `<div class="quote">${inline(m[1])}</div>`;
-    return `<div class="p">${inline(l)}</div>`;
-    })());
+    const l = lines[i]; let m;
+    if (lead && i === 0) { out.push(`<div class="lead1">${inline(l)}</div>`); continue; }
+    if (!l.trim()) { if (out.length && lines[i + 1]?.trim()) out.push('<div class="gap"></div>'); continue; }
+    if (table(i)) {
+      const header = cells(l), align = cells(lines[++i]).map(c => c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left"), rows = [];
+      while (i + 1 < lines.length && lines[i + 1].trim() && lines[i + 1].includes("|") && !item(lines[i + 1])) rows.push(cells(lines[++i]));
+      out.push(`<div class="table-wrap" role="region" aria-label="표" tabindex="0"><table><thead><tr>${header.map((c, j) => `<th scope="col" style="text-align:${align[j]}">${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${header.map((_, j) => `<td style="text-align:${align[j]}">${inline(row[j] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`); continue;
+    }
+    if ((m = l.match(/^#{1,3}\s+(.*)/)) || (m = l.match(/^\*\*([^*]+)\*\*:?$/))) { out.push(`<h3 class="h">${inline(m[1])}</h3>`); continue; }
+    if (item(l)) {
+      const items = [];
+      while (i < lines.length && (m = item(lines[i]))) {
+        if (m.nested && items.length) items[items.length - 1].children.push(m); else items.push(m);
+        i++;
+      }
+      i--; out.push(list(items)); continue;
+    }
+    if ((m = l.match(/^\s*([①-⑳])\s+(.*)/))) { out.push(`<div class="li num"><span class="n">${m[1]}</span>${inline(m[2])}</div>`); continue; }
+    if ((m = l.match(/^&gt;\s?(.*)/))) { out.push(`<div class="quote">${inline(m[1])}</div>`); continue; }
+    const paragraph = [inline(l)];
+    while (i + 1 < lines.length && !block(i + 1)) paragraph.push(inline(lines[++i]));
+    out.push(`<p class="p">${paragraph.join("<br>")}</p>`);
   }
   return out.join("");
 }
