@@ -2326,18 +2326,27 @@ def update_info():
 
 
 def check_update(stop):
-    url = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+    """깃허브 릴리스 목록에서 가장 새 버전을 찾는다. 여러 버전을 건너뛰었으면 그사이 변경 내용을 버전별로 모아 보여 준다.
+    설치는 항상 최신 묶음 하나로 하므로 중간 버전을 차례로 깔 필요가 없다"""
+    url = f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=30"
     while not stop.is_set():
         try:
             req = urlrequest.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "office-update"})
             with urlrequest.urlopen(req, timeout=20, context=provider_ssl_context()) as r:
-                rel = json.loads(r.read())
+                rels = [x for x in json.loads(r.read()) if isinstance(x, dict) and not x.get("draft") and not x.get("prerelease")]
+            for x in rels:
+                x["version"] = str(x.get("tag_name") or "").lstrip("v")
+            rels = sorted((x for x in rels if x["version"]), key=lambda x: version_key(x["version"]), reverse=True)
+            current = version_key(office_version())
+            newer = [x for x in rels if version_key(x["version"]) > current]
+            notes = "\n\n".join(f"### {x['version']}\n\n{str(x.get('body') or '').strip()}" for x in newer) if len(newer) > 1 \
+                else str((newer or rels or [{}])[0].get("body") or "")
             with UPDATE_LOCK:
-                UPDATE.update(latest=str(rel.get("tag_name") or "").lstrip("v") or None,
-                              notes=str(rel.get("body") or "")[:4000], url=rel.get("html_url"))
-        except (OSError, ValueError) as error:
+                UPDATE.update(latest=rels[0]["version"] if rels else None, notes=notes[:6000],
+                              url=rels[0].get("html_url") if rels else None)
+        except (OSError, ValueError, TypeError, KeyError) as error:
             server_log("update.check", error)
-        stop.wait(6 * 3600)
+        stop.wait(3600)   # 한 시간마다 다시 확인: 알림을 띄워 둔 사이 더 새 버전이 나와도 반영
 
 
 def run_update(office):
