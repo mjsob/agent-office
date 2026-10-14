@@ -335,32 +335,35 @@ body { grid-template-rows: auto auto minmax(0, 1fr) auto; }
 body > header { grid-row: 1; }
 body > main { grid-row: 3; }
 body > footer { grid-row: 4; }
-.update-notice { grid-row: 2; padding: 10px 20px; border-bottom: 1px solid var(--codex); background: var(--codex-soft); color: var(--text); font-size: 13px; letter-spacing: 0; word-break: keep-all; }
-.update-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.update-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
-.update-heading > .i { color: var(--codex); flex: none; }
-#updateTitle { font-size: 14px; font-weight: 700; letter-spacing: 0; }
-#updateVersion { display: inline-flex; align-items: center; padding: 1px 7px; border: 1px solid var(--codex); border-radius: 6px; color: var(--codex); font-size: 11px; font-weight: 600; line-height: 1.7; font-variant-numeric: tabular-nums; }
-#updateDate { font-variant-numeric: tabular-nums; }
-.update-meta { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: baseline; color: var(--muted); font-size: 12px; }
-.update-meta > span:not([hidden]) ~ span:not([hidden])::before { content: "·"; margin-right: 4px; }
-.update-actions { display: flex; align-items: center; gap: 12px; flex: none; }
-#updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 700; padding: 5px 12px; }
-.update-notice .update-text { border: 0; background: none; padding: 3px 0; color: var(--text); font-size: 12px; }
-#updateNotesToggle { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); padding: 5px 9px; font-size: 12px; font-weight: 500; white-space: nowrap; }
-#updateNotesToggle:hover { border-color: var(--codex); text-decoration: none; }
+.update-notice { grid-row: 2; margin: 10px 16px; padding: 12px 14px; border: 1px solid var(--codex); border-color: color-mix(in srgb, var(--codex) 40%, transparent); border-radius: 10px; background: var(--codex-soft); color: var(--text); font-size: 13px; letter-spacing: 0; word-break: keep-all; }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.update-heading { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; gap: 12px; min-width: 0; flex: 1; }
+.update-symbol { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--codex) 15%, transparent); color: var(--codex); }
+.update-symbol .i { width: 18px; height: 18px; }
+.update-copy { min-width: 0; }
+#updateTitle { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; letter-spacing: 0; }
+.update-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 6px; margin-top: 3px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+#updateSummary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 75ch; }
+#updateDate, #updateChecked { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#updateDate:not([hidden])::before, #updateChecked:not([hidden])::before { content: "·"; margin-right: 6px; }
+#updateSummary[hidden] + #updateDate::before { content: none; margin: 0; }
+.update-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+#updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 600; padding: 6px 12px; border-radius: 7px; }
+.update-notice .update-text { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; color: var(--text); font-size: 12px; font-weight: 500; }
+#updateNotesToggle { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.update-text:hover { border-color: var(--codex); }
 #updateNotesToggle .i { width: 13px; height: 13px; transition: transform .15s ease; }
 #updateNotesToggle[aria-expanded="true"] .i { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { #updateNotesToggle .i { transition: none; } }
-.update-text:hover { text-decoration: underline; text-underline-offset: 3px; }
-.update-close { background: none; border: 0; padding: 5px; color: var(--text); }
+.update-close { background: none; border: 0; padding: 5px; margin-left: 4px; color: var(--muted); border-radius: 6px; }
+.update-close:hover { color: var(--text); background: var(--panel); }
 .update-notice button:disabled { cursor: default; }
 .update-notice button:focus-visible, .update-badge:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
-.update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 700; }
-#updateMessage, #updateError { margin: 6px 0 0 26px; font-size: 12px; }
+.update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 600; }
+#updateMessage, #updateError { margin: 8px 0 0 44px; font-size: 12px; }
 #updateMessage:empty { display: none; }
 #updateError { color: var(--warn); }
-#updateDetails { margin: 10px 0 0; padding: 10px 0 0 26px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+#updateDetails { margin: 12px 0 0 44px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
 #updateNotes { max-width: 100%; max-height: min(30vh, 240px); overflow: auto; padding: 0; background: transparent; border: 0; border-radius: 0; }
 #updateNotes .body .h { border: 0; padding-left: 0; font-size: 13px; margin: 12px 0 4px; }
 #updateNotes .body .h:first-child { margin-top: 0; }
@@ -376,12 +379,14 @@ body > footer { grid-row: 4; }
 @media (max-width: 600px) {
   body.has-update-badge header { flex-wrap: wrap; }
   .update-badge { order: 10; width: 100%; justify-content: center; }
-  .update-notice { padding: 10px 12px; }
-  .update-row { flex-wrap: wrap; gap: 8px; }
-  .update-heading { width: 100%; gap: 5px 8px; }
-  .update-meta { margin-left: 24px; }
-  .update-actions { margin-left: auto; gap: 14px; }
-  #updateDetails { padding-left: 0; }
+  .update-notice { margin: 8px 10px; padding: 12px; }
+  .update-row { flex-wrap: wrap; gap: 12px; position: relative; }
+  .update-heading { flex-basis: 100%; padding-right: 22px; gap: 10px; }
+  .update-meta { gap: 3px 5px; }
+  #updateSummary { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .update-actions { margin-left: 42px; }
+  .update-close { position: absolute; top: 0; right: -4px; margin: 0; }
+  #updateDetails, #updateMessage, #updateError { margin-left: 0; }
 }
 /* 입력 */
 footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
@@ -473,16 +478,17 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
   <div class="update-row">
     <div class="update-heading">
-      <svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg>
-      <strong id="updateTitle"></strong>
-      <span class="update-meta"><span id="updateVersion"></span><span id="updateDate" hidden></span><span id="updateChecked"></span></span>
+      <span class="update-symbol"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg></span>
+      <div class="update-copy">
+        <strong id="updateTitle"></strong><span id="updateVersion" hidden></span>
+        <div class="update-meta"><span id="updateSummary"></span><span id="updateDate" hidden></span><span id="updateChecked"></span></div>
+      </div>
     </div>
     <div class="update-actions">
       <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()"><span>변경 내용</span><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
       <button id="updateButton" onclick="startUpdate()">업데이트</button>
       <button id="updateCheck" class="update-text" onclick="checkUpdateNow()">다시 확인</button>
-      <button id="updateToday" class="update-text" onclick="dismissUpdate(true)">오늘은 그만</button>
-      <button id="updateClose" class="update-close" aria-label="업데이트 알림 닫기" onclick="dismissUpdate(false)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      <button id="updateClose" class="update-close" aria-label="오늘은 그만 보기" title="오늘은 그만 보기" onclick="dismissUpdate(true)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </div>
   </div>
   <div id="updateError" role="status" hidden></div>
@@ -608,6 +614,16 @@ function toggleUpdateNotes() {
   panel.hidden = !panel.hidden;
   button.setAttribute("aria-expanded", String(!panel.hidden));
 }
+function releaseSummary(notes) {
+  let fenced = false;
+  for (let line of String(notes || "").split("\n")) {
+    line = line.trim();
+    if (/^```/.test(line)) { fenced = !fenced; continue; }
+    if (fenced || !line || /^#{1,6}\s/.test(line) || /^\*\*[^*]+\*\*:?$/.test(line) || /^[-*_]{3,}$/.test(line)) continue;
+    return line.replace(/^[-*•]\s+/, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*`_]/g, "").slice(0, 180);
+  }
+  return "";
+}
 function renderUpdate(u = updateState) {
   if (!u || typeof u !== "object") return;
   updateState = u;
@@ -634,13 +650,14 @@ function renderUpdate(u = updateState) {
   $("#updateBadge").setAttribute("aria-expanded", String(visible));
   $("#updateBadge").hidden = !eligible || visible;
   document.body.classList.toggle("has-update-badge", eligible && !visible);
-  $("#updateToday").hidden = busy || failed || !u.available;
   $("#updateClose").hidden = busy || failed;
   $("#updateButton").hidden = !u.available && !busy && !failed;
   $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
-    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? "새 버전이 나왔어요" : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
+    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 v${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
   $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
+  const summary = releaseSummary(u.notes);
+  $("#updateSummary").textContent = busy ? "설치가 끝나면 새 버전으로 다시 시작해요." : failed ? "오류 내용을 확인하고 다시 시도하세요." : u.available ? summary || "변경 내용을 확인하고 새 버전으로 업데이트하세요." : checking ? "새 버전이 있는지 확인하고 있어요." : u.error ? "다시 확인하거나 오류 내용을 확인하세요." : "Office를 최신 상태로 사용하고 있어요.";
   const date = typeof u.date === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(u.date);
   $("#updateDate").hidden = !date;
   $("#updateDate").textContent = date ? `${Number(date[1]) === new Date().getFullYear() ? Number(date[2]) : date[1] + "." + date[2]}.${date[3]}` : "";
