@@ -686,7 +686,8 @@ function renderUpdate(u = updateState) {
   if (!u.notes) resetUpdateNotes();
   if (updateSignature !== String(u.notes || "")) {
     updateSignature = String(u.notes || "");
-    $("#updateNotes .body").innerHTML = md(updateSignature.replace(/^(#{1,6}\s+v?\d+\.\d+\.\d+)\s*[·|—-]\s*\d{4}-\d{2}-\d{2}.*$/gm, "$1"), false);
+    $("#updateNotes .body").innerHTML = md(updateSignature.replace(/^(#{1,6}\s+v?\d+\.\d+\.\d+)\s*[·|—-]\s*(\d{4})-(\d{2})-(\d{2}).*$/gm,
+      (_, h, y, m, d) => `${h} · ${+y === new Date().getFullYear() ? "" : y + "년 "}${+m}월 ${+d}일`), false);
   }
 }
 async function checkUpdateNow() {
