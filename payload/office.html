@@ -339,6 +339,8 @@ body > footer { grid-row: 4; }
 .update-row { display: flex; align-items: center; gap: 12px; }
 .update-heading { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .update-heading > .i { color: var(--codex); width: 20px; height: 20px; }
+#updateDate { font-size: 12px; white-space: nowrap; }
+.update-heading { flex-wrap: wrap; }
 #updateTitle { font-size: 14px; font-weight: 700; }
 .update-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; flex: none; }
 #updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 700; padding: 7px 14px; }
@@ -448,8 +450,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <header>
   <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
-  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="showUpdateNotice()" title="업데이트 확인" aria-label="버전과 업데이트 확인" hidden></button></div>
-  <button id="updateBadge" class="update-badge" onclick="showUpdateNotice()" hidden></button>
+  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="toggleUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" title="업데이트 확인" aria-label="버전과 업데이트 확인" hidden></button></div>
+  <button id="updateBadge" class="update-badge" onclick="showUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" hidden></button>
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
@@ -459,7 +461,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
   <div class="update-row">
-    <div class="update-heading"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg><strong id="updateTitle"></strong></div>
+    <div class="update-heading"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg><strong id="updateTitle"></strong><span id="updateDate" hidden></span></div>
     <div class="update-actions">
       <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()">변경 내용</button>
       <button id="updateButton" onclick="startUpdate()">업데이트</button>
@@ -554,6 +556,7 @@ document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMod
 let updateState = {}, updateSubmitting = false, updateSignature = "";
 const closedUpdateVersions = new Set();
 let reopenedUpdateKey = "", updatePanelOpen = false, updateChecking = false;
+let updateCheckBaseline = null, updateCheckSawRunning = false, updateCheckTimer;
 const updateDay = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
 const updateKey = () => `${updateDay()}:${updateState.latest || ""}`;
 function dismissUpdate(today) {
@@ -565,6 +568,13 @@ function dismissUpdate(today) {
   updatePanelOpen = false;
   renderUpdate();
   $("#updateBadge").focus({preventScroll: true});
+}
+function toggleUpdateNotice() {
+  if ($("#updateNotice").hidden) showUpdateNotice();
+  else {
+    dismissUpdate(false);
+    $("#version").focus({preventScroll: true});
+  }
 }
 function showUpdateNotice() {
   updatePanelOpen = true;
@@ -581,6 +591,14 @@ function toggleUpdateNotes() {
 function renderUpdate(u = updateState) {
   if (!u || typeof u !== "object") return;
   updateState = u;
+  if (updateChecking) {
+    if (u.checking) updateCheckSawRunning = true;
+    else if (updateCheckSawRunning || (u.checked_at != null && u.checked_at !== updateCheckBaseline)) {
+      updateChecking = false;
+      clearTimeout(updateCheckTimer);
+    }
+  }
+  const checking = updateChecking || u.checking === true;
   const busy = updateSubmitting || ["running", "restarting"].includes(u.state);
   const failed = u.state === "failed";
   let dismissed = closedUpdateVersions.has(u.latest);
@@ -591,6 +609,8 @@ function renderUpdate(u = updateState) {
   const eligible = !!(u.available || busy || failed || u.error);
   const visible = updatePanelOpen || (eligible && (busy || failed || !dismissed || reopenedUpdateKey === updateKey()));
   $("#updateNotice").hidden = !visible;
+  $("#version").setAttribute("aria-expanded", String(visible));
+  $("#updateBadge").setAttribute("aria-expanded", String(visible));
   $("#updateBadge").hidden = !eligible || visible;
   document.body.classList.toggle("has-update-badge", eligible && !visible);
   $("#updateToday").hidden = busy || failed || !u.available;
@@ -599,14 +619,17 @@ function renderUpdate(u = updateState) {
   $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전을 쓰고 있어요" : "새 버전을 확인하세요";
+  const date = typeof u.date === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(u.date);
+  $("#updateDate").hidden = !date;
+  $("#updateDate").textContent = date ? `· ${Number(date[1]) === new Date().getFullYear() ? "" : date[1] + "년 "}${Number(date[2])}월 ${Number(date[3])}일 공개` : "";
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
     : busy ? "설치가 끝날 때까지 기다리세요." : u.available && !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
   const age = Number.isFinite(u.checked_at) && u.checked_at > 0 ? Math.max(0, Math.floor((Date.now() / 1000 - u.checked_at) / 60)) : null;
-  $("#updateChecked").textContent = age === null ? "아직 확인하지 않았어요" : age === 0 ? "마지막 확인 방금 전" : `마지막 확인 ${age}분 전`;
-  $("#updateCheck").disabled = updateChecking || busy;
-  $("#updateCheck").textContent = updateChecking ? "확인 중" : "지금 확인";
+  $("#updateChecked").textContent = checking ? "확인하는 중…" : age === null ? "아직 확인하지 않았어요" : age === 0 ? "방금 확인" : `마지막 확인 ${age}분 전`;
+  $("#updateCheck").disabled = checking || busy;
+  $("#updateCheck").textContent = checking ? "확인 중" : "지금 확인";
   $("#updateError").hidden = !u.error;
   $("#updateError").textContent = u.error ? `확인 실패: ${u.error}` : "";
   $("#updateNotesToggle").hidden = !u.notes;
@@ -617,11 +640,23 @@ function renderUpdate(u = updateState) {
   }
 }
 async function checkUpdateNow() {
-  if (updateChecking) return;
+  if (updateChecking || updateState.checking) return;
   updateChecking = true;
+  updateCheckBaseline = updateState.checked_at;
+  updateCheckSawRunning = false;
+  clearTimeout(updateCheckTimer);
+  updateCheckTimer = setTimeout(() => {
+    updateChecking = false;
+    renderUpdate();
+    toast("확인 결과가 늦어지고 있어요. 잠시 뒤 다시 확인하세요.");
+  }, 90000);
   renderUpdate();
-  try { await api({action: "update_check"}); }
-  finally { updateChecking = false; renderUpdate(); }
+  const accepted = await api({action: "update_check"});
+  if (!accepted) {
+    updateChecking = false;
+    clearTimeout(updateCheckTimer);
+  }
+  renderUpdate();
 }
 async function copyCode(button) {
   const code = button.closest(".code-shell").querySelector("pre code").textContent;

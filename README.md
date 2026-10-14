@@ -54,6 +54,7 @@ office ~/내프로젝트
 - 폴더가 없으면 열리지 않아요. `mkdir`로 먼저 만드세요.
 - 대화 기록과 작업 파일은 폴더마다 따로 저장돼요.
 - 설치한 버전은 `office --version`으로 확인할 수 있어요.
+- 예전 폴더의 대화를 가져오려면 `office import ~/예전폴더`를 입력하세요. 이미 가져온 대화는 건너뛰어요.
 
 ### 화면에서 진행 상황 확인하기
 
@@ -149,6 +150,12 @@ curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | ba
 
 **Codex 로그인 화면이 열리지 않아요**
 설치 명령 끝에 `--device-auth`를 붙여 다시 실행하세요.
+
+**로그인이 풀렸어요**
+Office 대화에 `로그인 해줘`라고 보내세요.
+Claude와 Codex가 각자 로그인 링크를 채팅에 올려요.
+Claude는 로그인 뒤 나온 코드를 채팅에 붙여 넣으면 연결돼요.
+Codex는 이 PC 브라우저에서 링크를 열면 바로 연결돼요.
 
 **Claude에 로그인되지 않아요**
 터미널에서 `claude auth login`을 실행하세요.

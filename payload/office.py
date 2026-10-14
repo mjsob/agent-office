@@ -856,6 +856,128 @@ def task_metrics(record, jid):
     return "\n".join(rows) + f"\n검수·완료 이후 작업 추가 {job.get('rework_count', 0)}회(후속작업 포함, 실패 횟수 아님)."
 
 
+LOGIN_CMDS = {"claude": "DISABLE_AUTOUPDATER=1 claude auth login", "codex": "codex login"}
+
+
+def login_paths(name):
+    folder = D / "login"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{name}.fifo", folder / f"{name}.out", folder / f"{name}.pid"
+
+
+def login_alive(pidfile):
+    try:
+        os.kill(int(pidfile.read_text()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_login(a):
+    """대화에서 로그인: start 는 로그인 링크를 받아 출력, code 는 사용자가 준 코드를 로그인 과정에 넣는다.
+    브라우저는 열지 않는다(사용자가 링크를 직접 엶). 10분 지나면 로그인 과정을 정리한다."""
+    name = a.name
+    fifo, out, pidfile = login_paths(name)
+    if a.step == "start":
+        if login_alive(pidfile):
+            os.killpg(int(pidfile.read_text()), signal.SIGTERM)
+        fifo.unlink(missing_ok=True)
+        os.mkfifo(fifo, 0o600)
+        out.write_text("")
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_CODE_", "OFFICE_")) and k != "CLAUDECODE"}
+        env["BROWSER"] = "true"      # 브라우저 자동 열기 막기
+        script = f'exec 3<>{shlex.quote(str(fifo))}; exec timeout 600 bash -c {shlex.quote(LOGIN_CMDS[name])} <&3 >>{shlex.quote(str(out))} 2>&1'
+        proc = subprocess.Popen(["bash", "-c", script], env=env, cwd=str(Path.home()), start_new_session=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pidfile.write_text(str(proc.pid))
+        for _ in range(60):
+            text = ANSI_SGR.sub("", re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.read_text(errors="replace")))
+            found = re.search(r"https://\S+", text)
+            if found:
+                print(f"{disp(name)} 로그인 링크예요. 브라우저에서 열어 주세요.")
+                print(found.group(0))
+                print("로그인 후 화면에 나온 코드를 채팅에 붙여 넣어 주세요." if name == "claude"
+                      else "이 PC 브라우저에서 열면 로그인이 자동으로 끝나요.")
+                return
+            if proc.poll() is not None:
+                break
+            time.sleep(.5)
+        raise UserError(f"로그인 링크를 받지 못했어요 — {text.strip().splitlines()[-1][:200] if text.strip() else '응답이 없어요'}")
+    if a.step == "code":
+        if not a.code:
+            raise UserError("로그인 코드 확인 — 코드를 함께 입력하세요.")
+        if not login_alive(pidfile):
+            raise UserError("로그인 과정이 없어요 — office login start 로 링크부터 다시 받으세요.")
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(fd, (a.code.strip() + "\n").encode())
+        finally:
+            os.close(fd)
+    for _ in range(60):     # code 다음이나 status: 끝날 때까지 최대 30초
+        if not login_alive(pidfile):
+            break
+        time.sleep(.5)
+    ok = subprocess.run(["claude", "auth", "status"] if name == "claude" else ["codex", "login", "status"],
+                        capture_output=True, text=True, timeout=20).returncode == 0
+    if ok:
+        print(f"{disp(name)} 로그인이 끝났어요.")
+    else:
+        tail = [l for l in ANSI_SGR.sub("", out.read_text(errors="replace")).splitlines() if l.strip()]
+        raise UserError(f"{disp(name)} 로그인이 아직 안 됐어요 — {tail[-1][:200] if tail else '코드를 다시 확인해 주세요'}")
+
+
+IMPORT_SKIP = (".sid", ".worker.json", ".worker.json.bak", ".lock", "lock")
+
+
+def cmd_import(a):
+    """다른 작업 폴더의 대화를 지금 폴더로 가져온다. 같은 ID가 이미 있으면
+    같은 대화(생성 시각 같음)는 건너뛰고, 다른 대화면 새 ID를 붙여 가져온다.
+    에이전트 세션·작업 잠금 파일은 옛 폴더 기준이라 복사하지 않는다(새 차례부터 새 세션)."""
+    src_root = Path(a.source).expanduser().resolve()
+    src = src_root / ".office"
+    if not (src / "meta.json").is_file() and not (src / "state.json").is_file():
+        raise UserError(f"가져올 대화가 없어요 — {src_root} 에 Office 대화 기록이 없습니다.")
+    if src.resolve() == D.resolve():
+        raise UserError("가져오기 확인 — 지금 폴더와 같은 폴더예요. 다른 작업 폴더를 지정하세요.")
+    old = read_json_file(src / "meta.json", {"current": None, "sessions": []}, meta_valid) \
+        if (src / "meta.json").is_file() else {"current": None, "sessions": []}
+    items = [(x, src / "sessions" / x["id"]) for x in old["sessions"] if not x.get("deleted") and valid_sid(x["id"])]
+    if not old["sessions"] and (src / "state.json").is_file():    # 대화 목록 기능 전 기록
+        items = [({"id": time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4], "title": "이전 대화",
+                   "created": (src / "state.json").stat().st_mtime, "updated": (src / "state.json").stat().st_mtime}, src)]
+    added, skipped = [], 0
+    with meta(True) as m:
+        mine = {x["id"]: x for x in m["sessions"]}
+        for entry, folder in items:
+            if not folder.is_dir():
+                continue
+            sid = entry["id"]
+            # 같은 시각에 만들어진 대화가 이미 있으면 예전에 가져온 것 — ID가 바뀌었어도 건너뜀
+            if any(abs(float(x.get("created", 0)) - float(entry.get("created", 0))) < 1 for x in mine.values()):
+                skipped += 1
+                continue
+            if sid in mine or sdir(sid).exists():
+                while sid in mine or sdir(sid).exists():
+                    sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+            target = sdir(sid)
+            target.mkdir(parents=True)
+            names = ["state.json", "claude.log", "codex.log", "usage.json"] if folder == src else \
+                [f.name for f in folder.iterdir() if f.is_file() and not f.name.endswith(IMPORT_SKIP)]
+            for name in names:
+                if (folder / name).is_file():
+                    shutil.copy2(folder / name, target / name)
+            row = {"id": sid, "title": str(entry.get("title") or "가져온 대화"), "created": entry.get("created", time.time()),
+                   "updated": entry.get("updated", time.time()), "deleted": False}
+            m["sessions"].append(row)
+            mine[sid] = row
+            added.append(row["title"])
+    print(f"대화 {len(added)}개를 가져왔어요." + (f" 이미 있는 대화 {skipped}개는 건너뛰었어요." if skipped else ""))
+    for title in added[:20]:
+        print(f"- {title}")
+    if added and running():
+        print("열려 있는 Office 창을 새로고침하면 목록에 보여요. 안 보이면 Office를 다시 시작하세요.")
+
+
 def cmd_title(a):
     title = " ".join(a.text.split())[:40]
     if not title:
@@ -996,6 +1118,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 작업 추가 전에 같은 작업이 있는지 확인하고 기존 ID를 사용한다. 작은 수정은 한 명이 끝내고 분리 가능한 작업·독립 검수에만 둘을 쓴다.
 - 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다.- 메시지는 필요한 것만. 인사·감사·맞장구 금지.
 - 사용자에게 직접 받은 메시지는 job·작업판이 비어 있어도 요청이다. 질문에는 답하고, 수정·실행 요청은 작업을 등록·claim한 뒤 실제로 완료해라. 단독 요청을 '대기'로 무시하지 마라.
+- 사용자가 '로그인 해줘'라고 하면 각자 `office login start 자기이름`을 실행해 나온 링크를 office say --to user 로 그대로 올린다. 사용자가 Claude 코드를 주면 claude가 `office login code claude 코드`로 넣고 결과를 알린다. codex는 링크를 열면 끝나므로 `office login status codex`로 확인해 알린다.
 - 처리할 사용자 메시지도 담당·미배정 작업도 없을 때만 명령 실행 없이 '대기'라고 답해라.
 사용자 보고 형식 (finish 및 사용자에게 보내는 say):
 - 첫 줄은 40자 이내 한 줄 요약으로 쓴다. 빈 줄 뒤에 '- ' 목록으로 변경·검증·남은 일을 쓴다.
@@ -2297,7 +2420,7 @@ def refresh_provider_limits(name, stop):
 UPDATE_REPO = os.environ.get("OFFICE_REPO", "mjsob/agent-office")
 UPDATE_ASSET = "office-installer.tar.gz"
 UPDATE_LOCK = threading.Lock()
-UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None, "checked_at": None, "error": None}
+UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None, "checked_at": None, "error": None, "date": None, "checking": False}
 UPDATE_WAKE = threading.Event()   # 화면의 '지금 확인'이 깨움
 
 
@@ -2355,6 +2478,8 @@ def check_update(stop):
     url = f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=30"
     while not stop.is_set():
         UPDATE_WAKE.clear()
+        with UPDATE_LOCK:
+            UPDATE["checking"] = True
         try:
             req = urlrequest.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "office-update"})
             with urlrequest.urlopen(req, timeout=20, context=provider_ssl_context()) as r:
@@ -2364,11 +2489,13 @@ def check_update(stop):
             rels = sorted((x for x in rels if x["version"]), key=lambda x: version_key(x["version"]), reverse=True)
             current = version_key(office_version())
             newer = [x for x in rels if version_key(x["version"]) > current]
-            notes = "\n\n".join(f"### {x['version']}\n\n{str(x.get('body') or '').strip()}" for x in newer) if len(newer) > 1 \
-                else str((newer or rels or [{}])[0].get("body") or "")
+            day = lambda x: str(x.get("published_at") or "")[:10]
+            notes = "\n\n".join(f"### {x['version']}" + (f" · {day(x)}" if day(x) else "") + f"\n\n{str(x.get('body') or '').strip()}"
+                                  for x in (newer or rels[:1]))
             with UPDATE_LOCK:
                 UPDATE.update(latest=rels[0]["version"] if rels else None, notes=notes[:6000],
-                              url=rels[0].get("html_url") if rels else None)
+                              url=rels[0].get("html_url") if rels else None,
+                              date=str(rels[0].get("published_at") or "")[:10] or None if rels else None)
         except (OSError, ValueError, TypeError, KeyError) as error:
             reason = getattr(error, "reason", None)
             detail = f"{type(error).__name__}" + (f" reason={type(reason).__name__}: {str(reason)[:160]}" if reason is not None else f": {str(error)[:160]}")
@@ -2378,10 +2505,10 @@ def check_update(stop):
             except OSError:
                 pass
             with UPDATE_LOCK:
-                UPDATE.update(checked_at=time.time(), error=update_error_text(error))
+                UPDATE.update(checked_at=time.time(), error=update_error_text(error), checking=False)
         else:
             with UPDATE_LOCK:
-                UPDATE.update(checked_at=time.time(), error=None)
+                UPDATE.update(checked_at=time.time(), error=None, checking=False)
         for _ in range(720):   # 한 시간마다 다시 확인. '지금 확인'이나 종료면 바로 깸
             if stop.is_set() or UPDATE_WAKE.is_set():
                 break
@@ -2938,6 +3065,8 @@ class Office:
         elif act == "quit":
             self.shutdown()
         elif act == "update_check":
+            with UPDATE_LOCK:
+                UPDATE["checking"] = True     # 화면이 바로 '확인하는 중'을 보여 주게
             UPDATE_WAKE.set()
         elif act == "update":
             if not update_info()["available"]:
@@ -3452,7 +3581,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"stop", "board", "log", "add", "claim", "done", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -3463,6 +3592,9 @@ def main():
     p = argparse.ArgumentParser(prog="office", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
     x = sp.add_parser("stop"); x.add_argument("dir", nargs="?"); x.set_defaults(f=cmd_stop)
+    x = sp.add_parser("login", help="대화에서 로그인: start·code·status"); x.add_argument("step", choices=("start", "code", "status"))
+    x.add_argument("name", choices=AGENTS); x.add_argument("code", nargs="?"); x.set_defaults(f=cmd_login)
+    x = sp.add_parser("import", help="다른 작업 폴더의 대화 가져오기"); x.add_argument("source"); x.set_defaults(f=cmd_import)
     sp.add_parser("board").set_defaults(f=cmd_board)
     x = sp.add_parser("log"); x.add_argument("dir", nargs="?"); x.add_argument("-n", type=int, default=20); x.add_argument("-f", "--follow", action="store_true")
     x.set_defaults(f=cmd_log)
