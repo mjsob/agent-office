@@ -2820,6 +2820,7 @@ class Office:
         with reservation_store() as reservations:
             data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
         data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "notice": w.notice or getattr(w, "model_notice", None),
+                              "model": getattr(w, "primary_model", None) or configured_model(n),
                               "tokens": w.tokens, "cached_tokens": w.cached_tokens, "legacy_tokens": w.legacy_tokens,
                               "usage_since": w.usage_since, "limits": limits_for(n), "subs": list(getattr(w, "subs", {}).values()) if w.status == "working" else [],
                               "activity": list(w.activity)[-25:]} for n, w in team.items()}
