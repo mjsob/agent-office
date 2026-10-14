@@ -339,13 +339,19 @@ body > footer { grid-row: 4; }
 .update-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .update-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
 .update-heading > .i { color: var(--codex); flex: none; }
-#updateTitle { font-size: 13px; font-weight: 700; }
+#updateTitle { font-size: 14px; font-weight: 700; letter-spacing: 0; }
+#updateVersion { display: inline-flex; align-items: center; padding: 1px 7px; border: 1px solid var(--codex); border-radius: 6px; color: var(--codex); font-size: 11px; font-weight: 600; line-height: 1.7; font-variant-numeric: tabular-nums; }
+#updateDate { font-variant-numeric: tabular-nums; }
 .update-meta { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: baseline; color: var(--muted); font-size: 12px; }
 .update-meta > span:not([hidden]) ~ span:not([hidden])::before { content: "·"; margin-right: 4px; }
 .update-actions { display: flex; align-items: center; gap: 12px; flex: none; }
 #updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 700; padding: 5px 12px; }
 .update-notice .update-text { border: 0; background: none; padding: 3px 0; color: var(--text); font-size: 12px; }
-#updateNotesToggle { color: var(--muted); }
+#updateNotesToggle { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); padding: 5px 9px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+#updateNotesToggle:hover { border-color: var(--codex); text-decoration: none; }
+#updateNotesToggle .i { width: 13px; height: 13px; transition: transform .15s ease; }
+#updateNotesToggle[aria-expanded="true"] .i { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { #updateNotesToggle .i { transition: none; } }
 .update-text:hover { text-decoration: underline; text-underline-offset: 3px; }
 .update-close { background: none; border: 0; padding: 5px; color: var(--text); }
 .update-notice button:disabled { cursor: default; }
@@ -470,9 +476,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg>
       <strong id="updateTitle"></strong>
       <span class="update-meta"><span id="updateVersion"></span><span id="updateDate" hidden></span><span id="updateChecked"></span></span>
-      <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()">변경 내용 ▾</button>
     </div>
     <div class="update-actions">
+      <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()"><span>변경 내용</span><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
       <button id="updateButton" onclick="startUpdate()">업데이트</button>
       <button id="updateCheck" class="update-text" onclick="checkUpdateNow()">다시 확인</button>
       <button id="updateToday" class="update-text" onclick="dismissUpdate(true)">오늘은 그만</button>
@@ -596,13 +602,11 @@ function showUpdateNotice() {
 function resetUpdateNotes() {
   $("#updateDetails").hidden = true;
   $("#updateNotesToggle").setAttribute("aria-expanded", "false");
-  $("#updateNotesToggle").textContent = "변경 내용 ▾";
 }
 function toggleUpdateNotes() {
   const panel = $("#updateDetails"), button = $("#updateNotesToggle");
   panel.hidden = !panel.hidden;
   button.setAttribute("aria-expanded", String(!panel.hidden));
-  button.textContent = panel.hidden ? "변경 내용 ▾" : "변경 내용 ▴";
 }
 function renderUpdate(u = updateState) {
   if (!u || typeof u !== "object") return;
@@ -636,15 +640,16 @@ function renderUpdate(u = updateState) {
   $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? "새 버전이 나왔어요" : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
-  $("#updateVersion").textContent = u.available ? u.latest || "" : u.current || "";
+  $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
   const date = typeof u.date === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(u.date);
   $("#updateDate").hidden = !date;
-  $("#updateDate").textContent = date ? `${Number(date[1]) === new Date().getFullYear() ? "" : date[1] + "년 "}${Number(date[2])}월 ${Number(date[3])}일` : "";
+  $("#updateDate").textContent = date ? `${Number(date[1]) === new Date().getFullYear() ? Number(date[2]) : date[1] + "." + date[2]}.${date[3]}` : "";
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
     : busy ? "설치가 끝날 때까지 기다리세요." : u.available && !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
   const age = Number.isFinite(u.checked_at) && u.checked_at > 0 ? Math.max(0, Math.floor((Date.now() / 1000 - u.checked_at) / 60)) : null;
+  $("#updateChecked").hidden = !!u.available && !checking && !u.error;
   $("#updateChecked").textContent = checking ? "확인하는 중…" : age === null ? "아직 확인하지 않았어요" : age === 0 ? "방금 확인" : `마지막 확인 ${age}분 전`;
   $("#updateCheck").disabled = checking || busy;
   $("#updateCheck").textContent = checking ? "확인 중" : "다시 확인";
