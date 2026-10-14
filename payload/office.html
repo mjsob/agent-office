@@ -997,9 +997,14 @@ function feedRows(activity) {
 
 // 오류 종류별 사람 말 안내 (서버 agents.<n>.error_kind). 카드·진행 줄이 같은 문구를 씀
 const KIND_HELP = {
-  auth: {title: "로그인이 만료됐어요", how: n => n === "codex"
-    ? "office를 띄운 터미널에서 codex login 실행 → 로그인 후 여기서 [다시 시도]"
-    : "office를 띄운 터미널에서 claude 실행 → /login 입력해 로그인 → 여기서 [다시 시도]"},
+  auth: {title: "로그인이 만료됐어요", how: () => "로그인이 풀렸어요. 대화창에 뜬 로그인 링크로 다시 로그인하면 자동으로 이어서 해요."},
+  limit: {title: "사용 한도를 다 썼어요", how: (n, a) => {
+    const windows = Object.values(a?.limits || {}).filter(w => w && typeof w === "object" && Number.isFinite(w.resets) && w.resets * 1000 > Date.now());
+    const spent = windows.filter(w => w.used >= 100);
+    const resets = (spent.length ? spent : windows).map(w => w.resets);
+    const until = resets.length ? resetIn(Math.max(...resets)) + " 뒤" : "사용 한도가 초기화된 뒤";
+    return `${until} [다시 시도]를 누르세요. 기다리는 동안 다른 쪽에 맡길 수도 있어요.`;
+  }},
   capacity: {title: "모델이 붐벼요", how: () => "다른 모델로도 막혔어요. 몇 분 뒤 [다시 시도]하거나 요청을 취소하고 다른 쪽을 리더로 다시 보내세요"},
   network: {title: "인터넷 연결이 불안정해요", how: () => "연결을 확인한 뒤 [다시 시도]"},
   timeout: {title: "너무 오래 응답이 없어 멈췄어요", how: () => "[다시 시도]하거나 요청을 더 잘게 나눠 보내세요"},
@@ -1019,7 +1024,7 @@ const openAgent = new Set(), openMore = new Set();
 let lastAgentSig = "";
 function renderAgents(agents) {
   // 바뀐 게 없으면 다시 그리지 않음(포커스·선택·클릭이 매초 날아가던 문제). 경과 시간만 글자 교체
-  const sig = JSON.stringify(agents);   // since는 차례 시작 시각이라 고정값 — 경과 시간은 아래에서 따로 갱신
+  const sig = JSON.stringify(agents) + JSON.stringify(lastTasks);   // since는 차례 시작 시각이라 고정값 — 경과 시간은 아래에서 따로 갱신
   if (sig === lastAgentSig) {
     document.querySelectorAll("#agents span[data-since]").forEach(e => e.textContent = elapsed(+e.dataset.since));
     updatePulses();
@@ -1031,6 +1036,12 @@ function renderAgents(agents) {
   document.querySelectorAll("#agents .feed[id]").forEach(f => keep[f.id] = f.scrollHeight - f.scrollTop - f.clientHeight < 20 ? null : f.scrollTop);
   $("#agents").innerHTML = Object.entries(agents).map(([n, a]) => {
     const doing = a.status === "working" ? doingText(a.doing) : "";
+    // 차례는 끝났어도 진행 중 작업을 잡고 있으면(백그라운드 실행·결과 대기) 쉬는 중 대신 그 작업을 보여 준다
+    const held = a.status === "idle" ? (lastTasks || []).filter(t => t.owner === n && t.status === "doing") : [];
+    // 번호는 현황판과 같은 '요청번호-순번'으로
+    const tno = t => t.job ? `${t.job}-${lastTasks.filter(x => x.job === t.job).indexOf(t) + 1}` : `#${t.id}`;
+    const heldText = held.length ? `결과 기다리는 중 · ${held.map(tno).join(" ")}` : "";
+    const heldTip = held.map(t => `${tno(t)} ${t.title}`).join("\n") + (held.length ? "\n백그라운드에서 돌리는 일이 끝나면 다시 이어서 해요." : "");
     const out = feedRows(a.activity), rows = out.join("");
     // 미리보기는 이번 차례만: 지난 최종 답("대기")이 새 작업 시작 때 다시 뜨지 않게 함.
     const boundary = a.activity.findLastIndex(x => x.kind === "start" || x.kind === "end");
@@ -1046,14 +1057,14 @@ function renderAgents(agents) {
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
         <div class="meta">
           <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(String(a.model).replace(/^claude-/, ""))}</span>` : ""}</div>
-          <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || "")}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
-            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div></div>
+          <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || heldTip)}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
+            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : heldText ? esc(heldText) : (STATUS[a.status] ?? a.status)}</span></div></div>
         <div class="ctl">${hot}
         <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "다시 시작" : a.status === "working" ? "이번 차례 끝나면 멈춤" : "잠시 멈춤"}" aria-label="${a.paused ? "다시 시작" : "잠시 멈춤"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}</button>
         ${a.status === "working" && !a.paused ? `<button class="ghost" aria-label="중단" title="지금 바로 멈춤" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>${icon("x", "sm")}</button>` : ""}</div>
       </div>
       ${a.error ? (h => `<div class="agerr">${icon("alert", "sm")}<div><b>${h.title}</b>${a.fail_count > 1 ? ` (같은 오류 ${a.fail_count}번째)` : ""}
-          <div class="how">${esc(h.how(n))}</div>
+          <div class="how">${esc(h.how(n, a))}</div>
           <details class="raw"><summary>원문 보기</summary><code>${esc(friendlyErr(a.error))}</code></details></div></div>`)(errHelp(n, a)) : ""}
       ${a.notice && !a.error ? (([h, d]) => `<div class="agnote"><b>${esc(h)}</b>${d ? `<div class="how">${esc(d)}</div>` : ""}</div>`)(splitMsg(a.notice)) : ""}
       ${a.status === "working" ? `<div class="pulse" hidden data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}"></div>` : ""}

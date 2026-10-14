@@ -865,61 +865,92 @@ def login_paths(name):
     return folder / f"{name}.fifo", folder / f"{name}.out", folder / f"{name}.pid"
 
 
+LOGIN_PROCS = {}   # 서버가 띄운 로그인 과정: 끝나면 회수해야 좀비로 남아 '아직 진행 중'처럼 보이지 않는다
+
+
 def login_alive(pidfile):
     try:
-        os.kill(int(pidfile.read_text()), 0)
-        return True
+        pid = int(pidfile.read_text())
+        proc = LOGIN_PROCS.get(pid)
+        if proc is not None and proc.poll() is not None:   # 내가 띄운 과정이면 회수까지
+            LOGIN_PROCS.pop(pid, None)
+            return False
+        os.kill(pid, 0)
+        # 다른 프로세스가 띄운 과정이 좀비(Z)로 남았으면 끝난 것으로 본다
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat[stat.rindex(")") + 2] != "Z"
     except (OSError, ValueError):
         return False
 
 
+def login_ok(name):
+    """로그인돼 있는지: claude auth status / codex login status 가 성공하면 됨"""
+    try:
+        return subprocess.run(["claude", "auth", "status"] if name == "claude" else ["codex", "login", "status"],
+                              capture_output=True, text=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def login_start(name):
+    """로그인 과정을 띄우고 로그인 링크를 돌려준다. 브라우저는 열지 않는다(사용자가 링크를 직접 엶). 10분 지나면 정리된다."""
+    fifo, out, pidfile = login_paths(name)
+    if login_alive(pidfile):
+        os.killpg(int(pidfile.read_text()), signal.SIGTERM)
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo, 0o600)
+    out.write_text("")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_CODE_", "OFFICE_")) and k != "CLAUDECODE"}
+    env["BROWSER"] = "true"      # 브라우저 자동 열기 막기
+    script = f'exec 3<>{shlex.quote(str(fifo))}; exec timeout 600 bash -c {shlex.quote(LOGIN_CMDS[name])} <&3 >>{shlex.quote(str(out))} 2>&1'
+    proc = subprocess.Popen(["bash", "-c", script], env=env, cwd=str(Path.home()), start_new_session=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pidfile.write_text(str(proc.pid))
+    LOGIN_PROCS[proc.pid] = proc
+    text = ""
+    for _ in range(60):
+        text = ANSI_SGR.sub("", re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.read_text(errors="replace")))
+        found = re.search(r"https://\S+", text)
+        if found:
+            return found.group(0)
+        if proc.poll() is not None:
+            break
+        time.sleep(.5)
+    raise UserError(f"로그인 링크를 받지 못했어요 — {text.strip().splitlines()[-1][:200] if text.strip() else '응답이 없어요'}")
+
+
+def login_feed(name, code):
+    """사용자가 준 로그인 코드를 띄워 둔 로그인 과정에 넣는다"""
+    fifo, out, pidfile = login_paths(name)
+    if not login_alive(pidfile):
+        raise UserError("로그인 과정이 없어요 — office login start 로 링크부터 다시 받으세요.")
+    fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd, (code.strip() + "\n").encode())
+    finally:
+        os.close(fd)
+
+
 def cmd_login(a):
-    """대화에서 로그인: start 는 로그인 링크를 받아 출력, code 는 사용자가 준 코드를 로그인 과정에 넣는다.
-    브라우저는 열지 않는다(사용자가 링크를 직접 엶). 10분 지나면 로그인 과정을 정리한다."""
+    """대화에서 로그인: start 는 로그인 링크를 받아 출력, code 는 사용자가 준 코드를 로그인 과정에 넣는다."""
     name = a.name
     fifo, out, pidfile = login_paths(name)
     if a.step == "start":
-        if login_alive(pidfile):
-            os.killpg(int(pidfile.read_text()), signal.SIGTERM)
-        fifo.unlink(missing_ok=True)
-        os.mkfifo(fifo, 0o600)
-        out.write_text("")
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_CODE_", "OFFICE_")) and k != "CLAUDECODE"}
-        env["BROWSER"] = "true"      # 브라우저 자동 열기 막기
-        script = f'exec 3<>{shlex.quote(str(fifo))}; exec timeout 600 bash -c {shlex.quote(LOGIN_CMDS[name])} <&3 >>{shlex.quote(str(out))} 2>&1'
-        proc = subprocess.Popen(["bash", "-c", script], env=env, cwd=str(Path.home()), start_new_session=True,
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        pidfile.write_text(str(proc.pid))
-        for _ in range(60):
-            text = ANSI_SGR.sub("", re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.read_text(errors="replace")))
-            found = re.search(r"https://\S+", text)
-            if found:
-                print(f"{disp(name)} 로그인 링크예요. 브라우저에서 열어 주세요.")
-                print(found.group(0))
-                print("로그인 후 화면에 나온 코드를 채팅에 붙여 넣어 주세요." if name == "claude"
-                      else "이 PC 브라우저에서 열면 로그인이 자동으로 끝나요.")
-                return
-            if proc.poll() is not None:
-                break
-            time.sleep(.5)
-        raise UserError(f"로그인 링크를 받지 못했어요 — {text.strip().splitlines()[-1][:200] if text.strip() else '응답이 없어요'}")
+        url = login_start(name)
+        print(f"{disp(name)} 로그인 링크예요. 브라우저에서 열어 주세요.")
+        print(url)
+        print("로그인 후 화면에 나온 코드를 채팅에 붙여 넣어 주세요." if name == "claude"
+              else "이 PC 브라우저에서 열면 로그인이 자동으로 끝나요.")
+        return
     if a.step == "code":
         if not a.code:
             raise UserError("로그인 코드 확인 — 코드를 함께 입력하세요.")
-        if not login_alive(pidfile):
-            raise UserError("로그인 과정이 없어요 — office login start 로 링크부터 다시 받으세요.")
-        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-        try:
-            os.write(fd, (a.code.strip() + "\n").encode())
-        finally:
-            os.close(fd)
+        login_feed(name, a.code)
     for _ in range(60):     # code 다음이나 status: 끝날 때까지 최대 30초
         if not login_alive(pidfile):
             break
         time.sleep(.5)
-    ok = subprocess.run(["claude", "auth", "status"] if name == "claude" else ["codex", "login", "status"],
-                        capture_output=True, text=True, timeout=20).returncode == 0
-    if ok:
+    if login_ok(name):
         print(f"{disp(name)} 로그인이 끝났어요.")
     else:
         tail = [l for l in ANSI_SGR.sub("", out.read_text(errors="replace")).splitlines() if l.strip()]
@@ -1148,7 +1179,7 @@ REVIEW = """[리더 차례: 검수] 요청 {jid}: {text}
 
 
 
-ERROR_KINDS = {"auth", "capacity", "network", "crash", "timeout", "unfinished", "unknown"}
+ERROR_KINDS = {"auth", "limit", "capacity", "network", "crash", "timeout", "unfinished", "unknown"}
 
 
 def classify_agent_error(reason, rc=0):
@@ -1157,6 +1188,9 @@ def classify_agent_error(reason, rc=0):
         return "unfinished"
     if re.search(r"invalid api key|please (?:run|use).*?/login|not logged in|not authenticated|oauth.*(?:expired|invalid)|(?:refresh|access) token.*(?:expired|invalid|revoked|failed)|token.*refresh.*(?:failed|expired)|\b401\b|unauthorized|authentication(?:_| )(?:error|failed|failure)|refresh token", text):
         return "auth"
+    # 요금제 사용 한도 소진: 로그인 문제가 아니라서 로그인 링크 대신 초기화 시각 안내를 한다
+    if re.search(r"usage[ _]limit|hit your [^.\n]{0,40}?(?:limit|budget)|spend limit|credit balance is too low|limit[ _](?:reached|exceeded)|out of (?:extra )?usage|insufficient_quota|quota exceeded|upgrade to (?:pro|max|plus)", text):
+        return "limit"
     if re.search(r"at capacity|overloaded|overload_error|\b529\b|capacity exceeded", text):
         return "capacity"
     if re.search(r"timed? ?out|timeout|응답.*(?:중단|초과)|시간.*초과", text):
@@ -1181,9 +1215,12 @@ def safe_agent_diagnostic(text):
     return text
 
 
+LOGIN_HOOK = None   # Office.offer_login — 실행 중 로그인이 풀리면 Worker 가 불러 로그인 링크를 띄운다
+
+
 def auth_help(name):
-    return ("로그인 확인 필요 — 로그인이 만료되었거나 인증에 실패했습니다. 터미널에서 claude를 실행해 /login 후 다시 시작을 누르세요." if name == "claude" else
-            "로그인 확인 필요 — 로그인이 만료되었거나 인증에 실패했습니다. 터미널에서 codex login 후 다시 시작을 누르세요.")
+    return ("로그인 확인 필요 — 로그인이 풀렸어요. 대화창에 뜬 로그인 링크로 다시 로그인하면 자동으로 이어서 해요. 링크가 없으면 터미널에서 claude를 실행해 /login 후 다시 시작을 누르세요." if name == "claude" else
+            "로그인 확인 필요 — 로그인이 풀렸어요. 대화창에 뜬 로그인 링크로 다시 로그인하면 자동으로 이어서 해요. 링크가 없으면 터미널에서 codex login 후 다시 시작을 누르세요.")
 
 
 def checkpoint_valid(value):
@@ -1980,6 +2017,8 @@ class Worker:
         self.paused = True
         self.idle("paused")
         self.save_checkpoint()
+        if self.error_kind == "auth" and LOGIN_HOOK:
+            threading.Thread(target=LOGIN_HOOK, args=(self.sid, [self.name], True), daemon=True).start()
         with state(True, self.sid) as s:
             guide = "" if re.search(r"(?:다시 시도|재개|시작)(?:하세요|을 누르세요)\.?$", reason.strip()) else " 확인 후 재개 버튼으로 다시 시도하세요."
             post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason}{guide}"),
@@ -2716,6 +2755,134 @@ class Office:
             for job, text in reconcile(record):
                 event(record, text, job=job)
 
+    def first_run_login(self):
+        """Office 를 켤 때 Claude·Codex 로그인 상태를 보고, 안 된 쪽만 로그인 링크를 받아 대화창에 띄운다. 에이전트는 로그인 전엔 실행 자체가 안 되므로 서버가 직접 챙긴다."""
+        # 처음 쓰는 사람뿐 아니라 로그인이 풀린 사람도 같은 안내를 받는다(로그인돼 있으면 아무것도 안 띄움).
+        # 그래야 '링크 만료·실패 → Office 다시 켜기' 안내가 언제나 통한다.
+        try:
+            sid = current_sid()
+        except (OSError, UserError) as error:
+            server_log("login.first_run", error)
+            return
+        self.offer_login(sid, AGENTS)
+
+    def offer_login(self, sid, names, midway=False):
+        """names 중 로그인이 안 된 쪽만 로그인 링크를 받아 대화창에 띄우고 결과를 지켜본다.
+        midway=True 는 쓰는 도중 로그인이 풀려 멈춘 경우(한 달쯤 지나 토큰이 만료되는 등)"""
+        if not hasattr(self, "login_lock"):
+            self.login_lock = threading.Lock()
+        with self.login_lock:
+            if not hasattr(self, "login_pending"):
+                self.login_pending = set()
+            need = [n for n in names if n not in self.login_pending and not login_ok(n)]
+            if not need or self.stop.is_set():
+                return
+            self._offer_login(sid, need, midway)
+            if self.login_pending and not getattr(self, "login_watching", False):
+                self.login_watching = True
+                threading.Thread(target=self.watch_login, args=(sid,), daemon=True).start()
+
+    def _offer_login(self, sid, need, midway):
+        self.login_sid = getattr(self, "login_sid", {})
+        for n in need:
+            self.login_sid[n] = sid
+            try:
+                url = login_start(n)
+            except (OSError, UserError) as error:
+                server_log("login.first_run.start", error)
+                with state(True, sid) as s:
+                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 필요", f"로그인 링크를 받지 못했어요. 터미널에서 {'claude 실행 후 /login' if n == 'claude' else 'codex login'}으로 로그인하세요."), "event")
+                continue
+            self.login_pending.add(n)
+            how = ("링크를 열어 로그인한 뒤, 화면에 나온 코드를 이 채팅창에 붙여 넣어 보내세요." if n == "claude"
+                   else "링크를 이 PC 브라우저에서 열면 로그인이 끝나요.")
+            with state(True, sid) as s:
+                if midway:
+                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 풀림", f"로그인이 풀려서 {disp(n)}가 멈췄어요. {how} 로그인이 끝나면 하던 일을 이어서 해요.\n{url}"), "event")
+                else:
+                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 필요", f"쓰려면 로그인이 필요해요. {how}\n{url}"), "event")
+
+    LOGIN_TRIES = 3          # 실패·만료 때 새 링크를 받아 다시 시도하는 최대 횟수(처음 포함)
+    LOGIN_WAIT = 620         # 링크 하나를 기다리는 시간(로그인 과정은 600초 뒤 스스로 끝남)
+
+    def watch_login(self, sid):
+        """띄운 로그인 과정이 끝나면 결과를 알린다. 실패·만료면 새 링크를 받아 다시 안내하고(최대 LOGIN_TRIES번),
+        성공하면 로그인 오류로 멈춘 에이전트를 다시 움직인다"""
+        tries, started, deadline = {}, {}, {}
+        while not self.stop.is_set():
+            with self.login_lock:
+                if not self.login_pending:
+                    self.login_watching = False
+                    return
+                pending = list(self.login_pending)
+            for n in pending:
+                if n not in started:   # 지켜보는 도중에 새로 로그인이 풀린 쪽
+                    tries[n], started[n] = 1, time.time()
+                    deadline[n] = started[n] + self.LOGIN_WAIT
+                if login_alive(login_paths(n)[2]) and time.time() < deadline[n]:
+                    continue
+                ok = login_ok(n)
+                if ok:
+                    self.login_pending.discard(n)
+                    with state(True, self.login_sid.get(n, sid)) as s:
+                        post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요."), "event")
+                    for team in list(self.teams.values()):
+                        w = team["w"].get(n)
+                        if w and w.paused and getattr(w, "error_kind", None) == "auth":
+                            # 재개 버튼과 같게: 멈춘 차례를 다시 실행
+                            w.paused, w.error, w.error_kind = False, None, None
+                            w.cont = w.chatter = 0
+                            w.nudge_state = {}
+                            w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
+                            w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
+                            w.save_checkpoint()
+                    for d in (tries, started, deadline):
+                        d.pop(n, None)
+                    continue
+                # 로그인 과정은 600초 뒤 timeout 으로 먼저 끝나므로, 그 무렵 끝났으면 만료로 본다
+                expired = time.time() - started[n] >= min(600, self.LOGIN_WAIT) - 5
+                url = None
+                if tries[n] < self.LOGIN_TRIES:
+                    try:
+                        url = login_start(n)
+                    except (OSError, UserError) as error:
+                        server_log("login.retry.start", error)
+                if url:
+                    tries[n] += 1
+                    started[n] = time.time()
+                    deadline[n] = started[n] + self.LOGIN_WAIT
+                    how = ("새 링크로 다시 로그인한 뒤, 화면에 나온 코드를 이 채팅창에 붙여 넣어 보내세요." if n == "claude"
+                           else "새 링크를 이 PC 브라우저에서 열면 로그인이 끝나요.")
+                    why = "10분 안에 로그인이 끝나지 않아 링크를 새로 받았어요." if expired else "로그인이 끝나지 않았어요."
+                    with state(True, self.login_sid.get(n, sid)) as s:
+                        post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 다시 시도", f"{why} {how}\n{url}"), "event")
+                    continue
+                self.login_pending.discard(n)
+                with state(True, self.login_sid.get(n, sid)) as s:
+                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 안 됨",
+                         f"로그인을 {tries[n]}번 시도했지만 끝나지 않았어요. 터미널에서 {'claude 를 실행한 뒤 /login' if n == 'claude' else 'codex login'} 으로 로그인한 뒤 Office 를 다시 켜세요."), "event")
+                for d in (tries, started, deadline):
+                    d.pop(n, None)
+            self.stop.wait(1)
+
+    def take_login_code(self, sid, text):
+        """Claude 로그인 중에 사용자가 보낸 코드면 요청으로 만들지 않고 로그인에 넣는다.
+        로그인 과정이 이미 끝났는데 Claude 코드 모양(코드#상태)이 오면, 요청으로 새지 않게 막고 안내만 한다"""
+        code = text.strip()
+        if "claude" in getattr(self, "login_pending", ()) and re.fullmatch(r"[A-Za-z0-9_#~.\-]{20,}", code):
+            login_feed("claude", code)
+            with state(True, sid) as s:
+                post(s, "system", "user", "Claude 로그인 코드를 넣었어요. 확인하는 중이에요.", "event")
+            return True
+        if re.fullmatch(r"[A-Za-z0-9_\-]{20,}#[A-Za-z0-9_\-]{10,}", code):
+            # 로그인 과정이 끝난 뒤 늦게 붙여 넣은 코드는 로그인 성공 여부와 상관없이 요청으로 만들지 않는다
+            body = ("Claude 는 이미 로그인돼 있어요. 붙여 넣은 코드는 쓰지 않았어요." if login_ok("claude")
+                    else "로그인 링크가 이미 끝나서 코드를 넣지 못했어요. Office 를 다시 켜면 새 링크를 받아요.")
+            with state(True, sid) as s:
+                post(s, "system", "user", ui_notice("Claude 로그인 코드 확인", body), "event")
+            return True
+        return False
+
     def check_stall(self, sid):
         """열린 요청이 STALL_NOTICE 초 동안 아무도 일하지 않고 진척도 없으면 사용자에게 한 번 알리고 리더에게 점검 차례를 준다"""
         team = self.teams.get(sid)
@@ -2983,6 +3150,8 @@ class Office:
                     self.purge(m, x)
         elif act == "merge":
             msg = self.merge(sid)
+        elif act in ("job", "msg") and self.take_login_code(sid, p["text"]):
+            msg = "로그인 코드를 넣었어요."
         elif act == "job":
             touch(sid, p["text"], request=True)
             with state(True, sid=sid) as s:
@@ -3228,6 +3397,8 @@ def make_handler(office):
 def serve():
     load_limits()   # 에이전트 시작 전에 지난 관측의 유효한 창을 복원
     office = Office()
+    global LOGIN_HOOK
+    LOGIN_HOOK = office.offer_login
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(office))
     srv.daemon_threads = True
@@ -3238,6 +3409,7 @@ def serve():
     office.sync_teams()
     threading.Thread(target=codex_limits, daemon=True).start()    # 과거 관측을 보조로 표시
     threading.Thread(target=check_update, args=(office.stop,), daemon=True).start()
+    threading.Thread(target=office.first_run_login, daemon=True).start()   # 처음 쓰는 사람은 로그인부터
     for name in AGENTS:
         threading.Thread(target=refresh_provider_limits, args=(name, office.stop), daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGHUP):     # office stop / 콘솔 창 닫기
