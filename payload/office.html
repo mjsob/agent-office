@@ -331,17 +331,36 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .empty.center { text-align: center; padding: 48px 0; }
 
 /* 업데이트 알림 */
-.update-notice { padding: 12px 14px; border: 2px solid var(--codex); border-radius: 10px; background: var(--codex-soft); font-size: 13px; }
-#updateTitle { color: var(--codex); font-size: 14px; }
+body { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+body > header { grid-row: 1; }
+body > main { grid-row: 3; }
+body > footer { grid-row: 4; }
+.update-notice { grid-row: 2; padding: 12px 20px; border-bottom: 1px solid var(--codex); background: var(--codex-soft); color: var(--text); font-size: 13px; letter-spacing: 0; word-break: keep-all; }
+.update-row { display: flex; align-items: center; gap: 12px; }
+.update-heading { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.update-heading > .i { color: var(--codex); width: 20px; height: 20px; }
+#updateTitle { font-size: 14px; font-weight: 700; }
+.update-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; flex: none; }
 #updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 700; padding: 7px 14px; }
+.update-notice .update-text { border: 0; background: none; padding: 4px 0; color: var(--text); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.update-close { background: none; border: 0; padding: 6px; color: var(--text); }
+.update-notice button:disabled { cursor: default; }
+.update-notice button:focus-visible, .update-badge:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 .update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 700; }
-@media (max-width: 600px) { body.has-update header { flex-wrap: wrap; } .update-badge { order: 10; width: 100%; justify-content: center; } }
-.update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.update-notice button { flex: none; }
-.update-notice button:disabled { cursor: default; opacity: .6; }
-#updateMessage { color: var(--muted); }
-#updateDetails summary { cursor: pointer; margin-top: 4px; }
-#updateNotes { max-width: 100%; max-height: min(20vh, 160px); overflow: auto; padding: 4px 0; }
+#updateMessage { margin-left: 29px; margin-top: 3px; color: var(--text); }
+#updateMessage:empty { display: none; }
+#updateDetails { margin: 10px 0 0 29px; padding-top: 8px; border-top: 1px solid var(--codex); }
+#updateNotes { max-width: 100%; max-height: min(25vh, 200px); overflow: auto; padding: 0; }
+@media (max-width: 600px) {
+  body.has-update-badge header { flex-wrap: wrap; }
+  .update-badge { order: 10; width: 100%; justify-content: center; }
+  .update-notice { padding: 12px; }
+  .update-row { flex-wrap: wrap; gap: 8px; }
+  .update-heading { flex: 1; }
+  .update-actions { width: calc(100% - 29px); margin-left: 29px; gap: 14px; }
+  .update-close { margin-left: auto; }
+  #updateDetails { margin-left: 0; }
+}
 /* 입력 */
 footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
 .bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -429,6 +448,21 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="quit" class="ghost" title="에이전트와 서버를 모두 종료합니다"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
 </header>
 
+<section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
+  <div class="update-row">
+    <div class="update-heading"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg><strong id="updateTitle"></strong></div>
+    <div class="update-actions">
+      <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()">변경 내용</button>
+      <button id="updateButton" onclick="startUpdate()">업데이트</button>
+      <button id="updateToday" class="update-text" onclick="dismissUpdate(true)">오늘 보지 않기</button>
+      <button id="updateClose" class="update-close" aria-label="업데이트 알림 닫기" onclick="dismissUpdate(false)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+  </div>
+  <div id="updateMessage"></div>
+  <div id="updateDetails" hidden><div id="updateNotes" class="msg"><div class="body"></div></div></div>
+</section>
+
+
 <main>
   <section class="sessions">
     <button class="newbtn" id="newSession"><svg class="i sm"><use href="#i-plus"/></svg>새 대화</button>
@@ -443,11 +477,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 </main>
 
 <footer>
-  <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
-    <div class="update-row"><strong id="updateTitle"></strong><button id="updateButton" onclick="startUpdate()">업데이트</button></div>
-    <div id="updateMessage"></div>
-    <details id="updateDetails"><summary>변경 내용 보기</summary><div id="updateNotes" class="msg"><div class="body"></div></div></details>
-  </section>
   <div class="bar">
     <div class="seg" id="modes" role="group" aria-label="보낼 대상">
       <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두에게</button>
@@ -512,27 +541,55 @@ function setMode(m) {
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 
 let updateState = {}, updateSubmitting = false, updateSignature = "";
+const closedUpdateVersions = new Set();
+let reopenedUpdateKey = "";
+const updateDay = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+const updateKey = () => `${updateDay()}:${updateState.latest || ""}`;
+function dismissUpdate(today) {
+  if (updateSubmitting || ["running", "restarting", "failed"].includes(updateState.state)) return;
+  if (today) {
+    try { localStorage.officeUpdateHidden = JSON.stringify({date: updateDay(), version: updateState.latest}); } catch (e) {}
+  } else closedUpdateVersions.add(updateState.latest);
+  reopenedUpdateKey = "";
+  renderUpdate();
+  $("#updateBadge").focus({preventScroll: true});
+}
 function showUpdateNotice() {
+  reopenedUpdateKey = updateKey();
+  renderUpdate();
   $("#updateNotice").scrollIntoView({block: "nearest"});
   $("#updateButton").focus({preventScroll: true});
 }
-function renderUpdate(u) {
+function toggleUpdateNotes() {
+  const panel = $("#updateDetails"), button = $("#updateNotesToggle");
+  panel.hidden = !panel.hidden;
+  button.setAttribute("aria-expanded", String(!panel.hidden));
+}
+function renderUpdate(u = updateState) {
   if (!u || typeof u !== "object") return;
   updateState = u;
   const busy = updateSubmitting || ["running", "restarting"].includes(u.state);
   const failed = u.state === "failed";
-  const visible = !!(u.available || busy || failed);
+  let dismissed = closedUpdateVersions.has(u.latest);
+  try {
+    const saved = JSON.parse(localStorage.officeUpdateHidden || "null");
+    dismissed ||= saved?.date === updateDay() && saved?.version === u.latest;
+  } catch (e) {}
+  const eligible = !!(u.available || busy || failed);
+  const visible = eligible && (busy || failed || !dismissed || reopenedUpdateKey === updateKey());
   $("#updateNotice").hidden = !visible;
-  $("#updateBadge").hidden = !visible;
-  document.body.classList.toggle("has-update", visible);
-  $("#updateBadge").textContent = busy ? "업데이트하고 있어요" : failed ? "업데이트를 확인하세요" : `새 버전 ${u.latest || ""}이 나왔어요`;
+  $("#updateBadge").hidden = !eligible || visible;
+  document.body.classList.toggle("has-update-badge", eligible && !visible);
+  $("#updateToday").hidden = $("#updateClose").hidden = busy || failed;
+  $("#updateBadge").textContent = `새 버전 ${u.latest || ""}이 나왔어요`;
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : `새 버전 ${u.latest || ""}이 나왔어요`;
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
     : busy ? "설치가 끝날 때까지 기다리세요." : !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
-  $("#updateDetails").hidden = !u.notes;
+  $("#updateNotesToggle").hidden = !u.notes;
+  if (!u.notes) { $("#updateDetails").hidden = true; $("#updateNotesToggle").setAttribute("aria-expanded", "false"); }
   if (updateSignature !== String(u.notes || "")) {
     updateSignature = String(u.notes || "");
     $("#updateNotes .body").innerHTML = md(updateSignature, false);
