@@ -25,6 +25,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, parse_qs
 
 AGENTS = ("claude", "codex")
+ROTATE_CTX = int(os.environ.get("OFFICE_ROTATE_CTX") or 150_000)   # 새 요청 시작 때 이보다 긴 세션은 새로 시작
 POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반영
 MODEL_FALLBACKS = {"codex": ["gpt-6-sol", "gpt-6-luna"], "claude": ["sonnet", "opus"]}
 MAX_CONT = 2          # 하던 일 남았는데 조용할 때 "이어서 해" 재촉 횟수
@@ -1483,6 +1484,9 @@ class Worker:
                 payload = ev.get("payload") or {}
                 if ev.get("type") == "event_msg" and payload.get("type") == "token_count":
                     total = (payload.get("info") or {}).get("total_token_usage")
+                    last = (payload.get("info") or {}).get("last_token_usage")
+                    if isinstance(last, dict) and last.get("input_tokens"):
+                        self.ctx_tokens = last["input_tokens"]   # 마지막 모델 호출에 실린 컨텍스트 크기
                 elif ev.get("type") == "token_usage_record":
                     total = payload.get("thread_token_usage")
                 else:
@@ -1532,15 +1536,23 @@ class Worker:
 
     def complete_codex_usage(self, usage):
         with self.usage_lock:
-            cached = usage.get("cached_input_tokens", 0)
-            tokens = max(0, usage.get("input_tokens", 0) - cached) + usage.get("output_tokens", 0)
+            # 재개 완료 이벤트가 thread 누적값이면 시작값을 빼고 이번 차례만 세요.
+            baseline = self.rollout_baseline if self.usage_tracking else {}
+            keys = ("input_tokens", "cached_input_tokens", "output_tokens")
+            cumulative = bool(baseline) and all(usage.get(k, 0) >= baseline.get(k, 0) for k in keys)
+            delta = {k: max(0, usage.get(k, 0) - baseline.get(k, 0)) if cumulative else usage.get(k, 0) for k in keys}
+            # 완료 직전 rollout도 읽고 stdout에 사용량이 없으면 보완해요.
+            if self.usage_tracking:
+                self.update_codex_usage(force=True)
+                if not usage and self.rollout_total:
+                    delta = {k: max(0, self.rollout_total.get(k, 0) - baseline.get(k, 0)) for k in keys}
+            cached = delta["cached_input_tokens"]
+            tokens = max(0, delta["input_tokens"] - cached) + delta["output_tokens"]
             counted, cache_counted = self.turn_counted if self.usage_tracking else (0, 0)
             self.add_tokens(max(0, tokens - counted), cached=max(0, cached - cache_counted))
             if self.usage_tracking:
-                # 파일 쓰기가 stdout 완료보다 늦어도 다음 차례에 지난 사용량을 다시 더하지 않음.
                 self.rollout_expected_thread = getattr(self, "thread", None)
-                self.rollout_expected = {k: self.rollout_baseline.get(k, 0) + usage.get(k, 0)
-                                         for k in ("input_tokens", "cached_input_tokens", "output_tokens")}
+                self.rollout_expected = {k: max(self.rollout_total.get(k, 0), baseline.get(k, 0) + delta[k]) for k in keys}
             self.usage_tracking = False
 
     def agent_log(self, text):
@@ -1752,6 +1764,9 @@ class Worker:
                 if sub:
                     self.act("sub", "보조 종료: " + sub["desc"])
         if ev.get("type") == "assistant":
+            u = ev.get("message", {}).get("usage")
+            if isinstance(u, dict) and not ev.get("parent_tool_use_id"):   # 보조 에이전트 말고 본 세션의 지금 컨텍스트 크기
+                self.ctx_tokens = sum(u.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
             for c in ev.get("message", {}).get("content", []):
                 if c.get("type") == "text" and c["text"].strip():
                     self.act("text", c["text"].strip())
@@ -2064,6 +2079,35 @@ class Worker:
                     server_log("worker.error.persist", storage_error)
                 self.stop.wait(POLL)
 
+    def rotate_session(self, job, desc):
+        """세션이 길어지면 차례마다 이전 대화를 통째로 다시 읽어 느려지고 사용량도 많이 든다.
+        새 요청을 처음 맡는 차례에서 컨텍스트가 ROTATE_CTX 토큰을 넘었으면 새 세션으로 시작한다(요청 도중엔 안 바꿈)"""
+        new_request = job is not None and job != getattr(self, "ctx_job", None)
+        if new_request:
+            self.ctx_job = job
+        if not new_request or getattr(self, "ctx_tokens", 0) <= ROTATE_CTX:
+            return False
+        (sdir(self.sid) / f"{self.name}.sid").unlink(missing_ok=True)
+        self.agent_log(f"새 세션으로 교체: 컨텍스트 {self.ctx_tokens}토큰 > {ROTATE_CTX} (요청 {job} 시작)")
+        server_log("agent.rotate." + self.name)
+        self.ctx_tokens = 0
+        return True
+
+    def wait_change(self, timeout):
+        """할 일이 없을 때 쉬는 시간. 작업판·메시지(state.json)가 바뀌면 바로 깨어나 다음 차례를 빨리 잡는다.
+        office 명령은 별도 프로세스라 파일 변화로만 알 수 있어 0.1초마다 수정 시각만 본다(읽기·해석은 안 함)"""
+        path = sdir(self.sid) / "state.json"
+        def mark():
+            try:
+                st = path.stat()
+                return st.st_mtime_ns, st.st_size
+            except OSError:
+                return None
+        before, end = mark(), time.monotonic() + timeout
+        while not self.stop.is_set() and time.monotonic() < end:
+            if self.stop.wait(0.1) or mark() != before:
+                return
+
     def _loop(self, office):
         sid = self.sid
         while not (self.stop.is_set() or office.stop.is_set()):
@@ -2086,7 +2130,7 @@ class Worker:
                 missed = missed_text(s["msgs"][self.read_upto:], self.name)
                 title_history = request_history(s["jobs"])
             if not nt:
-                self.idle(); self.stop.wait(POLL)
+                self.idle(); self.wait_change(POLL)
                 continue
             tail, job, desc, new = nt
             if self.resume_turn and not self.restart_reported:
@@ -2112,7 +2156,11 @@ class Worker:
             self.status, self.since, self.doing = "working", time.time(), {"kind": desc, "job": job}
             self.save_checkpoint()   # 첫 차례 도중 서버가 꺼져도 재시작 후 이 메시지부터 다시 읽게 시작 위치를 남김
             self.act("start", f"{desc}|{job or ''}")
+            rotated = self.rotate_session(job, desc)
             prompt = PROTOCOL.format(me=self.name, other=self.other) + f"\n현재 상황:\n{snap}\n\n"
+            if rotated:
+                prompt += ("이번 차례부터 새 세션이다(이전 세션이 너무 길어져 속도를 위해 바꿨다). 이전 대화 내용은 기억나지 않으니 "
+                           "위 현재 상황·최근 대화와 아래 요청 이력, 저장소 파일로 맥락을 파악해라.\n\n")
             if missed:
                 prompt += f"네 지난 차례 이후 네가 직접 받지 못한 대화 (사용자·동료끼리 나눈 내용, 맥락 파악용):\n{missed}\n\n"
             if self.resume_turn and self.resume_turn.get("job") == job:
