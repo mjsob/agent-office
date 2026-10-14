@@ -1260,7 +1260,7 @@ function secsAgo(hms) {
 const quietSecs = (ts, since) => Math.min(secsAgo(ts) ?? Infinity, Math.max(0, Date.now() / 1000 - since));
 const dur = d => d < 60 ? `${Math.floor(d)}초` : d < 3600 ? `${Math.floor(d / 60)}분` : `${Math.floor(d / 3600)}시간`;
 // 평소엔 숨기고, 1분 넘게 조용할 때만 '멈췄나?'를 알 수 있게 띄움
-const pulseText = d => `${dur(d)}째 응답 없음`;
+const pulseText = d => `마지막 활동 ${dur(d)} 전`;
 function updatePulses() {
   document.querySelectorAll("#agents .pulse").forEach(el => {
     const d = quietSecs(el.dataset.last, +el.dataset.since);
