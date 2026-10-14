@@ -2507,7 +2507,7 @@ def refresh_provider_limits(name, stop):
 UPDATE_REPO = os.environ.get("OFFICE_REPO", "mjsob/agent-office")
 UPDATE_ASSET = "office-installer.tar.gz"
 UPDATE_LOCK = threading.Lock()
-UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None, "checked_at": None, "error": None, "date": None, "checking": False}
+UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None, "checked_at": None, "error": None, "date": None, "checking": False, "retry_at": 0, "etag": None}
 UPDATE_WAKE = threading.Event()   # 화면의 '지금 확인'이 깨움
 
 
@@ -2515,7 +2515,9 @@ def update_error_text(error):
     """확인 실패를 화면에 보여 줄 짧은 사유로. 로그에는 종류·세부를 따로 남긴다"""
     reason = getattr(error, "reason", None)
     if isinstance(error, HTTPError):
-        return "깃허브 조회 한도를 넘었어요" if error.code in (403, 429) else f"깃허브 응답 오류 {error.code}"
+        if error.code in (403, 429):
+            return "깃허브 조회 한도를 넘었어요"
+        return f"깃허브 응답 오류 {error.code}"
     if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(error, ssl.SSLCertVerificationError):
         return "인증서를 확인하지 못했어요"
     if isinstance(reason, (TimeoutError, socket.timeout)) or isinstance(error, (TimeoutError, socket.timeout)):
@@ -2550,6 +2552,9 @@ def install_paths():
 def update_info():
     with UPDATE_LOCK:
         info = dict(UPDATE)
+    if info.get("error") and (info.get("retry_at") or 0) > time.time():
+        minutes = max(1, math.ceil((info["retry_at"] - time.time()) / 60))
+        info["error"] = f"깃허브 조회 한도를 넘었어요. {minutes}분 뒤 다시 확인해요"
     current = office_version()
     info["current"] = current
     info["available"] = bool(info["latest"]) and version_key(info["latest"]) > version_key(current)
@@ -2559,47 +2564,115 @@ def update_info():
     return info
 
 
+def update_retry_at(error):
+    now = time.time()
+    times = [now + 60]
+    headers = getattr(error, "headers", None) or {}
+    for name, relative in (("X-RateLimit-Reset", False), ("Retry-After", True)):
+        try:
+            value = float(headers.get(name, ""))
+            if math.isfinite(value) and value > 0:
+                times.append(now + value if relative else value)
+        except (TypeError, ValueError):
+            pass
+    return max(times)
+
+
+UPDATE_CACHE_FIELDS = ("latest", "notes", "url", "date", "checked_at", "etag", "retry_at", "error")
+
+
+def load_update_cache():
+    try:
+        saved = read_json_file(D / "update-cache.json", {})
+        if not isinstance(saved, dict) or saved.get("repo") != UPDATE_REPO:
+            return
+        stamp = saved.get("checked_at")
+        if stamp is not None and (type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp < 0):
+            return
+        retry = saved.get("retry_at", 0)
+        if type(retry) not in (int, float) or not math.isfinite(retry) or retry < 0:
+            return
+        for key in ("latest", "notes", "url", "date", "etag", "error"):
+            if saved.get(key) is not None and not isinstance(saved[key], str):
+                return
+        with UPDATE_LOCK:
+            UPDATE.update({k: saved[k] for k in UPDATE_CACHE_FIELDS if k in saved})
+            UPDATE["checking"] = False
+    except (OSError, UserError) as error:
+        server_log("update.cache.load", error)
+
+
+def save_update_cache():
+    try:
+        with UPDATE_LOCK:
+            saved = {"repo": UPDATE_REPO, **{k: UPDATE.get(k) for k in UPDATE_CACHE_FIELDS}}
+        atomic_json(D / "update-cache.json", saved)
+    except (OSError, UserError) as error:
+        server_log("update.cache.save", error)
+
+
 def check_update(stop):
-    """깃허브 릴리스 목록에서 가장 새 버전을 찾는다. 여러 버전을 건너뛰었으면 그사이 변경 내용을 버전별로 모아 보여 준다.
-    설치는 항상 최신 묶음 하나로 하므로 중간 버전을 차례로 깔 필요가 없다"""
+    """최근 성공 결과를 쓰고 확인 실패 때도 마지막 업데이트 정보를 남겨요."""
+    load_update_cache()
     url = f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=30"
+    with UPDATE_LOCK:
+        next_check = (UPDATE.get("retry_at") or 0) if UPDATE.get("error") else (UPDATE.get("checked_at") or 0) + 1800
     while not stop.is_set():
+        now = time.time()
+        with UPDATE_LOCK:
+            retry_at = UPDATE.get("retry_at") or 0
+        manual = UPDATE_WAKE.is_set()
+        if now < retry_at or (now < next_check and not manual):
+            UPDATE_WAKE.clear()
+            with UPDATE_LOCK:
+                UPDATE["checking"] = False
+            stop.wait(.25)
+            continue
         UPDATE_WAKE.clear()
         with UPDATE_LOCK:
             UPDATE["checking"] = True
+            etag = UPDATE.get("etag")
+            had_success = UPDATE.get("checked_at") is not None
         try:
-            req = urlrequest.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "office-update"})
-            with urlrequest.urlopen(req, timeout=20, context=provider_ssl_context()) as r:
-                rels = [x for x in json.loads(r.read()) if isinstance(x, dict) and not x.get("draft") and not x.get("prerelease")]
-            for x in rels:
-                x["version"] = str(x.get("tag_name") or "").lstrip("v")
-            rels = sorted((x for x in rels if x["version"]), key=lambda x: version_key(x["version"]), reverse=True)
-            current = version_key(office_version())
-            newer = [x for x in rels if version_key(x["version"]) > current]
-            day = lambda x: str(x.get("published_at") or "")[:10]
-            notes = "\n\n".join(f"### {x['version']}" + (f" · {day(x)}" if day(x) else "") + f"\n\n{str(x.get('body') or '').strip()}"
-                                  for x in (newer or rels[:1]))
-            with UPDATE_LOCK:
-                UPDATE.update(latest=rels[0]["version"] if rels else None, notes=notes[:6000],
-                              url=rels[0].get("html_url") if rels else None,
-                              date=str(rels[0].get("published_at") or "")[:10] or None if rels else None)
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            reason = getattr(error, "reason", None)
-            detail = f"{type(error).__name__}" + (f" reason={type(reason).__name__}: {str(reason)[:160]}" if reason is not None else f": {str(error)[:160]}")
+            headers = {"Accept": "application/vnd.github+json", "User-Agent": "office-update"}
+            if etag and had_success:
+                headers["If-None-Match"] = etag
+            req = urlrequest.Request(url, headers=headers)
             try:
-                with open(D / "server.log", "a") as log:
-                    log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] update.check: {detail}\n")
-            except OSError:
-                pass
+                response = urlrequest.urlopen(req, timeout=20, context=provider_ssl_context())
+            except HTTPError as error:
+                if error.code != 304 or not had_success:
+                    raise
+                error.close()
+                response = None
+            if response is not None:
+                with response as r:
+                    rels = [x for x in json.loads(r.read()) if isinstance(x, dict) and not x.get("draft") and not x.get("prerelease")]
+                    new_etag = r.headers.get("ETag")
+                for x in rels:
+                    x["version"] = str(x.get("tag_name") or "").lstrip("v")
+                rels = sorted((x for x in rels if x["version"]), key=lambda x: version_key(x["version"]), reverse=True)
+                current = version_key(office_version())
+                newer = [x for x in rels if version_key(x["version"]) > current]
+                day = lambda x: str(x.get("published_at") or "")[:10]
+                notes = "\n\n".join(f"### {x['version']}" + (f" · {day(x)}" if day(x) else "") + f"\n\n{str(x.get('body') or '').strip()}" for x in (newer or rels[:1]))
+                with UPDATE_LOCK:
+                    UPDATE.update(latest=rels[0]["version"] if rels else None, notes=notes[:6000],
+                                  url=rels[0].get("html_url") if rels else None,
+                                  date=(day(rels[0]) or None) if rels else None, etag=new_etag)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            server_log("update.check", error)
+            rate = isinstance(error, HTTPError) and error.code in (403, 429)
             with UPDATE_LOCK:
-                UPDATE.update(checked_at=time.time(), error=update_error_text(error), checking=False)
+                UPDATE.update(error=update_error_text(error), checking=False,
+                              retry_at=update_retry_at(error) if rate else 0)
+            next_check = time.time() + (60 if rate else 3600)
+            save_update_cache()
         else:
             with UPDATE_LOCK:
-                UPDATE.update(checked_at=time.time(), error=None, checking=False)
-        for _ in range(720):   # 한 시간마다 다시 확인. '지금 확인'이나 종료면 바로 깸
-            if stop.is_set() or UPDATE_WAKE.is_set():
-                break
-            time.sleep(5)
+                UPDATE.update(checked_at=time.time(), error=None, checking=False, retry_at=0)
+            next_check = time.time() + 3600
+            save_update_cache()
 
 
 def run_update(office):
@@ -3284,8 +3357,14 @@ class Office:
             self.shutdown()
         elif act == "update_check":
             with UPDATE_LOCK:
-                UPDATE["checking"] = True     # 화면이 바로 '확인하는 중'을 보여 주게
-            UPDATE_WAKE.set()
+                blocked = (UPDATE.get("retry_at") or 0) > time.time()
+                if blocked:
+                    minutes = max(1, math.ceil((UPDATE["retry_at"] - time.time()) / 60))
+                    msg = f"깃허브 조회 한도를 넘었어요. {minutes}분 뒤 다시 확인해요"
+                else:
+                    UPDATE["checking"] = True
+            if not blocked:
+                UPDATE_WAKE.set()
         elif act == "update":
             if not update_info()["available"]:
                 raise UserError("이미 최신 버전이에요.")

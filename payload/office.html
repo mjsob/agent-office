@@ -636,7 +636,7 @@ function renderUpdate(u = updateState) {
   updateState = u;
   if (updateChecking) {
     if (u.checking) updateCheckSawRunning = true;
-    else if (updateCheckSawRunning || (u.checked_at != null && u.checked_at !== updateCheckBaseline)) {
+    else if (u.error || updateCheckSawRunning || (u.checked_at != null && u.checked_at !== updateCheckBaseline)) {
       updateChecking = false;
       clearTimeout(updateCheckTimer);
     }
