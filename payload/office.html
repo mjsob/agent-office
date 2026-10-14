@@ -1006,7 +1006,7 @@ function renderAgents(agents) {
       <div class="top">
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
         <div class="meta">
-          <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(String(a.model).replace(/^claude-/, ""))}</span>` : ""}${a.status === "working" ? `<span class="el" title="이번 차례 작업 시간" data-since="${a.since}">${elapsed(a.since)}</span>` : ""}</div>
+          <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(String(a.model).replace(/^claude-/, ""))}</span>` : ""}</div>
           <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || "")}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
             a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div></div>
         <div class="ctl">${hot}
