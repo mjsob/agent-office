@@ -467,12 +467,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <header>
   <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
-  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="toggleUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" title="업데이트 확인" aria-label="버전과 업데이트 확인" hidden></button></div>
+  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="toggleUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" aria-label="버전과 업데이트 확인" hidden></button></div>
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
   <button id="theme" class="ghost" onclick="cycleTheme()"></button>
-  <button id="quit" class="ghost" title="에이전트와 서버를 모두 종료합니다"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
+  <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
 </header>
 
 <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
@@ -514,17 +514,17 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <footer>
   <div class="bar">
     <div class="seg" id="modes" role="group" aria-label="보낼 대상">
-      <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두에게</button>
+      <button class="on" data-m="job">모두에게</button>
       <button data-m="claude">Claude에게</button>
       <button data-m="codex">Codex에게</button>
     </div>
-    <label class="lead" id="leadBox" title="일을 나누고 마지막에 결과를 확인해 보고하는 쪽">리더
+    <label class="lead" id="leadBox">리더
       <select id="lead"><option value="claude">Claude</option><option value="codex">Codex</option></select>
     </label>
   </div>
   <div class="inrow">
     <textarea id="input" aria-label="메시지 입력"></textarea>
-    <button class="send" id="send" title="보내기 (Enter)" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
+    <button class="send" id="send" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
@@ -655,7 +655,8 @@ function renderUpdate(u = updateState) {
   const versionButton = $("#version"), unreadUpdate = !!u.available && !visible;
   versionButton.classList.toggle("has-update", unreadUpdate);
   const versionHint = unreadUpdate ? `새 버전 ${u.latest || ""} · 눌러서 보기` : `현재 버전 ${u.current || versionButton.textContent} · 업데이트 확인`;
-  versionButton.title = versionHint;
+  if (unreadUpdate) versionButton.title = `새 버전 ${u.latest || ""}`;
+  else versionButton.removeAttribute("title");
   versionButton.setAttribute("aria-label", versionHint);
   $("#updateToday").hidden = busy || failed || !u.available;
   $("#updateClose").hidden = busy || failed;
@@ -828,7 +829,7 @@ function applyTheme(t) {
   if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
   else delete document.documentElement.dataset.theme;
   const b = $("#theme");
-  if (b) { b.textContent = THEMES[t] || THEMES.auto; b.title = "화면 밝기 바꾸기 (자동은 윈도우 설정 따라감)"; }
+  if (b) { b.textContent = THEMES[t] || THEMES.auto; b.removeAttribute("title"); }
 }
 function cycleTheme() {
   const order = ["auto", "light", "dark"], cur = localStorage.officeTheme || "auto";
@@ -864,13 +865,13 @@ function renderSessions(list, cur) {
   const live = list.filter(x => !x.deleted).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.pinned && b.pinned ? (a.pinned_at || 0) - (b.pinned_at || 0) || a.id.localeCompare(b.id) : b.updated - a.updated));
   const dead = list.filter(x => x.deleted).sort((a, b) => b.deleted_at - a.deleted_at);
   if (renaming) return false;   // 이름 고치는 중엔 입력칸이 사라지지 않게 다시 그리지 않음
-  $("#slist").innerHTML = live.map(x => `<div class="sitem ${x.id === cur ? "on" : ""} ${x.unread ? "has-unread" : ""}" ${x.unread ? 'title="새 소식"' : ""} data-id="${esc(x.id)}" role="button" tabindex="0" onclick='sessionAct("switch","${esc(x.id)}")'>
-      <div class="sm-meta"><div class="stitle-row"><div class="stitle" title="더블클릭하면 이름 바꾸기" ondblclick='event.stopPropagation();startRename("${esc(x.id)}")'>${esc(x.title)}</div>${x.pinned ? `<span class="pin-mark" role="img" aria-label="고정된 대화" title="고정된 대화">${icon("pin", "sm")}</span>` : ""}</div>
-        <div class="ssub">${x.stopped ? `<span class="stop" title="이 대화의 에이전트가 멈춤 — 열어서 확인">⚠ 멈춤</span>` : ""}${x.busy ? `<span class="dot working" style="background:var(--ok)"></span>` : ""}${x.open ? `<span class="live">진행 중 ${x.open}</span>` : ""}<span>${ago(x.updated)}</span></div></div>
+  $("#slist").innerHTML = live.map(x => `<div class="sitem ${x.id === cur ? "on" : ""} ${x.unread ? "has-unread" : ""}"  data-id="${esc(x.id)}" role="button" tabindex="0" onclick='sessionAct("switch","${esc(x.id)}")'>
+      <div class="sm-meta"><div class="stitle-row"><div class="stitle" title="${esc(x.title)} · 두 번 눌러 이름 바꾸기" ondblclick='event.stopPropagation();startRename("${esc(x.id)}")'>${esc(x.title)}</div>${x.pinned ? `<span class="pin-mark" role="img" aria-label="고정된 대화" title="고정된 대화">${icon("pin", "sm")}</span>` : ""}</div>
+        <div class="ssub">${x.stopped ? `<span class="stop" >⚠ 멈춤</span>` : ""}${x.busy ? `<span class="dot working" style="background:var(--ok)"></span>` : ""}${x.open ? `<span class="live">진행 중 ${x.open}</span>` : ""}<span>${ago(x.updated)}</span></div></div>
       <div class="acts" onclick="event.stopPropagation()">
         <button class="ghost" title="${x.pinned ? "고정 해제" : "맨 위에 고정"}" aria-label="${x.pinned ? "고정 해제" : "맨 위에 고정"}" aria-pressed="${!!x.pinned}" onclick='sessionAct("pin","${x.id}")'>${icon("pin", "sm")}</button>
-        <button class="ghost" title="이름 바꾸기" onclick='sessionAct("rename","${x.id}")'>${icon("edit", "sm")}</button>
-        <button class="ghost" title="삭제" onclick='sessionAct("delete","${x.id}")'>${icon("trash", "sm")}</button></div>
+        <button class="ghost" title="이름 바꾸기" aria-label="이름 바꾸기" onclick='sessionAct("rename","${x.id}")'>${icon("edit", "sm")}</button>
+        <button class="ghost" title="삭제" aria-label="삭제" onclick='sessionAct("delete","${x.id}")'>${icon("trash", "sm")}</button></div>
     </div>`).join("");
   $("#trashLabel").textContent = dead.length ? `휴지통 (${dead.length})` : "휴지통";
   $("#emptyTrash").hidden = !dead.length;
@@ -945,8 +946,8 @@ function usageBlock(n, a) {
   const asof = L.at ? `<div class="tok"><span>한도 기준</span><span>${ago(L.at)}</span></div>` : "";
   return `<div class="usage">${rows ? rows + asof : '<div>사용 한도 정보 아직 없음</div>'}
     ${a.usage_since != null
-      ? `<div class="tok" title="${ago(a.usage_since)}부터 셈 · 캐시 읽기 ${fmtTok(a.cached_tokens)}는 비용이 낮아 따로 뺌"><span>이 대화에서 쓴 양</span><span>${fmtTok(a.tokens)} tokens</span></div>`
-      : `<div class="tok" title="Claude/Codex 집계 기준이 달라 비교 불가 — 서버 재시작 후 같은 기준으로 새로 셈"><span>이 대화에서 쓴 양 (예전 기준)</span><span>${fmtTok(a.tokens)} tokens</span></div>`}</div>`;
+      ? `<div class="tok" title="${ago(a.usage_since)}부터 · 캐시 ${fmtTok(a.cached_tokens)} 제외"><span>이 대화에서 쓴 양</span><span>${fmtTok(a.tokens)} tokens</span></div>`
+      : `<div class="tok" title="에이전트별 집계 기준이 달라요"><span>이 대화에서 쓴 양 (예전 기준)</span><span>${fmtTok(a.tokens)} tokens</span></div>`}</div>`;
 }
 
 // 활동 피드엔 사용자가 볼 것만: 차례 시작, 고친 파일, 작업판/메신저 동작. 읽기·검색·일반 명령·중간 독백은 횟수만
@@ -967,7 +968,7 @@ function feedRows(activity) {
   const flush = () => {
     if (!tools.length) return;
     const key = tools[0].ts + "|" + tools[0].text.slice(0, 60), last = tools.at(-1).text;
-    out.push(`<details class="row more" data-more="${esc(key)}" ${openMore.has(key) ? "open" : ""}><summary title="눌러서 명령 ${tools.length}개 펼치기"><span class="tx">명령 기록 ${tools.length}건 ·<span class="last">${one(last)}</span></span></summary>
+    out.push(`<details class="row more" data-more="${esc(key)}" ${openMore.has(key) ? "open" : ""}><summary><span class="tx">명령 기록 ${tools.length}건 ·<span class="last">${one(last)}</span></span></summary>
       <div class="cmds">${tools.map(t => `<div class="cmd" title="${esc(t.text)}"><span class="ts">${esc(t.ts || "")}</span><code>${one(t.text)}</code></div>`).join("")}</div></details>`);
     tools = [];
   };
@@ -1036,7 +1037,7 @@ function renderAgents(agents) {
     // 경고 뱃지는 가장 많이 찬 창 기준 (Codex처럼 7일 한도만 있는 경우도 잡히게)
     const [wk, L] = [["five_hour", "5시간"], ["seven_day", "7일"]].map(([k, lbl]) => [lbl, a.limits?.[k]])
       .filter(([, w]) => w && w.used != null).sort((x, y) => y[1].used - x[1].used)[0] || [];
-    const hot = L && L.used >= 80 ? `<span class="hot" title="${wk} 한도 ${L.used}% 사용 · 100%가 되면 이 에이전트가 멈춤 · ${resetIn(L.resets)}">한도 ${L.used}%</span>` : "";
+    const hot = L && L.used >= 80 ? `<span class="hot" title="${resetIn(L.resets)}">한도 ${L.used}%</span>` : "";
     return `<div class="agent">
       <div class="top">
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
@@ -1209,7 +1210,7 @@ function renderTimeline(msgs, jobs) {
   const old = items.slice(0, cut).filter(x => !x.m && x.job.status === "done");
   const rest = items.slice(0, cut).filter(x => !x.m && x.job.status !== "done").concat(items.slice(cut));
   const oldRow = x => expandedOld.has(x.job.id) ? threadHtml(x)
-    : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()" title="눌러서 펼치기">
+    : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
         ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
   const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
@@ -1261,14 +1262,14 @@ function renderBoard(jobs, tasks, resv = [], cur = "") {
     const st = j.cancelled ? "취소됨" : JOBST[j.status] ?? j.status;
     const jt = tasks.filter(t => t.job === j.id);
     return `<div class="job ${j.status === "done" ? "closed" : ""}">
-      <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}&#10;— 눌러서 대화창에서 보기" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${j.status}">${st}</span>
-        ${j.status !== "done" ? `<button class="ghost" title="요청 취소" onclick='cancelJob(${j.id})'>${icon("x", "sm")}</button>` : ""}</div>
+      <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${j.status}">${st}</span>
+        ${j.status !== "done" ? `<button class="ghost" aria-label="요청 취소" onclick='cancelJob(${j.id})'>${icon("x", "sm")}</button>` : ""}</div>
       <div class="sub">요청 ${j.id} · 리더 ${nm(j.lead)}${j.acting_lead ? ` → ${nm(j.acting_lead)} 대행` : ""} · 작업 ${jt.filter(t => t.status === "done").length}/${jt.length}</div>
       ${jt.map(taskRow).join("")}
     </div>`;
   }).join("") + (orphan.filter(t => t.status !== "done").length ? `<div class="job"><div class="hd"><span class="tx">개별 작업</span></div>${orphan.filter(t => t.status !== "done").map(taskRow).join("")}</div>` : "");
   // 끝난 요청: 최근 5건은 '요청 한 줄 + ↳ 답변 한 줄'로 펼쳐 보여주고, 나머지는 접음. 누르면 대화창의 그 요청으로 이동
-  const drow = j => `<div class="djob" role="button" tabindex="0" onclick="jumpTo(${j.id})" title="대화창에서 보기">
+  const drow = j => `<div class="djob" role="button" tabindex="0" onclick="jumpTo(${j.id})">
       <div class="q"><span class="no">${j.id}</span><span>${esc(firstLine(j.text))}</span>${j.cancelled ? '<span class="pill">취소됨</span>' : ""}</div>
       ${briefOf(j) ? `<div class="a">↳ ${esc(briefOf(j))}</div>` : ""}</div>`;
   const done = closed.length ? `<h2 class="donehd">끝난 요청</h2>${closed.slice(0, 5).map(drow).join("")}
@@ -1437,7 +1438,7 @@ async function doRefresh() {
       conn.textContent = e.name === "TypeError" || e.name === "TimeoutError"
         ? "서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하면 새 창이 열립니다 (이 창은 닫아도 됨)"
         : `서버가 상태를 못 보냈습니다: ${e.message}`;
-      conn.title = conn.textContent; conn.hidden = false;
+      conn.removeAttribute("title"); conn.hidden = false;
     }
     return;
   }
@@ -1456,7 +1457,7 @@ async function doRefresh() {
     if (follow) followDone = Math.max(followDone, gen);   // 조회 시작 뒤 또 전환했으면 다음 조회도 서버를 따라감
     // 서버가 보낸 경고(상태 파일 복구 등)는 헤더에 띄우고, 없으면 숨김
     const warn = (s.warnings || []).join(" · ");
-    $("#conn").textContent = warn; $("#conn").title = warn; $("#conn").hidden = !warn;
+    $("#conn").textContent = warn; $("#conn").removeAttribute("title"); $("#conn").hidden = !warn;
     $("#root").textContent = s.root;
     const version = typeof s.version === "string" ? s.version.trim() : "";
     $("#version").textContent = version ? "v" + version.replace(/^v/, "") : "";
