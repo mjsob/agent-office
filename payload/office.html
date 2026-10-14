@@ -38,7 +38,7 @@ svg.sm { width: 14px; height: 14px; }
 header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
 .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
-.version { color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.version { background: none; border: 0; padding: 2px 4px; text-decoration: underline; text-underline-offset: 3px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .brand .mark svg { width: 14px; height: 14px; }
 .root { color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn { font-size: 12px; color: var(--warn); }
@@ -349,7 +349,16 @@ body > footer { grid-row: 4; }
 .update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 700; }
 #updateMessage { margin-left: 29px; margin-top: 3px; color: var(--text); }
 #updateMessage:empty { display: none; }
-#updateDetails { margin: 10px 0 0 29px; padding-top: 8px; border-top: 1px solid var(--codex); }
+#updateDetails { margin: 10px 0 0 29px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.update-status { display: flex; align-items: center; gap: 12px; margin: 4px 0 0 29px; font-size: 12px; }
+#updateError { margin: 4px 0 0 29px; color: var(--warn); font-size: 12px; }
+.code-shell { margin: 8px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); overflow: hidden; }
+.code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--chip); white-space: normal; }
+.msg .body .code-toolbar .code-lang { margin: 0; }
+.copy-code { padding: 3px 8px; font-size: 12px; min-width: 64px; justify-content: center; }
+.msg .body .code-shell pre.codeblock { margin: 0; border: 0; border-radius: 0; }
+#timeline.empty-timeline { min-height: 100%; justify-content: center; align-items: center; }
+.empty-conversation { color: var(--faint); font-size: 25px; font-weight: 500; text-align: center; padding: 24px; }
 #updateNotes { max-width: 100%; max-height: min(25vh, 200px); overflow: auto; padding: 0; }
 @media (max-width: 600px) {
   body.has-update-badge header { flex-wrap: wrap; }
@@ -393,7 +402,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 /* 아주 좁은 화면(폰 폭): 헤더는 꼭 필요한 버튼만, 글자 버튼은 아이콘으로 */
 @media (max-width: 600px) {
   header { gap: 8px; padding: 8px 10px; }
-  header .root, header .version, #quit .lbl { display: none; }
+  header .root, #quit .lbl { display: none; }
   footer { padding: 8px 10px 10px; }
   .send { padding: 0 12px; }
   .send .lbl { display: none; }
@@ -439,7 +448,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <header>
   <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
-  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<span id="version" class="version" hidden></span></div>
+  <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="showUpdateNotice()" title="업데이트 확인" aria-label="버전과 업데이트 확인" hidden></button></div>
   <button id="updateBadge" class="update-badge" onclick="showUpdateNotice()" hidden></button>
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
@@ -458,6 +467,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <button id="updateClose" class="update-close" aria-label="업데이트 알림 닫기" onclick="dismissUpdate(false)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </div>
   </div>
+  <div class="update-status"><span id="updateChecked"></span><button id="updateCheck" class="update-text" onclick="checkUpdateNow()">지금 확인</button></div>
+  <div id="updateError" role="status" hidden></div>
   <div id="updateMessage"></div>
   <div id="updateDetails" hidden><div id="updateNotes" class="msg"><div class="body"></div></div></div>
 </section>
@@ -542,7 +553,7 @@ document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMod
 
 let updateState = {}, updateSubmitting = false, updateSignature = "";
 const closedUpdateVersions = new Set();
-let reopenedUpdateKey = "";
+let reopenedUpdateKey = "", updatePanelOpen = false, updateChecking = false;
 const updateDay = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
 const updateKey = () => `${updateDay()}:${updateState.latest || ""}`;
 function dismissUpdate(today) {
@@ -551,14 +562,16 @@ function dismissUpdate(today) {
     try { localStorage.officeUpdateHidden = JSON.stringify({date: updateDay(), version: updateState.latest}); } catch (e) {}
   } else closedUpdateVersions.add(updateState.latest);
   reopenedUpdateKey = "";
+  updatePanelOpen = false;
   renderUpdate();
   $("#updateBadge").focus({preventScroll: true});
 }
 function showUpdateNotice() {
+  updatePanelOpen = true;
   reopenedUpdateKey = updateKey();
   renderUpdate();
   $("#updateNotice").scrollIntoView({block: "nearest"});
-  $("#updateButton").focus({preventScroll: true});
+  (updateState.available ? $("#updateButton") : $("#updateCheck")).focus({preventScroll: true});
 }
 function toggleUpdateNotes() {
   const panel = $("#updateDetails"), button = $("#updateNotesToggle");
@@ -575,24 +588,52 @@ function renderUpdate(u = updateState) {
     const saved = JSON.parse(localStorage.officeUpdateHidden || "null");
     dismissed ||= saved?.date === updateDay() && saved?.version === u.latest;
   } catch (e) {}
-  const eligible = !!(u.available || busy || failed);
-  const visible = eligible && (busy || failed || !dismissed || reopenedUpdateKey === updateKey());
+  const eligible = !!(u.available || busy || failed || u.error);
+  const visible = updatePanelOpen || (eligible && (busy || failed || !dismissed || reopenedUpdateKey === updateKey()));
   $("#updateNotice").hidden = !visible;
   $("#updateBadge").hidden = !eligible || visible;
   document.body.classList.toggle("has-update-badge", eligible && !visible);
-  $("#updateToday").hidden = $("#updateClose").hidden = busy || failed;
-  $("#updateBadge").textContent = `새 버전 ${u.latest || ""}이 나왔어요`;
+  $("#updateToday").hidden = busy || failed || !u.available;
+  $("#updateClose").hidden = busy || failed;
+  $("#updateButton").hidden = !u.available && !busy && !failed;
+  $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
-    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : `새 버전 ${u.latest || ""}이 나왔어요`;
+    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전을 쓰고 있어요" : "새 버전을 확인하세요";
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
-    : busy ? "설치가 끝날 때까지 기다리세요." : !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
+    : busy ? "설치가 끝날 때까지 기다리세요." : u.available && !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
+  const age = Number.isFinite(u.checked_at) && u.checked_at > 0 ? Math.max(0, Math.floor((Date.now() / 1000 - u.checked_at) / 60)) : null;
+  $("#updateChecked").textContent = age === null ? "아직 확인하지 않았어요" : age === 0 ? "마지막 확인 방금 전" : `마지막 확인 ${age}분 전`;
+  $("#updateCheck").disabled = updateChecking || busy;
+  $("#updateCheck").textContent = updateChecking ? "확인 중" : "지금 확인";
+  $("#updateError").hidden = !u.error;
+  $("#updateError").textContent = u.error ? `확인 실패: ${u.error}` : "";
   $("#updateNotesToggle").hidden = !u.notes;
   if (!u.notes) { $("#updateDetails").hidden = true; $("#updateNotesToggle").setAttribute("aria-expanded", "false"); }
   if (updateSignature !== String(u.notes || "")) {
     updateSignature = String(u.notes || "");
     $("#updateNotes .body").innerHTML = md(updateSignature, false);
+  }
+}
+async function checkUpdateNow() {
+  if (updateChecking) return;
+  updateChecking = true;
+  renderUpdate();
+  try { await api({action: "update_check"}); }
+  finally { updateChecking = false; renderUpdate(); }
+}
+async function copyCode(button) {
+  const code = button.closest(".code-shell").querySelector("pre code").textContent;
+  try {
+    await navigator.clipboard.writeText(code);
+    button.textContent = "복사됐어요";
+    button.setAttribute("aria-label", "코드를 복사했어요");
+    clearTimeout(button.copyTimer);
+    button.copyTimer = setTimeout(() => { button.textContent = "복사"; button.setAttribute("aria-label", "코드 복사"); }, 2000);
+  } catch (e) {
+    button.textContent = "다시 복사";
+    toast("복사하지 못했어요. 브라우저의 클립보드 권한을 확인하세요.");
   }
 }
 async function startUpdate() {
@@ -956,7 +997,7 @@ function md(s, lead) {
       const close = new RegExp("^ {0,3}`{" + fence[1].length + ",}\\s*$");
       while (++i < lines.length && !close.test(lines[i])) code.push(lines[i]);
       const language = fence[2].trim();
-      out.push(`<pre class="codeblock">${language ? `<span class="code-lang">${language}</span>` : ""}<code>${code.join("\n")}</code></pre>`);
+      out.push(`<div class="code-shell"><div class="code-toolbar"><span class="code-lang">${language || "코드"}</span><button class="copy-code" aria-label="코드 복사" onclick="copyCode(this)">복사</button></div><pre class="codeblock"><code>${code.join("\n")}</code></pre></div>`);
       continue;
     }
     const l = lines[i];
@@ -1082,7 +1123,9 @@ function renderTimeline(msgs, jobs) {
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
         ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
   const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
-  tl.innerHTML = oldBlock + rest.map(x => x.m ? msgHtml(x.m) : threadHtml(x)).join("");
+  const empty = !items.length;
+  tl.classList.toggle("empty-timeline", empty);
+  tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + rest.map(x => x.m ? msgHtml(x.m) : threadHtml(x)).join("");
   tl.querySelectorAll("details.fold").forEach(d => d.ontoggle = () => {
     d.open ? openTurns.add(d.dataset.k) : openTurns.delete(d.dataset.k);
   });

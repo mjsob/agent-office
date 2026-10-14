@@ -60,7 +60,7 @@ done
 printf '설치 폴더: %s\n' "$prefix"
 printf '기본 작업 폴더: %s\n' "$workspace"
 if [[ -e $HOME/.local/bin/office || -L $HOME/.local/bin/office ]]; then
-  printf '기존 office 명령(~/.local/bin/office)은 그대로 둡니다.\n'
+  printf '기존 office 명령(~/.local/bin/office)은 이 설치기가 만든 것이면 새 설치로 바꾸고, 아니면 그대로 둡니다.\n'
 else
   printf 'office 명령을 ~/.local/bin/office에 만듭니다.\n'
 fi
@@ -172,12 +172,31 @@ chmod 700 "$staging/office-launcher"
 cp -- "$staging/office-launcher" "$staging/office-global"
 mv -f -- "$staging/office-launcher" "$prefix/bin/office"
 printf 'Office 설치 완료: %s/bin/office\n' "$prefix"
-# A user-owned ~/.local/bin/office is never replaced.
-if [[ ! -e $HOME/.local/bin/office && ! -L $HOME/.local/bin/office ]]; then
+# ~/.local/bin/office: 없으면 만들고, 예전에 이 설치기가 만든 실행 파일이면 새 설치로 바꾼다.
+# 사용자가 직접 만든 파일·링크는 바꾸지 않고 경고만 한다.
+global=$HOME/.local/bin/office
+if [[ ! -e $global && ! -L $global ]]; then
   mkdir -p -- "$HOME/.local/bin"
   chmod 755 "$staging/office-global"
-  mv -- "$staging/office-global" "$HOME/.local/bin/office"
-  printf 'office 명령 생성: %s/.local/bin/office\n' "$HOME"
+  mv -- "$staging/office-global" "$global"
+  printf 'office 명령 생성: %s\n' "$global"
+elif [[ -L $global && $(readlink -f -- "$global") == $(readlink -f -- "$prefix/bin/office") ]]; then
+  :   # 이 설치의 실행 파일을 가리키는 링크면 그대로 둔다
+elif [[ -f $global && ! -L $global ]] && grep -q '^install_root=' "$global" && grep -q '/app/office.py' "$global"; then
+  if ! cmp -s -- "$staging/office-global" "$global"; then
+    chmod 755 "$staging/office-global"
+    mv -f -- "$staging/office-global" "$global"
+    printf 'office 명령을 새 설치로 바꿨습니다: %s\n' "$global"
+  fi
+else
+  printf '주의: %s 는 이 설치기가 만든 파일이 아니라서 그대로 둡니다.\n' "$global"
+  printf '새 Office를 쓰려면 그 파일을 지우거나 이름을 바꾼 뒤 설치 명령을 다시 실행하세요.\n'
+fi
+# PATH 앞쪽에 다른 office가 있으면 새 설치가 가려진다
+found=$(PATH=$original_path command -v office 2>/dev/null || true)
+if [[ -n $found && $(readlink -f -- "$found") != "$(readlink -f -- "$global")" && $(readlink -f -- "$found") != "$(readlink -f -- "$prefix/bin/office")" ]]; then
+  printf '주의: office 명령이 %s 를 먼저 실행합니다.\n' "$found"
+  printf '새 Office는 %s 입니다. 그 파일을 지우거나 이름을 바꾸세요.\n' "$prefix/bin/office"
 fi
 
 case ":$original_path:" in

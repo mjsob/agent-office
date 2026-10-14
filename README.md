@@ -129,6 +129,20 @@ OFFICE_SANDBOX=1 office
 에이전트가 작업 중인지 확인하세요.
 작업이 끝나면 `office`를 다시 실행하세요.
 
+**이전 버전으로 되돌리고 싶어요**
+설치 명령 끝에 `--version`과 버전 번호를 붙여 실행하세요.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | bash -s -- --apply --version 0.2.5
+```
+
+작업 파일과 대화 기록은 그대로 남아요.
+
+**`office`를 실행하면 예전 Office가 열려요**
+설치 명령을 다시 실행하세요.
+다른 `office` 명령이 먼저 실행되면 설치가 끝날 때 그 파일 위치를 알려 줘요.
+안내된 파일을 지우거나 이름을 바꾸세요.
+
 **`office` 명령을 찾을 수 없어요**
 새 WSL 터미널을 열고 다시 입력하세요.
 그래도 안 되면 `~/.local/share/office-app/bin/office`로 실행하세요.
@@ -141,7 +155,9 @@ OFFICE_SANDBOX=1 office
 로그인 상태는 `claude auth status`로 확인할 수 있어요.
 
 **인증서 오류가 나요**
-`SSL_CERT_FILE` 환경변수에 인증서 파일 경로를 넣고 다시 실행하세요.
+Office는 시스템에 등록한 인증서를 함께 읽어요.
+그래도 오류가 나면 `SSL_CERT_FILE` 환경변수에 인증서 파일 경로를 넣으세요.
+`office stop`으로 Office를 끈 뒤 다시 실행해야 적용돼요.
 
 **Python 버전이 낮다고 나와요**
 Python 3.11 이상을 설치하세요.

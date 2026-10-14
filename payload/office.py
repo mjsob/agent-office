@@ -2161,14 +2161,23 @@ def provider_ssl_context():
         capath = defaults.openssl_capath if defaults.openssl_capath and Path(defaults.openssl_capath).is_dir() else None
         if cafile or capath:
             context.load_verify_locations(cafile=cafile, capath=capath)
-    # 기본 시스템 신뢰를 유지한 채 명시적으로 지정한 인증서를 추가한다.
+    # 파이썬 배포판(conda 등)의 인증서 묶음엔 OS에 추가한 인증서가 없을 수 있어 OS 묶음도 항상 같이 읽는다
+    for bundle in ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"):
+        try:
+            if Path(bundle).is_file():
+                context.load_verify_locations(cafile=bundle)
+                break
+        except (OSError, ssl.SSLError):
+            continue
+    # 명시적으로 지정한 인증서도 모두 추가한다.
     # NODE_EXTRA_CA_CERTS: claude CLI가 쓰는 변수라 이것만 지정된 환경도 많음
-    candidates = [Path(value) for key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
-                  if (value := os.environ.get(key))]
-    for path in candidates:
-        if path.is_file():
-            context.load_verify_locations(cafile=str(path))
-            break
+    for key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"):
+        path = Path(os.environ.get(key) or "")
+        try:
+            if os.environ.get(key) and path.is_file():
+                context.load_verify_locations(cafile=str(path))
+        except (OSError, ssl.SSLError):
+            continue
     return context
 
 
@@ -2288,7 +2297,22 @@ def refresh_provider_limits(name, stop):
 UPDATE_REPO = os.environ.get("OFFICE_REPO", "mjsob/agent-office")
 UPDATE_ASSET = "office-installer.tar.gz"
 UPDATE_LOCK = threading.Lock()
-UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None}
+UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None, "checked_at": None, "error": None}
+UPDATE_WAKE = threading.Event()   # 화면의 '지금 확인'이 깨움
+
+
+def update_error_text(error):
+    """확인 실패를 화면에 보여 줄 짧은 사유로. 로그에는 종류·세부를 따로 남긴다"""
+    reason = getattr(error, "reason", None)
+    if isinstance(error, HTTPError):
+        return "깃허브 조회 한도를 넘었어요" if error.code in (403, 429) else f"깃허브 응답 오류 {error.code}"
+    if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(error, ssl.SSLCertVerificationError):
+        return "인증서를 확인하지 못했어요"
+    if isinstance(reason, (TimeoutError, socket.timeout)) or isinstance(error, (TimeoutError, socket.timeout)):
+        return "응답이 없어요"
+    if isinstance(reason, socket.gaierror):
+        return "인터넷에 연결되지 않았어요"
+    return "연결하지 못했어요"
 
 
 def version_key(text):
@@ -2330,6 +2354,7 @@ def check_update(stop):
     설치는 항상 최신 묶음 하나로 하므로 중간 버전을 차례로 깔 필요가 없다"""
     url = f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=30"
     while not stop.is_set():
+        UPDATE_WAKE.clear()
         try:
             req = urlrequest.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "office-update"})
             with urlrequest.urlopen(req, timeout=20, context=provider_ssl_context()) as r:
@@ -2345,8 +2370,22 @@ def check_update(stop):
                 UPDATE.update(latest=rels[0]["version"] if rels else None, notes=notes[:6000],
                               url=rels[0].get("html_url") if rels else None)
         except (OSError, ValueError, TypeError, KeyError) as error:
-            server_log("update.check", error)
-        stop.wait(3600)   # 한 시간마다 다시 확인: 알림을 띄워 둔 사이 더 새 버전이 나와도 반영
+            reason = getattr(error, "reason", None)
+            detail = f"{type(error).__name__}" + (f" reason={type(reason).__name__}: {str(reason)[:160]}" if reason is not None else f": {str(error)[:160]}")
+            try:
+                with open(D / "server.log", "a") as log:
+                    log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] update.check: {detail}\n")
+            except OSError:
+                pass
+            with UPDATE_LOCK:
+                UPDATE.update(checked_at=time.time(), error=update_error_text(error))
+        else:
+            with UPDATE_LOCK:
+                UPDATE.update(checked_at=time.time(), error=None)
+        for _ in range(720):   # 한 시간마다 다시 확인. '지금 확인'이나 종료면 바로 깸
+            if stop.is_set() or UPDATE_WAKE.is_set():
+                break
+            time.sleep(5)
 
 
 def run_update(office):
@@ -2722,7 +2761,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -2898,6 +2937,8 @@ class Office:
                         worker.save_checkpoint()
         elif act == "quit":
             self.shutdown()
+        elif act == "update_check":
+            UPDATE_WAKE.set()
         elif act == "update":
             if not update_info()["available"]:
                 raise UserError("이미 최신 버전이에요.")
