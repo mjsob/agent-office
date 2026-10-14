@@ -458,6 +458,16 @@ def request_history(jobs):
         lines.append(f"- 요청 {j['id']}: {j.get('text', '')[:200]}")
     return "\n".join(lines)
 
+def recent_results(jobs, count=6, cap=700):
+    """새 세션은 이전 대화를 기억 못 하니, 최근 끝난 요청의 사용자 원문과 최종 보고를 넘겨 이어받게 한다"""
+    rows = []
+    for j in [j for j in jobs if j.get("status") == "done"][-count:]:
+        answer = "취소됨" if j.get("cancelled") else (j.get("summary") or "").strip()
+        if len(answer) > cap:
+            answer = answer[:cap] + " …(생략)"
+        rows.append(f"[요청 {j['id']}] 사용자: {j.get('text', '')[:300]}\n→ 최종 보고: {answer or '보고 없음'}")
+    return "\n\n".join(rows)
+
 def missed_text(msgs, me, limit=6000):
     """지난 차례 이후 내가 직접 받지 못한 대화(사용자↔동료 1:1, 동료의 최종 답변)를 최신 위주로 묶음"""
     rows = [m for m in msgs if m["from"] not in (me, "system") and m.get("kind") in ("msg", "turn")
@@ -2089,7 +2099,7 @@ class Worker:
         if not new_request or getattr(self, "ctx_tokens", 0) <= ROTATE_CTX:
             return False
         (sdir(self.sid) / f"{self.name}.sid").unlink(missing_ok=True)
-        self.agent_log(f"새 세션으로 교체: 컨텍스트 {self.ctx_tokens}토큰 > {ROTATE_CTX} (요청 {job} 시작)")
+        self.agent_log(f"대화가 길어져 새 세션으로 이어서 시작해요 (요청 {job}, 기억 {self.ctx_tokens:,}토큰 > 기준 {ROTATE_CTX:,}토큰). 최근 요청·보고는 넘겨줘요")
         server_log("agent.rotate." + self.name)
         self.ctx_tokens = 0
         return True
@@ -2130,6 +2140,7 @@ class Worker:
                 snap, total = board_text(s), len(s["msgs"])
                 missed = missed_text(s["msgs"][self.read_upto:], self.name)
                 title_history = request_history(s["jobs"])
+                carry = recent_results(s["jobs"])
             if not nt:
                 self.idle(); self.wait_change(POLL)
                 continue
@@ -2162,6 +2173,8 @@ class Worker:
             if rotated:
                 prompt += ("이번 차례부터 새 세션이다(이전 세션이 너무 길어져 속도를 위해 바꿨다). 이전 대화 내용은 기억나지 않으니 "
                            "위 현재 상황·최근 대화와 아래 요청 이력, 저장소 파일로 맥락을 파악해라.\n\n")
+                if carry:
+                    prompt += f"이전 세션에서 끝낸 최근 요청과 최종 보고 (이미 한 약속·결정은 이어서 지켜라):\n{carry}\n\n"
             if missed:
                 prompt += f"네 지난 차례 이후 네가 직접 받지 못한 대화 (사용자·동료끼리 나눈 내용, 맥락 파악용):\n{missed}\n\n"
             if self.resume_turn and self.resume_turn.get("job") == job:
