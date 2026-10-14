@@ -1017,7 +1017,7 @@ function renderAgents(agents) {
           <div class="how">${esc(h.how(n))}</div>
           <details class="raw"><summary>원문 보기</summary><code>${esc(friendlyErr(a.error))}</code></details></div></div>`)(errHelp(n, a)) : ""}
       ${a.notice && !a.error ? (([h, d]) => `<div class="agnote"><b>${esc(h)}</b>${d ? `<div class="how">${esc(d)}</div>` : ""}</div>`)(splitMsg(a.notice)) : ""}
-      ${a.status === "working" ? `<div class="pulse" data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}"></div>` : ""}
+      ${a.status === "working" ? `<div class="pulse" hidden data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}"></div>` : ""}
       ${(a.subs || []).length ? `<details class="fold subs" data-a="sub-${n}" ${openAgent.has("sub-" + n) ? "open" : ""}>
         <summary>${icon("chevron", "sm")}<span class="subchip">보조 ${a.subs.length}개 돌리는 중</span></summary>
         ${a.subs.map(x => `<div class="subrow"><span class="dot working" style="background:var(--${n})"></span><span class="tx">${esc(x.desc || "보조 작업")}</span><span class="ts" data-since="${x.since}">${elapsed(x.since)}</span></div>`).join("")}</details>` : ""}
@@ -1254,12 +1254,14 @@ function secsAgo(hms) {
 // 마지막 움직임까지 몇 초: 이번 차례 시작(since) 전의 옛 활동은 무시 (그대로 쓰면 '1분 작업 중 · 94초 전'처럼 어긋남)
 const quietSecs = (ts, since) => Math.min(secsAgo(ts) ?? Infinity, Math.max(0, Date.now() / 1000 - since));
 const dur = d => d < 60 ? `${Math.floor(d)}초` : d < 3600 ? `${Math.floor(d / 60)}분` : `${Math.floor(d / 3600)}시간`;
-const pulseText = d => d >= 120 ? `${dur(d)}째 생각·실행 중` : `마지막 움직임 ${d < 5 ? "방금" : dur(d) + " 전"}`;
+// 평소엔 숨기고, 1분 넘게 조용할 때만 '멈췄나?'를 알 수 있게 띄움
+const pulseText = d => `${dur(d)}째 응답 없음`;
 function updatePulses() {
   document.querySelectorAll("#agents .pulse").forEach(el => {
     const d = quietSecs(el.dataset.last, +el.dataset.since);
     el.className = "pulse" + (d >= 120 ? " quiet" : "");
-    el.textContent = pulseText(d);
+    el.hidden = d < 60;
+    el.textContent = d < 60 ? "" : pulseText(d);
   });
 }
 // 대화창 바닥의 '돌아가는 중' 표시: 일하는 에이전트마다 한 줄 (뭘 하는지·걸린 시간·마지막 움직임). 멈춤·일시정지도 같이
