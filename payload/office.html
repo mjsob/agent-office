@@ -358,7 +358,7 @@ body > footer { grid-row: 4; }
 #updateNotes { max-width: 100%; max-height: min(30vh, 240px); overflow: auto; padding: 0; background: transparent; border: 0; border-radius: 0; }
 #updateNotes .body .h { border: 0; padding-left: 0; font-size: 13px; margin: 12px 0 4px; }
 #updateNotes .body .h:first-child { margin-top: 0; }
-.agent .model { color: var(--muted); font-size: 11px; font-weight: 400; max-width: 180px; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent .model { color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent .name { flex-wrap: nowrap; white-space: nowrap; min-width: 0; overflow: hidden; }
 .code-shell { margin: 8px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); overflow: hidden; }
 .code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--chip); white-space: normal; }
@@ -1006,9 +1006,9 @@ function renderAgents(agents) {
       <div class="top">
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
         <div class="meta">
-          <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(a.model)}</span>` : ""}${a.status === "working" ? `<span class="el" data-since="${a.since}">${elapsed(a.since)}</span>` : ""}</div>
+          <div class="name">${NAME[n]}${a.status === "working" ? `<span class="el" data-since="${a.since}">${elapsed(a.since)}</span>` : ""}</div>
           <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || "")}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
-            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div></div>
+            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div>${a.model ? `<div class="model" title="${esc(a.model)}">${esc(a.model)}</div>` : ""}</div>
         <div class="ctl">${hot}
         <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "재개" : a.status === "working" ? "지금 하는 차례가 끝나면 일시정지 (진행 중인 작업은 마저 끝냄)" : "일시정지"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}${a.paused ? "다시 시작" : "잠시 멈춤"}</button>
         ${a.status === "working" && !a.paused ? `<button class="ghost" title="지금 하는 차례를 바로 끊고 일시정지 (이미 고친 파일은 남음, 다시 시작하면 이어서 함)" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>중단</button>` : ""}</div>
