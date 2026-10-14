@@ -38,7 +38,10 @@ svg.sm { width: 14px; height: 14px; }
 header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
 .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
-.version { background: none; border: 0; padding: 2px 4px; text-decoration: underline; text-underline-offset: 3px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.version { background: none; border: 0; padding: 2px 4px; position: relative; text-decoration: none; text-underline-offset: 3px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.version:hover { text-decoration: underline; }
+.version.has-update::after { content: ""; position: absolute; top: 0; right: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--codex); }
+.version:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 .brand .mark svg { width: 14px; height: 14px; }
 .root { color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn { font-size: 12px; color: var(--warn); }
@@ -362,8 +365,7 @@ body > footer { grid-row: 3; }
 .update-close { position: absolute; top: -5px; right: -6px; background: none; border: 0; padding: 5px; margin: 0; color: var(--muted); border-radius: 6px; }
 .update-close:hover { color: var(--text); background: var(--panel); }
 .update-notice button:disabled { cursor: default; }
-.update-notice button:focus-visible, .update-badge:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
-.update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 600; }
+.update-notice button:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 #updateMessage, #updateError { margin: 10px 0 0; font-size: 12px; }
 #updateMessage:empty { display: none; }
 #updateError { color: var(--warn); }
@@ -383,10 +385,8 @@ body > footer { grid-row: 3; }
 @media (max-width: 600px) {
   header { gap: 6px; }
   .brand { flex: none; white-space: nowrap; }
-  .brand .version { max-width: 68px; overflow: hidden; text-overflow: ellipsis; }
+  .brand .version { max-width: 68px; }
   header .narrow-only:not(.ghost) { font-size: 12px; padding: 4px 6px; }
-  body.has-update-badge header { flex-wrap: wrap; }
-  .update-badge { order: 10; width: 100%; justify-content: center; }
   .update-notice { left: 12px; right: 12px; width: auto; top: calc(var(--office-header-height, 52px) + 8px); max-height: calc(100dvh - var(--office-header-height, 52px) - 20px); padding: 16px; }
 }
 /* 입력 */
@@ -468,7 +468,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <header>
   <button class="ghost narrow-only" title="대화 목록" aria-label="대화 목록" onclick="document.body.classList.remove('show-side');document.body.classList.toggle('show-sessions')">☰</button>
   <div class="brand"><span class="mark"><svg class="i"><use href="#i-office"/></svg></span>Office<button id="version" class="version" onclick="toggleUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" title="업데이트 확인" aria-label="버전과 업데이트 확인" hidden></button></div>
-  <button id="updateBadge" class="update-badge" onclick="showUpdateNotice()" aria-controls="updateNotice" aria-expanded="false" hidden></button>
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
@@ -594,7 +593,7 @@ function dismissUpdate(today) {
   reopenedUpdateKey = "";
   updatePanelOpen = false;
   renderUpdate();
-  $("#updateBadge").focus({preventScroll: true});
+  $("#version").focus({preventScroll: true});
 }
 function toggleUpdateNotice() {
   if ($("#updateNotice").hidden) showUpdateNotice();
@@ -653,13 +652,14 @@ function renderUpdate(u = updateState) {
   if (visible && $("#updateNotice").hidden) resetUpdateNotes();
   $("#updateNotice").hidden = !visible;
   $("#version").setAttribute("aria-expanded", String(visible));
-  $("#updateBadge").setAttribute("aria-expanded", String(visible));
-  $("#updateBadge").hidden = !eligible || visible;
-  document.body.classList.toggle("has-update-badge", eligible && !visible);
+  const versionButton = $("#version"), unreadUpdate = !!u.available && !visible;
+  versionButton.classList.toggle("has-update", unreadUpdate);
+  const versionHint = unreadUpdate ? `새 버전 ${u.latest || ""} · 눌러서 보기` : `현재 버전 ${u.current || versionButton.textContent} · 업데이트 확인`;
+  versionButton.title = versionHint;
+  versionButton.setAttribute("aria-label", versionHint);
   $("#updateToday").hidden = busy || failed || !u.available;
   $("#updateClose").hidden = busy || failed;
   $("#updateButton").hidden = !u.available && !busy && !failed;
-  $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
   $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
