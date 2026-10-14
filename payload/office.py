@@ -15,7 +15,7 @@ GUI에서 '작업 요청'으로 보내면: 리더가 쪼개서 분배 → 둘이
   office claim ID | done ID "요약" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
 """
 import math, tomllib, hashlib, ssl
-import argparse, copy, datetime, fcntl, json, os, re, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
+import argparse, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
 from collections import deque
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,6 +60,7 @@ MAX_BODY = 256 * 1024
 MAX_TEXT = 20000
 AGENT_QUIET_NOTICE = 25 * 60
 AGENT_QUIET_TIMEOUT = 30 * 60
+AGENT_SLOW_TOOL = 2 * 60   # 도구 하나가 이보다 오래 돌면 화면에 표시하고 로그에 남김 (멈춘 것처럼 보이는 구간 추적)
 AGENT_TOOL_TIMEOUT = 3 * 60 * 60   # 명령·서브 에이전트가 도는 중엔 출력이 없어도 이 시간까지 기다림 (긴 빌드·테스트)
 
 
@@ -986,6 +987,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 일하는 방식:
 - 네 담당 작업부터 처리. 시작할 때 `office claim ID`로 진행중 표시 (주인 없는 todo도 claim으로 가져감). 동료 담당은 건드리지 마라.
 - 상대가 더 잘할 일이거나 막히면 handoff. 의견이 필요하면 say로 묻고 기다리는 동안 다른 일 해라.
+- 외부 프로세스(tmux·서버·다른 CLI)에 입력을 보냈으면 실제로 들어갔는지 바로 확인해라. 결과를 1분 넘게 반복 확인하며 기다리지 마라.
 - 동료 완료·답을 기다릴 때 sleep·백그라운드 작업·반복 확인으로 차례를 붙잡지 마라. 할 일이 없으면 차례를 끝내라. 새 메시지·작업 변화가 생기면 서버가 다시 깨운다(차례를 붙잡고 있으면 그 사이 넘어온 일을 못 받는다).
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
@@ -1381,6 +1383,37 @@ class Worker:
                                          for k in ("input_tokens", "cached_input_tokens", "output_tokens")}
             self.usage_tracking = False
 
+    def agent_log(self, text):
+        """대화별 에이전트 로그(sessions/<id>/<이름>.log)에 시각과 함께 한 줄 남김"""
+        try:
+            with open(sdir(self.sid) / f"{self.name}.log", "a") as log:
+                log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
+        except OSError as error:
+            server_log("agent.log", error)
+
+    def tool_done(self, key):
+        started = self.open_tools.pop(key, None)
+        label = self.tool_labels.pop(key, None) or "도구"
+        if key in self.slow_tools:
+            self.slow_tools.discard(key)
+            self.agent_log(f"오래 걸린 도구 끝남 {int(time.time() - started) if started else '?'}초: {label}")
+            if (self.notice or "").startswith("도구 실행 중"):
+                self.notice = None
+
+    def watch_slow_tools(self):
+        """2분 넘게 결과가 없는 도구를 화면 알림과 로그로 드러냄. 멈춘 건지 일하는 중인지 구분하게"""
+        now = time.time()
+        slow = [(now - t, k) for k, t in self.open_tools.items() if now - t >= AGENT_SLOW_TOOL]
+        if not slow:
+            return
+        age, key = max(slow)
+        label = self.tool_labels.get(key, "도구")
+        if key not in self.slow_tools:
+            self.slow_tools.add(key)
+            server_log("agent.slow_tool")
+            self.agent_log(f"도구가 {AGENT_SLOW_TOOL // 60}분 넘게 도는 중: {label}")
+        self.notice = f"도구 실행 중 {int(age // 60)}분째 — {label[:80]}"
+
     def act(self, kind, line):   # kind: text | tool | edit | start | end
         self.activity.append({"ts": time.strftime("%H:%M:%S"), "kind": kind, "text": line[:400]})
         # 리더가 계획 차례에 직접 고치기 시작하면(파일 수정·office reserve/write) 그때부터 '작업 중'으로 표시
@@ -1402,6 +1435,7 @@ class Worker:
         self.rc, self.error, self.notice = 0, None, None
         self.subs.clear()
         self.open_tools = {}   # 결과를 아직 안 받은 도구 호출: 이게 있으면 조용해도 명령이 도는 중
+        self.tool_labels, self.slow_tools = {}, set()   # 도구 호출 id → 짧은 설명, 오래 걸린다고 기록한 id
         self.codex_message_rows.clear()
         self.claude_result_received = False
         if self.immediate_pause:
@@ -1480,6 +1514,7 @@ class Worker:
                         break
                     quiet = time.monotonic() - received
                     running_tool = bool(self.open_tools or self.subs)
+                    self.watch_slow_tools()
                     if quiet >= (AGENT_TOOL_TIMEOUT if running_tool else AGENT_QUIET_TIMEOUT):
                         self.error = "응답 대기 시간 초과 — 오랫동안 새 응답이 없어 실행을 중단했습니다. 재개 버튼으로 다시 시도하세요."
                         server_log("agent.timeout")
@@ -1571,10 +1606,12 @@ class Worker:
                     arg = str(i.get("command") or i.get("file_path") or i.get("pattern")
                               or json.dumps(i, ensure_ascii=False)[:150]).replace(str(wdir(self.sid)) + "/", "")
                     self.act("edit" if c["name"] in ("Edit", "Write", "MultiEdit") else "tool", f"{c['name']}: {arg}")
+                    if c.get("id"):
+                        self.tool_labels[c["id"]] = f"{c['name']}: {arg}"[:160]
         elif ev.get("type") == "user":
             for c in ev.get("message", {}).get("content", []):
                 if isinstance(c, dict) and c.get("type") == "tool_result":
-                    self.open_tools.pop(c.get("tool_use_id"), None)
+                    self.tool_done(c.get("tool_use_id"))
                 if isinstance(c, dict) and c.get("type") == "tool_result" and not self.async_launch(c):
                     sub = self.subs.pop(c.get("tool_use_id"), None)
                     if sub:
@@ -1672,11 +1709,13 @@ class Worker:
         if t == "item.started" and it.get("type") in ("command_execution", "mcp_tool_call", "dynamic_tool_call", "web_search", "collab_tool_call") and it.get("id"):
             self.open_tools[it["id"]] = time.time()
         elif t == "item.completed" and it.get("id"):
-            self.open_tools.pop(it["id"], None)
+            self.tool_done(it["id"])
         if t == "item.started" and it.get("type") == "command_execution":
             cmd = safe_agent_diagnostic(str(it.get("command", "")))
             m = re.match(r"^/bin/(?:ba)?sh -lc (['\"])(.*)\1$", cmd, re.S)   # codex가 씌우는 셸 껍데기 벗김
             self.act("tool", "$ " + (m.group(2) if m else cmd))
+            if it.get("id"):
+                self.tool_labels[it["id"]] = ("$ " + (m.group(2) if m else cmd))[:160]
         elif t == "item.started" and it.get("type") in ("mcp_tool_call", "dynamic_tool_call", "web_search", "collab_tool_call"):
             kind = it["type"]
             if kind == "web_search":
@@ -2123,7 +2162,9 @@ def provider_ssl_context():
         if cafile or capath:
             context.load_verify_locations(cafile=cafile, capath=capath)
     # 기본 시스템 신뢰를 유지한 채 명시적으로 지정한 인증서를 추가한다.
-    candidates = [Path(value) for key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE") if (value := os.environ.get(key))]
+    # NODE_EXTRA_CA_CERTS: claude CLI가 쓰는 변수라 이것만 지정된 환경도 많음
+    candidates = [Path(value) for key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
+                  if (value := os.environ.get(key))]
     for path in candidates:
         if path.is_file():
             context.load_verify_locations(cafile=str(path))
@@ -2242,6 +2283,104 @@ def refresh_provider_limits(name, stop):
         except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
             log_limits_failure(name, error)
         stop.wait(300)
+
+# ── 새 버전 확인·업데이트: 깃허브 최신 릴리스와 비교하고, 설치기로 같은 경로에 다시 설치 ──
+UPDATE_REPO = os.environ.get("OFFICE_REPO", "mjsob/agent-office")
+UPDATE_ASSET = "office-installer.tar.gz"
+UPDATE_LOCK = threading.Lock()
+UPDATE = {"latest": None, "notes": "", "url": None, "state": "idle", "message": None}
+
+
+def version_key(text):
+    return tuple(int(x) for x in re.findall(r"\d+", text or "")[:3]) or (0,)
+
+
+def install_paths():
+    """설치기로 깐 앱이면 (설치 폴더, 작업 폴더). 개발용 사본처럼 표식이 없으면 None"""
+    app = Path(__file__).resolve().parent
+    prefix = app.parent
+    try:
+        if app.name != "app" or (prefix / ".office-install").read_text().strip() != "office-bootstrap-v1":
+            return None
+        launcher = (prefix / "bin" / "office").read_text()
+    except OSError:
+        return None
+    found = re.search(r"^work_dir=(.+)$", launcher, re.M)
+    try:
+        workspace = shlex.split(found.group(1))[0] if found else str(ROOT)
+    except ValueError:
+        workspace = str(ROOT)
+    return str(prefix), workspace
+
+
+def update_info():
+    with UPDATE_LOCK:
+        info = dict(UPDATE)
+    current = office_version()
+    info["current"] = current
+    info["available"] = bool(info["latest"]) and version_key(info["latest"]) > version_key(current)
+    info["installable"] = install_paths() is not None
+    if info["available"] and not info["installable"] and info["state"] == "idle":
+        info["message"] = "설치기로 설치한 Office에서만 바로 업데이트할 수 있어요."
+    return info
+
+
+def check_update(stop):
+    url = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+    while not stop.is_set():
+        try:
+            req = urlrequest.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "office-update"})
+            with urlrequest.urlopen(req, timeout=20, context=provider_ssl_context()) as r:
+                rel = json.loads(r.read())
+            with UPDATE_LOCK:
+                UPDATE.update(latest=str(rel.get("tag_name") or "").lstrip("v") or None,
+                              notes=str(rel.get("body") or "")[:4000], url=rel.get("html_url"))
+        except (OSError, ValueError) as error:
+            server_log("update.check", error)
+        stop.wait(6 * 3600)
+
+
+def run_update(office):
+    """최신 설치 묶음을 받아 해시를 확인하고 install.sh로 같은 경로에 다시 설치한 뒤 새 프로세스로 다시 시작"""
+    def fail(text):
+        with UPDATE_LOCK:
+            UPDATE.update(state="failed", message=text)
+    paths = install_paths()
+    if not paths:
+        return fail("설치기로 설치한 Office에서만 바로 업데이트할 수 있어요.")
+    prefix, workspace = paths
+    base = f"https://github.com/{UPDATE_REPO}/releases/latest/download/{UPDATE_ASSET}"
+    try:
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            ctx = provider_ssl_context()
+            for name in (UPDATE_ASSET, UPDATE_ASSET + ".sha256"):
+                with urlrequest.urlopen(base.replace(UPDATE_ASSET, name), timeout=120, context=ctx) as r:
+                    (work / name).write_bytes(r.read())
+            want = (work / (UPDATE_ASSET + ".sha256")).read_text().split()[0]
+            if hashlib.sha256((work / UPDATE_ASSET).read_bytes()).hexdigest() != want:
+                return fail("받은 설치 파일의 해시가 맞지 않아요. 잠시 뒤 다시 시도해 보세요.")
+            import tarfile
+            with tarfile.open(work / UPDATE_ASSET) as tar:
+                tar.extractall(work, filter="data")
+            script = work / "office-dist" / "install.sh"
+            if not script.is_file():
+                return fail("설치 파일에 설치기가 없어요.")
+            r = subprocess.run(["bash", str(script), "--apply", "--skip-login", "--no-launch",
+                                "--prefix", prefix, "--workspace", workspace],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+            if r.returncode:
+                server_log("update.install", (r.stderr or r.stdout)[-2000:])
+                tail = (r.stderr or r.stdout).strip().splitlines()
+                return fail(f"설치에 실패했어요. {tail[-1] if tail else ''}".strip())
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
+        server_log("update.run", error)
+        return fail("업데이트 파일을 받지 못했어요. 인터넷 연결을 확인해 보세요.")
+    with UPDATE_LOCK:
+        UPDATE.update(state="restarting", message=None)
+    office.restart = [sys.executable, str(Path(prefix) / "app" / "office.py"), *sys.argv[1:]]
+    time.sleep(2)   # 화면이 restarting 상태를 한 번은 받아 가게
+    office.shutdown()
 
 
 # ── git worktree: 대화마다 작업 폴더·브랜치 분리 ─────────────
@@ -2498,7 +2637,7 @@ class Office:
             x["busy"] = self.busy(x["id"])
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
-                    warnings=list(STORAGE_WARNINGS.values())[-10:])
+                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info())
         team = self.teams[cur]["w"]
         for w in team.values():
             if w.status == "working":
@@ -2574,7 +2713,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -2750,6 +2889,16 @@ class Office:
                         worker.save_checkpoint()
         elif act == "quit":
             self.shutdown()
+        elif act == "update":
+            if not update_info()["available"]:
+                raise UserError("이미 최신 버전이에요.")
+            if any(w.status == "working" for t in self.teams.values() for w in t["w"].values()):
+                raise UserError("일하는 중인 에이전트가 있어요. 작업이 끝난 뒤 업데이트해 보세요.")
+            with UPDATE_LOCK:
+                if UPDATE["state"] in ("running", "restarting"):
+                    raise UserError("이미 업데이트하는 중이에요.")
+                UPDATE.update(state="running", message=None)
+            threading.Thread(target=run_update, args=(self,), daemon=True).start()
         else:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("new_session", "delete", "restore", "purge", "empty_trash"):
@@ -2908,6 +3057,7 @@ def serve():
     detect_worktree_mode()
     office.sync_teams()
     threading.Thread(target=codex_limits, daemon=True).start()    # 과거 관측을 보조로 표시
+    threading.Thread(target=check_update, args=(office.stop,), daemon=True).start()
     for name in AGENTS:
         threading.Thread(target=refresh_provider_limits, args=(name, office.stop), daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGHUP):     # office stop / 콘솔 창 닫기
@@ -2917,6 +3067,9 @@ def serve():
     status_line(office, port, opened=opened)
     if office.stop.is_set():
         office.cleanup_done.wait()   # 정리가 끝나기 전에 서버 수명 잠금을 풀지 않는다.
+        if getattr(office, "restart", None):
+            # 새 버전으로 다시 시작: 서버 잠금 파일은 exec 때 닫혀 풀리고, 새 프로세스가 새 창을 연다
+            os.execv(office.restart[0], office.restart)
 
 
 def until(ts):
@@ -2959,17 +3112,22 @@ def usage_lines(width):
         left = max(0, min(100, 100 - int(w["used"])))
         num = paint(pad(f"{left}%{'!' if left <= 20 else ''}", 5), 1, *((31,) if left <= 20 else ()))
         return pad(f"{battery(left)} {num} {paint(f"{until(w.get('resets'))} 초기화" if w.get("resets") else "", 2)}", cell)
-    rows, ats = [pad(paint("  남은 양", 1), 10) + pad(paint("5시간", 2), cell) + paint("7일", 2)], []
-    for n in AGENTS:
+    # 에이전트마다 이름 색을 달리하고 사이에 구분선을 둬서 두 줄이 섞여 보이지 않게 함
+    names = {"claude": 33, "codex": 36}
+    rows, seen = [pad(paint("  남은 양", 1), 10) + pad(paint("5시간", 2), cell) + paint("7일", 2)], False
+    for i, n in enumerate(AGENTS):
         L = limits_for(n) or {}
-        if L.get("at"):
-            ats.append(L["at"])
+        seen = seen or bool(L.get("at"))
         known = any((L.get(k) or {}).get("used") is not None for k in ("five_hour", "seven_day"))
-        rows.append(pad("  " + paint(disp(n), 1), 10) + one(L.get("five_hour"), known) + one(L.get("seven_day"), known))
-    # 기준 시각은 값이 10분 넘게 묵었을 때만 알림 (줄 수는 고정해야 해서 평소엔 빈 줄)
-    mins = int((time.time() - min(ats)) // 60) if ats else 0
-    rows.append(paint(f"  {mins}분 전 값 (새로 못 받아옴)", 33) if mins >= 10 else ""
-                if ats else paint("  아직 받은 사용량 정보 없음", 2))
+        # 기준 시각은 에이전트별로 따로: 그 에이전트 값이 10분 넘게 묵었을 때만 그 줄 끝에 표시
+        mins = int((time.time() - L["at"]) // 60) if L.get("at") else 0
+        stale = paint(f" {mins}분 전 값", 33) if mins >= 10 else ""
+        if i:
+            rows.append(paint("  " + "-" * 70, 2))
+        rows.append(pad("  " + paint(disp(n), 1, names.get(n, 37)), 10) + one(L.get("five_hour"), known)
+                    + one(L.get("seven_day"), known) + stale)
+    # 줄 수는 고정해야 해서(제자리 갱신용) 받은 값이 있으면 빈 줄
+    rows.append("" if seen else paint("  아직 받은 사용량 정보 없음", 2))
     return [fit_console(r, width) for r in rows]
 
 

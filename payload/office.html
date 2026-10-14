@@ -78,7 +78,8 @@ main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
 .sitem .acts { display: none; }
 .sitem:hover .acts, .sitem.on .acts { display: flex; }
 .sitem .acts button { padding: 3px; }
-.trash { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.trash { flex: none; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+#tlist { max-height: min(30vh, 240px); overflow-y: auto; overscroll-behavior: contain; margin-top: 4px; }
 .trash summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; display: flex; gap: 6px; align-items: center; }
 .trash summary::-webkit-details-marker { display: none; }
 .trash .sitem { cursor: default; opacity: .8; }
@@ -211,6 +212,9 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .event.alert { color: var(--warn); background: var(--warn-soft); padding: 4px 10px; border-radius: 8px; }
 .msg .body code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
 .msg .body { line-height: 1.65; }
+.msg .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
+.msg .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
+.msg .body .code-lang { display: block; margin-bottom: 6px; color: var(--muted); font: 11px ui-monospace, monospace; }
 .msg .body .gap { height: 8px; }
 /* 보고의 목차 제목('**바뀐 것**' 등): 섹션 사이를 확실히 띄우고 작은 머리글처럼 */
 /* 목차 제목은 본문보다 눈에 띄게(흐리면 위계가 뒤집혀 안 읽힘): 진하게 + 왼쪽 색 막대, 제목 바로 뒤 빈 줄은 접음 */
@@ -326,13 +330,21 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
 .empty.center { text-align: center; padding: 48px 0; }
 
+/* 업데이트 알림 */
+.update-notice { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--chip); font-size: 12px; }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.update-notice button { flex: none; }
+.update-notice button:disabled { cursor: default; opacity: .6; }
+#updateMessage { color: var(--muted); }
+#updateDetails summary { cursor: pointer; margin-top: 4px; }
+#updateNotes { max-width: 100%; max-height: min(20vh, 160px); overflow: auto; padding: 4px 0; }
 /* 입력 */
 footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
 .bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; gap: 2px; }
 .seg button { border: 0; border-radius: 7px; padding: 4px 10px; color: var(--muted); }
 .seg button.on { background: var(--accent); color: var(--on-accent); }
-.lead { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.lead { margin-left: 4px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 select { font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
 .inrow { display: flex; gap: 8px; align-items: stretch; }
 #tlsec, .inrow textarea { min-width: 0; }
@@ -426,6 +438,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 </main>
 
 <footer>
+  <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
+    <div class="update-row"><strong id="updateTitle"></strong><button id="updateButton" onclick="startUpdate()">업데이트</button></div>
+    <div id="updateMessage"></div>
+    <details id="updateDetails"><summary>변경 내용 보기</summary><div id="updateNotes" class="msg"><div class="body"></div></div></details>
+  </section>
   <div class="bar">
     <div class="seg" id="modes" role="group" aria-label="보낼 대상">
       <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두에게</button>
@@ -488,6 +505,33 @@ function setMode(m) {
   $("#input").focus();
 }
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
+
+let updateState = {}, updateSubmitting = false, updateSignature = "";
+function renderUpdate(u) {
+  if (!u || typeof u !== "object") return;
+  updateState = u;
+  const busy = updateSubmitting || ["running", "restarting"].includes(u.state);
+  const failed = u.state === "failed";
+  $("#updateNotice").hidden = !(u.available || busy || failed);
+  $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
+    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : `새 버전 ${u.latest || ""}이 나왔어요`;
+  $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
+  $("#updateButton").disabled = busy || !u.installable;
+  $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
+    : busy ? "설치가 끝날 때까지 기다리세요." : !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
+  $("#updateDetails").hidden = !u.notes;
+  if (updateSignature !== String(u.notes || "")) {
+    updateSignature = String(u.notes || "");
+    $("#updateNotes .body").innerHTML = md(updateSignature, false);
+  }
+}
+async function startUpdate() {
+  if (updateSubmitting || !updateState.installable || ["running", "restarting"].includes(updateState.state)) return;
+  updateSubmitting = true;
+  renderUpdate(updateState);
+  try { await api({action: "update"}); }
+  finally { updateSubmitting = false; renderUpdate(updateState); }
+}
 
 async function api(body) {
   let ok = false;
@@ -834,7 +878,19 @@ const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n
 function md(s, lead) {
   const inline = t => t.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n");
-  return lines.map((l, i) => {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const fence = lines[i].match(/^ {0,3}(`{3,})([^`]*)$/);
+    if (fence) {
+      const code = [];
+      const close = new RegExp("^ {0,3}`{" + fence[1].length + ",}\\s*$");
+      while (++i < lines.length && !close.test(lines[i])) code.push(lines[i]);
+      const language = fence[2].trim();
+      out.push(`<pre class="codeblock">${language ? `<span class="code-lang">${language}</span>` : ""}<code>${code.join("\n")}</code></pre>`);
+      continue;
+    }
+    const l = lines[i];
+    out.push((() => {
     let m;
     if (lead && i === 0) return `<div class="lead1">${inline(l)}</div>`;
     if (!l.trim()) return '<div class="gap"></div>';
@@ -843,7 +899,9 @@ function md(s, lead) {
     if ((m = l.match(/^\s*(\d+[.)]|[①-⑳])\s+(.*)/))) return `<div class="li num"><span class="n">${m[1]}</span>${inline(m[2])}</div>`;
     if ((m = l.match(/^&gt;\s?(.*)/))) return `<div class="quote">${inline(m[1])}</div>`;
     return `<div class="p">${inline(l)}</div>`;
-  }).join("");
+    })());
+  }
+  return out.join("");
 }
 // 요청현황용 한 줄 요약: 서버가 준 brief → 없으면 보고 첫 줄
 const firstLine = s => String(s ?? "").replace(/[*`#>]/g, "").split("\n").map(x => x.trim()).find(Boolean) || "";
@@ -1133,7 +1191,7 @@ const safe = (name, f) => { try { f(); return true; } catch (e) { console.error(
 const headlessClient = /HeadlessChrome/i.test(navigator.userAgent);
 const clientId = headlessClient ? "" : crypto.randomUUID();
 let officeClosed = false, clientReady = headlessClient;
-function closeOfficeWindow() {
+function closeOfficeWindow(updating = updateState.state === "restarting") {
   if (officeClosed) return;
   officeClosed = true;
   clearInterval(refreshTimer);
@@ -1141,7 +1199,7 @@ function closeOfficeWindow() {
   const cover = document.createElement("div");
   cover.setAttribute("role", "alert");
   cover.style.cssText = "position:fixed;inset:0;z-index:99999;display:grid;place-items:center;background:var(--bg);color:var(--text);padding:24px;text-align:center;font-size:16px";
-  cover.textContent = "Office가 종료됐어요. 이 창을 닫아 주세요.";
+  cover.textContent = updating ? "업데이트한 Office가 새 창에서 열려요. 이 창을 닫으세요." : "Office가 종료됐어요. 이 창을 닫으세요.";
   document.body.appendChild(cover);
 }
 async function registerClient() {
@@ -1166,6 +1224,7 @@ async function doRefresh() {
     if (!r.ok || s.error) throw new Error(s.error || `서버 오류 ${r.status}`);   // 화면은 이전 상태 그대로 두고 문구만
   } catch (e) {
     // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
+    if (updateState.state === "restarting" && e.name === "TypeError") { closeOfficeWindow(true); return; }
     downCount++;
     if (!headlessClient && downCount >= 3) { closeOfficeWindow(); return; }
     const conn = $("#conn");
@@ -1178,6 +1237,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
+  if (seq >= appliedSeq) safe("update", () => renderUpdate(s.update));
   if (s.closing === true || (!headlessClient && s.owner === false)) { closeOfficeWindow(); return; }
   if (s.unchanged && new Date().toDateString() !== lastDay) { lastRev = null; return; }   // 자정 지남: 다음 조회에서 전체를 받아 날짜 표시를 다시 그림
   if (s.unchanged) {   // 상태 그대로: 다시 그리지 않고 경과 시간·진행 줄만 갱신
