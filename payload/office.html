@@ -740,7 +740,7 @@ async function api(body) {
   return ok;
 }
 // 서버가 받았을 때만 입력창을 비움 — 통신 실패 시 쓴 내용 보존, 전송 중 중복 전송 막음
-let sending = false;
+let sending = false, forceBottom = false;
 const drafts = {};
 async function send() {
   const text = $("#input").value.trim();
@@ -749,6 +749,13 @@ async function send() {
   const from = curSession;
   const ok = mode === "job" ? await api({action: "job", text, lead: $("#lead").value})
                             : await api({action: "msg", text, to: mode});
+  if (ok && curSession === from) {
+    forceBottom = true;
+    lastSig = "";   // 다음 전체 조회에서 새 메시지를 그린 뒤에도 바닥을 유지해요.
+    const sec = $("#tlsec");
+    sec.scrollTop = sec.scrollHeight;
+    onTimelineScroll();
+  }
   if (ok && curSession === from && $("#input").value.trim() === text) { $("#input").value = ""; grow(); }
   else if (ok) delete drafts[from];   // 보내는 사이 다른 대화로 옮겼으면 그 대화 초안은 건드리지 않음
   sending = false; $("#send").disabled = false;
@@ -1186,7 +1193,8 @@ function threadHtml(t) {
 
 function renderTimeline(msgs, jobs) {
   const tl = $("#timeline"), sec = tl.parentElement;
-  const stick = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  const stick = forceBottom || sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  forceBottom = false;
   // 위쪽을 읽던 중이면, 보던 요청 묶음이 다시 그린 뒤에도 같은 위치에 오게 기억 (위 요청이 접혀도 화면이 안 튀게)
   const anchor = stick ? null : [...tl.querySelectorAll(".thread[id]")].find(el => el.getBoundingClientRect().bottom > sec.getBoundingClientRect().top);
   const anchorId = anchor?.id, anchorTop = anchor?.getBoundingClientRect().top;
@@ -1452,7 +1460,7 @@ async function doRefresh() {
     if (s.session !== curSession) {   // 대화 전환: 쓰던 초안은 그 대화에 남겨두고 새 대화 초안을 불러옴
       if (curSession) drafts[curSession] = $("#input").value;
       $("#input").value = drafts[s.session] || ""; grow();
-      curSession = s.session; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
+      curSession = s.session; forceBottom = false; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
     }
     const msgs = s.msgs || [], jobs = s.jobs || [], tasks = s.tasks || [];
     stampMsgs(msgs, jobs);
