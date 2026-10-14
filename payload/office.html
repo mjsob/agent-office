@@ -79,7 +79,7 @@ main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
 .sitem:hover .acts, .sitem.on .acts { display: flex; }
 .sitem .acts button { padding: 3px; }
 .trash { flex: none; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
-#tlist { max-height: min(30vh, 240px); overflow-y: auto; overscroll-behavior: contain; margin-top: 4px; }
+#tlist { max-height: min(35vh, 220px); overflow-y: auto; overscroll-behavior: contain; margin-top: 4px; }
 .trash summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; display: flex; gap: 6px; align-items: center; }
 .trash summary::-webkit-details-marker { display: none; }
 .trash .sitem { cursor: default; opacity: .8; }
@@ -331,23 +331,21 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .empty.center { text-align: center; padding: 48px 0; }
 
 /* 업데이트 알림 */
-body { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+body { grid-template-rows: auto minmax(0, 1fr) auto; }
 body > header { grid-row: 1; }
-body > main { grid-row: 3; }
-body > footer { grid-row: 4; }
-.update-notice { grid-row: 2; margin: 10px 16px; padding: 12px 14px; border: 1px solid var(--codex); border-color: color-mix(in srgb, var(--codex) 40%, transparent); border-radius: 10px; background: var(--codex-soft); color: var(--text); font-size: 13px; letter-spacing: 0; word-break: keep-all; }
-.update-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.update-heading { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; gap: 12px; min-width: 0; flex: 1; }
-.update-symbol { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--codex) 15%, transparent); color: var(--codex); }
-.update-symbol .i { width: 18px; height: 18px; }
+body > main { grid-row: 2; }
+body > footer { grid-row: 3; }
+.update-notice { position: fixed; top: calc(var(--office-header-height, 52px) + 12px); right: 16px; z-index: 20; width: 340px; max-height: calc(100dvh - var(--office-header-height, 52px) - 24px); overflow-y: auto; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 28px rgba(0, 0, 0, .14), 0 2px 6px rgba(0, 0, 0, .06); font-size: 13px; letter-spacing: 0; word-break: keep-all; }
+.update-row { display: block; position: relative; }
+.update-heading { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px; min-width: 0; padding-right: 17px; }
+.update-symbol { display: inline-flex; align-items: center; justify-content: center; color: var(--codex); padding-top: 2px; }
+.update-symbol .i { width: 16px; height: 16px; }
 .update-copy { min-width: 0; }
 #updateTitle { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; letter-spacing: 0; }
-.update-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 6px; margin-top: 3px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-#updateSummary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 75ch; }
-#updateDate, #updateChecked { white-space: nowrap; font-variant-numeric: tabular-nums; }
-#updateDate:not([hidden])::before, #updateChecked:not([hidden])::before { content: "·"; margin-right: 6px; }
-#updateSummary[hidden] + #updateDate::before { content: none; margin: 0; }
-.update-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.update-meta { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+#updateSummary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+#updateChecked { display: block; margin-top: 4px; font-size: 12px; }
+.update-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 #updateButton { background: #245aa0; border-color: #245aa0; color: #fff; font-weight: 600; padding: 6px 12px; border-radius: 7px; }
 .update-notice .update-text { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; color: var(--text); font-size: 12px; font-weight: 500; }
 #updateNotesToggle { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -355,17 +353,17 @@ body > footer { grid-row: 4; }
 #updateNotesToggle .i { width: 13px; height: 13px; transition: transform .15s ease; }
 #updateNotesToggle[aria-expanded="true"] .i { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { #updateNotesToggle .i { transition: none; } }
-#updateToday { background: transparent; border-color: transparent; color: var(--muted); padding: 5px 2px; font-weight: 400; }
+#updateToday { margin-left: auto; white-space: nowrap; background: transparent; border-color: transparent; color: var(--muted); padding: 5px 2px; font-weight: 400; }
 #updateToday:hover { color: var(--text); text-decoration: underline; }
-.update-close { background: none; border: 0; padding: 5px; margin-left: 4px; color: var(--muted); border-radius: 6px; }
+.update-close { position: absolute; top: -5px; right: -6px; background: none; border: 0; padding: 5px; margin: 0; color: var(--muted); border-radius: 6px; }
 .update-close:hover { color: var(--text); background: var(--panel); }
 .update-notice button:disabled { cursor: default; }
 .update-notice button:focus-visible, .update-badge:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 .update-badge { flex: none; color: var(--codex); background: var(--codex-soft); border-color: var(--codex); font-size: 12px; font-weight: 600; }
-#updateMessage, #updateError { margin: 8px 0 0 44px; font-size: 12px; }
+#updateMessage, #updateError { margin: 10px 0 0; font-size: 12px; }
 #updateMessage:empty { display: none; }
 #updateError { color: var(--warn); }
-#updateDetails { margin: 12px 0 0 44px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+#updateDetails { margin: 12px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
 #updateNotes { max-width: 100%; max-height: min(30vh, 240px); overflow: auto; padding: 0; background: transparent; border: 0; border-radius: 0; }
 #updateNotes .body .h { border: 0; padding-left: 0; font-size: 13px; margin: 12px 0 4px; }
 #updateNotes .body .h:first-child { margin-top: 0; }
@@ -385,14 +383,7 @@ body > footer { grid-row: 4; }
   header .narrow-only:not(.ghost) { font-size: 12px; padding: 4px 6px; }
   body.has-update-badge header { flex-wrap: wrap; }
   .update-badge { order: 10; width: 100%; justify-content: center; }
-  .update-notice { margin: 8px 10px; padding: 12px; }
-  .update-row { flex-wrap: wrap; gap: 12px; position: relative; }
-  .update-heading { flex-basis: 100%; padding-right: 22px; gap: 10px; }
-  .update-meta { gap: 3px 5px; }
-  #updateSummary { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  .update-actions { margin-left: 42px; }
-  .update-close { position: absolute; top: 0; right: -4px; margin: 0; }
-  #updateDetails, #updateMessage, #updateError { margin-left: 0; }
+  .update-notice { left: 12px; right: 12px; width: auto; top: calc(var(--office-header-height, 52px) + 8px); max-height: calc(100dvh - var(--office-header-height, 52px) - 20px); padding: 16px; }
 }
 /* 입력 */
 footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
@@ -491,8 +482,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       </div>
     </div>
     <div class="update-actions">
-      <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()"><span>변경 내용</span><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
       <button id="updateButton" onclick="startUpdate()">업데이트</button>
+      <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()"><span>변경 내용</span><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
       <button id="updateCheck" class="update-text" onclick="checkUpdateNow()">다시 확인</button>
       <button id="updateToday" class="update-text" onclick="dismissUpdate(true)">오늘은 그만</button>
       <button id="updateClose" class="update-close" aria-label="업데이트 알림 닫기" title="닫기" onclick="dismissUpdate(false)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
@@ -537,6 +528,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <script>
 const $ = s => document.querySelector(s);
+const syncHeaderHeight = () => document.documentElement.style.setProperty("--office-header-height", $("header").getBoundingClientRect().height + "px");
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncHeaderHeight).observe($("header"));
+window.addEventListener("resize", syncHeaderHeight);
+syncHeaderHeight();
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const nm = n => NAME[n] ?? esc(n ?? "—");
 // 이름에 각자 색: 'Codex → Claude'처럼 보낸 쪽·받는 쪽이 한눈에 구분되게
@@ -662,13 +657,12 @@ function renderUpdate(u = updateState) {
   $("#updateButton").hidden = !u.available && !busy && !failed;
   $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
-    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 v${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
+    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신이에요" : "새 버전을 확인하세요";
   $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
   const summary = releaseSummary(u.notes);
   $("#updateSummary").textContent = busy ? "설치가 끝나면 새 버전으로 다시 시작해요." : failed ? "오류 내용을 확인하고 다시 시도하세요." : u.available ? summary || "변경 내용을 확인하고 새 버전으로 업데이트하세요." : checking ? "새 버전이 있는지 확인하고 있어요." : u.error ? "다시 확인하거나 오류 내용을 확인하세요." : "Office를 최신 상태로 사용하고 있어요.";
-  const date = typeof u.date === "string" && /^(\d{4})-(\d{2})-(\d{2})$/.exec(u.date);
-  $("#updateDate").hidden = !date;
-  $("#updateDate").textContent = date ? `${Number(date[1]) === new Date().getFullYear() ? Number(date[2]) : date[1] + "." + date[2]}.${date[3]}` : "";
+  $("#updateDate").hidden = true;
+  $("#updateDate").textContent = "";
   $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
@@ -685,7 +679,7 @@ function renderUpdate(u = updateState) {
   if (!u.notes) resetUpdateNotes();
   if (updateSignature !== String(u.notes || "")) {
     updateSignature = String(u.notes || "");
-    $("#updateNotes .body").innerHTML = md(updateSignature, false);
+    $("#updateNotes .body").innerHTML = md(updateSignature.replace(/^(#{1,6}\s+v?\d+\.\d+\.\d+)\s*[·|—-]\s*\d{4}-\d{2}-\d{2}.*$/gm, "$1"), false);
   }
 }
 async function checkUpdateNow() {
