@@ -285,6 +285,7 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .task { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--line); }
 .task > svg { margin-top: 2px; color: var(--muted); }
 .task.doing > svg { color: var(--text); animation: spin 2.4s linear infinite; }
+.task.waiting > svg { color: var(--muted); }
 .task.done > svg { color: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .task .ti { flex: 1; min-width: 0; }
@@ -458,6 +459,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <body>
 <svg width="0" height="0" style="position:absolute">
   <symbol id="i-office" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 7h1M14 7h1M9 11h1M14 11h1M10 21v-4h4v4"/></symbol>
+  <symbol id="i-waiting" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-todo" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></symbol>
   <symbol id="i-doing" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" opacity=".3"/><path d="M12 4a8 8 0 0 1 8 8"/></symbol>
   <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></symbol>
@@ -564,7 +566,13 @@ function doingText(doing) {
   const step = ["work", "continue", "plan"].includes(doing.kind) ? STEP[doing.step] : "";
   return label && step ? `${label} · ${step}` : label;
 }
-const JOBST = {planning: "계획 세우는 중", working: "작업 중", review: "결과 확인 중", done: "완료"};
+const JOBST = {planning: "계획 세우는 중", working: "작업 중", review: "결과 확인 중", waiting: "기다리는 중", done: "완료"};
+// 남은 작업이 기다리는 상태라면 요청도 완료로 보이지 않게 표시해요.
+function jobStatus(j, tasks = lastTasks) {
+  const open = tasks.filter(t => t.job === j.id && t.status !== "done");
+  if (!j.cancelled && open.length && open.every(t => t.status === "waiting")) return "waiting";
+  return j.status === "done" && open.length && !j.cancelled ? "working" : j.status;
+}
 const PH = {
   job: "무엇을 할까요?",
   claude: "Claude가 뭘 할까요?",
@@ -1244,18 +1252,18 @@ function threadHtml(t) {
     return who && all.some(x => x.from === who && x.id > m.id);
   })();
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
-  const j = t.job, st = j.cancelled ? "취소됨" : JOBST[j.status] ?? "";
-  const live = j.status && j.status !== "done";
+  const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
+  const live = status && status !== "done";
   const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div></div>` : "";
   const steps = t.steps.filter(m => !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
-  const sum = `<span class="pill ${j.status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (멈춰서 ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
+  const sum = `<span class="pill ${status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (멈춰서 ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
   // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
   return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${bar}
     ${steps.length ? fold("j" + j.id, sum, `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}
-    ${j.status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
+    ${status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
       ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}</div>`;
 }
 
@@ -1270,8 +1278,8 @@ function renderTimeline(msgs, jobs) {
   const items = threads(msgs, jobs), KEEP = 5;
   const tIdx = items.map((x, i) => x.m ? -1 : i).filter(i => i >= 0);
   const cut = tIdx.length > KEEP ? tIdx[tIdx.length - KEEP] : 0;
-  const old = items.slice(0, cut).filter(x => !x.m && x.job.status === "done");
-  const rest = items.slice(0, cut).filter(x => !x.m && x.job.status !== "done").concat(items.slice(cut));
+  const old = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) === "done");
+  const rest = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) !== "done").concat(items.slice(cut));
   const oldRow = x => expandedOld.has(x.job.id) ? threadHtml(x)
     : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
@@ -1313,7 +1321,7 @@ function resvHtml(list, cur) {
 function renderBoard(jobs, tasks, resv = [], cur = "") {
   // 작업 번호는 '요청번호-순번'(3-1)으로: '요청 3'과 '작업 #3'이 헷갈리던 문제. 원래 번호는 툴팁에
   const taskRow = (t, i) => `<div class="task ${t.status}">${icon(t.status)}
-    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}</span>${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}</span>
+    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}</span>${t.status === "waiting" ? `<span class="note">기다리는 중${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}</span>
     <span class="pill ${t.owner || ""}">${t.owner ? nm(t.owner) : "미배정"}</span></div>`;
   const orphan = tasks.filter(t => !t.job);
   // 진행 중인 요청만 카드로. 끝난 건 접어둔 한 줄 목록 (결과 보고는 대화창에 이미 있음)
@@ -1322,10 +1330,10 @@ function renderBoard(jobs, tasks, resv = [], cur = "") {
   const isOpen = j => j.status !== "done" || pending(j);
   const active = jobs.filter(isOpen), closed = jobs.filter(j => !isOpen(j)).reverse();
   const html = [...active].reverse().map(j => {
-    const st = j.cancelled ? "취소됨" : JOBST[j.status] ?? j.status;
+    const status = jobStatus(j, tasks), st = j.cancelled ? "취소됨" : JOBST[status] ?? status;
     const jt = tasks.filter(t => t.job === j.id);
-    return `<div class="job ${j.status === "done" ? "closed" : ""}">
-      <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${j.status}">${st}</span>
+    return `<div class="job ${status === "done" ? "closed" : ""}">
+      <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${status}">${st}</span>
         ${j.status !== "done" ? `<button class="ghost" aria-label="요청 취소" onclick='cancelJob(${j.id})'>${icon("x", "sm")}</button>` : ""}</div>
       <div class="sub">요청 ${j.id} · 리더 ${nm(j.lead)}${j.acting_lead ? ` → ${nm(j.acting_lead)} 대행` : ""} · 작업 ${jt.filter(t => t.status === "done").length}/${jt.length}</div>
       ${jt.map(taskRow).join("")}
@@ -1406,10 +1414,14 @@ function updateLiveBars(agents) {
     }
     // 단계 점: 계획 → 작업(완료 작업 n/m) → 확인 → 완료
     const job = lastJobs.find(x => x.id === jid), jt = lastTasks.filter(x => x.job === jid);
-    const order = ["planning", "working", "review", "done"], cur = Math.max(0, order.indexOf(job?.status));
+    const order = ["planning", "working", "review", "done"], cur = Math.max(0, order.indexOf(job ? (jobStatus(job) === "waiting" ? "working" : jobStatus(job)) : "planning"));
     const label = ["계획", jt.length ? `작업 ${jt.filter(x => x.status === "done").length}/${jt.length}` : "작업", "확인", "완료"];
     el.querySelector(".stage").innerHTML = label.map((l, i) =>
       `<span class="st ${i < cur ? "past" : i === cur ? "now" : ""}">${l}</span>`).join('<span class="arr">›</span>');
+    if (job && jobStatus(job) === "waiting") {
+      const reasons = [...new Set(jt.filter(t => t.status === "waiting").map(t => t.wait_reason).filter(Boolean))];
+      parts.unshift("기다리는 중" + (reasons.length ? " · " + reasons.join(" · ") : ""));
+    }
     const since = +el.dataset.since;   // 요청 시각(날짜 포함): 자정을 넘겨도 경과 시간이 맞게
     const ago = since ? ` · 요청 후 ${elapsed(since)}` : "";
     const warn = parts.some(p => p.startsWith("⚠") || p.includes("일시정지"));
@@ -1540,10 +1552,10 @@ async function doRefresh() {
     safe("git", () => renderGit(s.git, s.parallel));
     const last = msgs[msgs.length - 1];
     lastDay = new Date().toDateString();
-    const tsig = lastDay + "|" + msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs);
+    const tsig = lastDay + "|" + msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs) + JSON.stringify(tasks);
     if (tsig !== lastSig && safe("timeline", () => renderTimeline(msgs, jobs))) lastSig = tsig;
     const resv = s.file_reservations || [];
-    const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업만 바뀌면 대화창은 그대로 두고 현황판만
+    const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업 상태와 예약이 바뀌면 현황판도 갱신해요.
     if (bsig !== lastBoardSig && safe("board", () => renderBoard(jobs, tasks, resv, s.session))) lastBoardSig = bsig;
     safe("livebars", () => updateLiveBars(s.agents));
     safe("typing", () => updateTyping(s.agents));

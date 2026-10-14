@@ -12,7 +12,7 @@ GUI에서 '작업 요청'으로 보내면: 리더가 쪼개서 분배 → 둘이
 각자에게 직접 지시(@claude / @codex)도 가능.
 
 에이전트용 (OFFICE_AS 환경변수로 누가 하는지 자동 지정):
-  office claim ID | done ID "요약" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
+  office claim ID | done ID "요약" | wait ID "기다리는 것" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
 """
 import math, tomllib, hashlib, ssl
 import argparse, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
@@ -116,7 +116,7 @@ def state_valid(data):
             if key == "jobs" and (item.get("status") not in ("planning", "working", "review", "done")
                     or item.get("lead") not in AGENTS or not isinstance(item.get("text"), str)):
                 return False
-            if key == "tasks" and (item.get("status") not in ("todo", "doing", "done")
+            if key == "tasks" and (item.get("status") not in ("todo", "doing", "waiting", "done")
                     or item.get("owner") not in (*AGENTS, None) or not isinstance(item.get("title"), str)):
                 return False
             if key == "msgs" and any(not isinstance(item.get(field), str) for field in ("ts", "from", "to", "text")):
@@ -484,11 +484,12 @@ def missed_text(msgs, me, limit=6000):
 
 
 def board_text(s, n_msgs=15):
-    icon = {"todo": "⬜", "doing": "🔨", "done": "✅"}
+    icon = {"todo": "⬜", "doing": "🔨", "waiting": "⏳", "done": "✅"}
     out = ["== 요청(job) =="]
     out += [f"요청 {j['id']} [{j['status']}] 리더={j['lead']} : {j['text']}" for j in s["jobs"] if j["status"] != "done"] or ["(없음)"]
     out.append("== 작업판 ==")
     out += [f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {t['title']}"
+            + (f" — 기다리는 중: {t['wait_reason']}" if t["status"] == "waiting" and t.get("wait_reason") else "")
             + (f" — {t['note']}" if t.get("note") else "") for t in s["tasks"] if t["status"] != "done" or
             any(j["id"] == t.get("job") and j["status"] != "done" for j in s["jobs"])] or ["(비어있음)"]
     out.append("== 최근 대화 ==")
@@ -744,9 +745,28 @@ def cmd_claim(a):
         t = find(s, a.id)
         if t["owner"] not in (None, me()) or t["status"] == "done":
             sys.exit(f"#{a.id} 는 이미 {t['owner']} 담당/{t['status']} — 못 가져감")
-        t.update(owner=me(), status="doing", claimed_at=time.time())
-        event(s, f"작업 #{a.id} 시작", me(), job=message_job(s))
+        resumed = t["status"] == "waiting"
+        t.pop("wait_reason", None); t.pop("waiting_at", None)
+        t.update(owner=me(), status="doing", claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
+        event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=message_job(s))
         print(f"#{a.id} 맡음")
+
+
+def cmd_wait(a):
+    """백그라운드 작업·외부 결과를 기다리는 동안 작업을 열어 둔 채 재촉·진행 멈춤 점검에서 뺀다"""
+    reason = " ".join((a.text or "").split())[:200]
+    if not reason:
+        raise UserError("입력 내용 확인 — 무엇을 기다리는지 적어 주세요.")
+    with state(True) as s:
+        t = find(s, a.id)
+        if t["status"] == "done":
+            sys.exit(f"#{a.id} 는 이미 끝난 작업입니다.")
+        if t["owner"] not in (None, me()):
+            sys.exit(f"#{a.id} 는 {t['owner']} 담당 — 담당자만 기다림으로 바꿀 수 있습니다.")
+        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time())
+        t.setdefault("claimed_at", time.time())
+        event(s, f"작업 #{a.id} 기다리는 중 · {reason}", me(), job=message_job(s))
+        print(f"#{a.id} 기다림")
 
 
 def cmd_done(a):
@@ -809,7 +829,10 @@ def cmd_finish(a):
             sys.exit("사용자가 취소한 요청입니다. 완료 보고를 덮어쓰지 않습니다.")
         if me() != j.get("acting_lead", j["lead"]):
             sys.exit("선택된 리더 또는 대행 리더만 완료 보고할 수 있습니다.")
-        if any(t.get("job") == j["id"] and t["status"] != "done" for t in s["tasks"]):
+        left = [t for t in s["tasks"] if t.get("job") == j["id"] and t["status"] != "done"]
+        if any(t["status"] == "waiting" for t in left):
+            sys.exit("기다리는 작업이 남아 있습니다. 결과가 나와 완료한 뒤 보고하세요. 중간 상황은 office say --to user 로 알리세요.")
+        if left:
             sys.exit("남은 작업을 완료한 뒤 보고하세요.")
         jid = message_job(s)
         j.update(status="done", finished_by=me(), finished_at=time.time(), summary=a.text, brief=report_brief(a.text))
@@ -1144,6 +1167,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office add "할일" --to 이름       작업 만들어 배정 (리더가 일 쪼갤 때)
   office claim ID                  주인 없는 작업 가져가기
   office done ID "결과 요약"        끝냄
+  office wait ID "기다리는 것"      백그라운드 작업·외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지 오면 깨어남)
   office handoff ID --to {other} "진행상황/이유"   넘기기
   office say --to {other} "말"      동료에게 의견·리뷰요청·질문 (--to user 는 사용자)
   office finish "최종 보고"         (리더만) 일 전체 마무리하고 사용자에게 보고
@@ -1154,6 +1178,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 외부 프로세스(tmux·서버·다른 CLI)에 입력을 보냈으면 실제로 들어갔는지 바로 확인해라. 결과를 1분 넘게 반복 확인하며 기다리지 마라.
 - 동료 완료·답을 기다릴 때 sleep·백그라운드 작업·반복 확인으로 차례를 붙잡지 마라. 할 일이 없으면 차례를 끝내라. 새 메시지·작업 변화가 생기면 서버가 다시 깨운다(차례를 붙잡고 있으면 그 사이 넘어온 일을 못 받는다).
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
+- 몇 시간 걸리는 수집·빌드처럼 백그라운드로 도는 일은 시작만 하고 done·finish 하지 마라. 끝나면 `office say --to 담당`이 오도록 연결한 뒤 `office wait ID "무엇을 기다리는지"`로 두고 차례를 끝내라. 알림이 오면 `office claim ID`로 다시 시작한다.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
@@ -1946,7 +1971,8 @@ class Worker:
         jobs = [j for j in s["jobs"] if j["status"] != "done"]
         mine_lead = [j for j in jobs if j.get("acting_lead", j["lead"]) == self.name]
         planning = {j["id"] for j in jobs if j["status"] == "planning"}
-        tasks = [t for t in s["tasks"] if t["status"] != "done"]
+        tasks = [t for t in s["tasks"] if t["status"] not in ("done", "waiting")]   # 기다림 작업은 재촉하지 않는다
+        waiting = [t for t in s["tasks"] if t["status"] == "waiting" and t["owner"] == self.name]
         mine = [t for t in tasks if t["owner"] == self.name]
         free = [t for t in tasks if t["owner"] is None and t.get("job") not in planning]
 
@@ -1975,7 +2001,7 @@ class Worker:
             jt = [t for t in s["tasks"] if t.get("job") == j["id"]]
             if j["status"] in ("working", "review") and all(t["status"] == "done" for t in jt):
                 return REVIEW.format(jid=j["id"], text=j["text"]) + "\n이번 배분 측정:\n" + task_metrics(s, j["id"]) + '\n배분 관점 교훈 한 줄을 office lesson "..."으로 남겨라. 누락된 시각은 미측정이므로 0초 성과로 해석하지 마라.' + extra, j["id"], "review", new
-        assigned = mine or free
+        assigned = mine or free or waiting
         job = assigned[0].get("job") if assigned else (jobs[0]["id"] if jobs else None)
         queue = [x for x in getattr(self, "stall_prompts", []) if x[1] in open_ids]   # 끝난·취소된 요청의 점검은 버림
         if queue:   # 진행 멈춤 점검: 서버가 리더에게 주는 차례 (요청별로 하나씩)
@@ -1986,7 +2012,10 @@ class Worker:
         if new:
             self.cont = 0
             self.nudge_state = {}
-            return f"새로 온 메시지:\n{body}", job, ("reply" if not mine and not free else "work"), new
+            held = "".join(f"\n- #{t['id']} (요청 {t.get('job')}): {t.get('wait_reason') or '기다리는 중'}" for t in waiting)
+            if held:
+                held = "\n\n기다리는 중인 네 작업:" + held + "\n기다리던 결과가 왔으면 `office claim ID`로 다시 시작하거나 끝냈으면 `office done ID`. 아직이면 그대로 두고 차례를 끝내라."
+            return f"새로 온 메시지:\n{body}{held}", job, ("reply" if not mine and not free and not waiting else "work"), new
         if not (free or mine):
             return None
         # 새 메시지 없이 남은 작업만 있으면 요청별로 재촉한다. 재촉은 그 요청에 진척(작업 상태 변화·동료 활동)이
@@ -3031,6 +3060,8 @@ class Office:
             tasks_sig = tuple((t["id"], t["status"], t["owner"]) for t in s["tasks"])
             activity = (len(s["msgs"]), tasks_sig)
             tasks = [t for t in s["tasks"] if t["status"] != "done"]
+            # 열린 작업이 모두 기다림인 요청은 멈춘 게 아니라 결과를 기다리는 중이다
+            jobs = [j for j in jobs if not ((left := [t for t in tasks if t.get("job") == j["id"]]) and all(t["status"] == "waiting" for t in left))]
         busy = any(w.status == "working" or getattr(w, "retry_at", 0) > now for w in workers.values())
         prev = team.get("stall")
         if not jobs or busy or not prev or prev[0] != activity:
@@ -3044,7 +3075,7 @@ class Office:
         stopped = [who(w) for w in workers.values() if w.paused]
         for j in jobs:
             left = [t for t in tasks if t.get("job") == j["id"]]
-            left_text = ", ".join(f"#{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'} {'진행 중' if t['status'] == 'doing' else '대기'}" for t in left) or "없음(검수 차례 대기)"
+            left_text = ", ".join(f"#{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'} {'진행 중' if t['status'] == 'doing' else '기다리는 중' if t['status'] == 'waiting' else '대기'}" for t in left) or "없음(검수 차례 대기)"
             detail = f"남은 작업 {left_text}" + (f" · 멈춘 담당 {', '.join(stopped)}" if stopped else "")
             lead_name = j.get("acting_lead", j["lead"])
             lead = workers.get(lead_name)
@@ -3895,7 +3926,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -3918,6 +3949,7 @@ def main():
     x = sp.add_parser("add"); x.add_argument("text"); x.add_argument("--to", choices=AGENTS); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
     x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text"); x.set_defaults(f=cmd_wait)
     x = sp.add_parser("handoff"); x.add_argument("id", type=int); x.add_argument("--to", choices=AGENTS, required=True)
     x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_handoff)
     x = sp.add_parser("say"); x.add_argument("text"); x.add_argument("--to", default="all", choices=(*AGENTS, "user", "all"))
