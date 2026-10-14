@@ -377,6 +377,10 @@ body > footer { grid-row: 4; }
 #timeline.empty-timeline { min-height: 100%; justify-content: center; align-items: center; }
 .empty-conversation { color: var(--faint); font-size: 25px; font-weight: 500; text-align: center; padding: 24px; }
 @media (max-width: 600px) {
+  header { gap: 6px; }
+  .brand { flex: none; white-space: nowrap; }
+  .brand .version { max-width: 68px; overflow: hidden; text-overflow: ellipsis; }
+  header .narrow-only:not(.ghost) { font-size: 12px; padding: 4px 6px; }
   body.has-update-badge header { flex-wrap: wrap; }
   .update-badge { order: 10; width: 100%; justify-content: center; }
   .update-notice { margin: 8px 10px; padding: 12px; }
