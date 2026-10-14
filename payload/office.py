@@ -3274,8 +3274,55 @@ def window_open(port):
         return False
 
 
+def process_started_at(pid):
+    """프로세스 시작 시각(epoch). /proc/<pid>/stat의 부팅 후 틱 + 부팅 시각"""
+    try:
+        ticks = int((Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19])
+        boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+        return boot + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+
+
+def restart_stale_server(info):
+    """설치 명령을 다시 실행해 앱 파일이 바뀌었는데 예전 서버가 돌고 있으면 끄고 새 버전으로 띄운다.
+    실행 중 서버가 보고하는 버전은 디스크의 VERSION을 읽어서 믿을 수 없으므로 프로세스 시작 시각과 파일 수정 시각을 비교한다.
+    끄고 새로 띄우면 True, 그대로 둬야 하면 False"""
+    started = process_started_at(info["pid"])
+    try:
+        changed = Path(__file__).resolve().stat().st_mtime
+    except OSError:
+        return False
+    if started is None or changed <= started + 1:
+        return False
+    try:
+        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{info['port']}/api/state", timeout=5) as response:
+            state = json.loads(response.read())
+    except (OSError, ValueError):
+        return False
+    if any(x.get("busy") for x in state.get("sessions") or []):
+        print(f"새 버전 {office_version()}을 설치했어요. 에이전트가 일하는 중이라 지금은 그대로 둘게요.")
+        print("작업이 끝나면 office를 다시 실행하세요. 새 버전으로 바뀌어요.")
+        return False
+    print(f"새 버전 {office_version()}을 적용하려고 실행 중인 Office를 다시 시작해요.")
+    try:
+        os.kill(info["pid"], signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    for _ in range(300):    # 정리(에이전트 종료·잠금 해제)가 끝날 때까지 최대 30초
+        try:
+            os.kill(info["pid"], 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(.1)
+    raise UserError("Office 종료 대기 시간 초과 — 실행 중인 Office가 꺼지지 않았습니다. office stop 후 다시 실행하세요.")
+
+
 def cmd_gui(a):
     info = running()
+    if info and restart_stale_server(info):
+        info = running()
     if info and window_open(info["port"]):   # 서버도 창도 하나만: 이미 열린 창이 있으면 새로 띄우지 않는다
         return print("Office가 이미 실행 중이에요 · 열려 있는 창을 쓰세요.")
     if info:                     # 다른 콘솔에서 이미 돌고 있으면 창만 다시 엶
