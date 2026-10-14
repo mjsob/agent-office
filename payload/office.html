@@ -355,6 +355,8 @@ body > footer { grid-row: 4; }
 #updateNotesToggle .i { width: 13px; height: 13px; transition: transform .15s ease; }
 #updateNotesToggle[aria-expanded="true"] .i { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { #updateNotesToggle .i { transition: none; } }
+#updateToday { background: transparent; border-color: transparent; color: var(--muted); padding: 5px 2px; font-weight: 400; }
+#updateToday:hover { color: var(--text); text-decoration: underline; }
 .update-close { background: none; border: 0; padding: 5px; margin-left: 4px; color: var(--muted); border-radius: 6px; }
 .update-close:hover { color: var(--text); background: var(--panel); }
 .update-notice button:disabled { cursor: default; }
@@ -492,7 +494,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <button id="updateNotesToggle" class="update-text" aria-expanded="false" aria-controls="updateDetails" onclick="toggleUpdateNotes()"><span>변경 내용</span><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
       <button id="updateButton" onclick="startUpdate()">업데이트</button>
       <button id="updateCheck" class="update-text" onclick="checkUpdateNow()">다시 확인</button>
-      <button id="updateClose" class="update-close" aria-label="오늘은 그만 보기" title="오늘은 그만 보기" onclick="dismissUpdate(true)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      <button id="updateToday" class="update-text" onclick="dismissUpdate(true)">오늘은 그만</button>
+      <button id="updateClose" class="update-close" aria-label="업데이트 알림 닫기" title="닫기" onclick="dismissUpdate(false)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </div>
   </div>
   <div id="updateError" role="status" hidden></div>
@@ -654,6 +657,7 @@ function renderUpdate(u = updateState) {
   $("#updateBadge").setAttribute("aria-expanded", String(visible));
   $("#updateBadge").hidden = !eligible || visible;
   document.body.classList.toggle("has-update-badge", eligible && !visible);
+  $("#updateToday").hidden = busy || failed || !u.available;
   $("#updateClose").hidden = busy || failed;
   $("#updateButton").hidden = !u.available && !busy && !failed;
   $("#updateBadge").textContent = u.available ? `새 버전 ${u.latest || ""}이 나왔어요` : "업데이트 확인";
