@@ -1010,8 +1010,8 @@ function renderAgents(agents) {
           <div class="st ${a.status === "working" ? "now" : ""}" title="${esc(doing || "")}"><span class="dot ${a.status}" style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
             a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : (STATUS[a.status] ?? a.status)}</span></div></div>
         <div class="ctl">${hot}
-        <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "재개" : a.status === "working" ? "지금 하는 차례가 끝나면 일시정지 (진행 중인 작업은 마저 끝냄)" : "일시정지"}" aria-label="${a.paused ? "다시 시작" : "잠시 멈춤"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}</button>
-        ${a.status === "working" && !a.paused ? `<button class="ghost" aria-label="중단" title="중단 — 지금 하는 차례를 바로 끊고 일시정지 (이미 고친 파일은 남음, 다시 시작하면 이어서 함)" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>${icon("x", "sm")}</button>` : ""}</div>
+        <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "다시 시작" : a.status === "working" ? "이번 차례 끝나면 멈춤" : "잠시 멈춤"}" aria-label="${a.paused ? "다시 시작" : "잠시 멈춤"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}</button>
+        ${a.status === "working" && !a.paused ? `<button class="ghost" aria-label="중단" title="지금 바로 멈춤" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>${icon("x", "sm")}</button>` : ""}</div>
       </div>
       ${a.error ? (h => `<div class="agerr">${icon("alert", "sm")}<div><b>${h.title}</b>${a.fail_count > 1 ? ` (같은 오류 ${a.fail_count}번째)` : ""}
           <div class="how">${esc(h.how(n))}</div>
