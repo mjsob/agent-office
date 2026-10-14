@@ -2515,6 +2515,33 @@ def check_update(stop):
             time.sleep(5)
 
 
+AUTO_RESTART_FLAG = Path.home() / ".config" / "office" / "auto-restart"
+
+
+def watch_app_files(office):
+    """이 PC에서 자동 재시작을 켰으면(~/.config/office/auto-restart 파일이 있으면) 앱 파일이 실행 중인 서버보다
+    새로워졌을 때 일하는 에이전트가 없을 때를 골라 새 코드로 다시 시작한다. 재설치 뒤 껐다 켤 필요가 없게"""
+    started = time.time()
+    app = Path(__file__).resolve()
+    while not office.stop.wait(30):
+        try:
+            if not AUTO_RESTART_FLAG.exists() or app.stat().st_mtime <= started + 1:
+                continue
+        except OSError:
+            continue
+        if any(w.status == "working" for t in list(office.teams.values()) for w in t["w"].values()):
+            continue
+        with UPDATE_LOCK:
+            if UPDATE["state"] in ("running", "restarting"):
+                continue
+            UPDATE.update(state="restarting", message=None)
+        server_log("app.auto_restart")
+        office.restart = [sys.executable, str(app), *sys.argv[1:]]
+        time.sleep(2)   # 화면이 restarting 상태를 받아 창을 정리하게
+        office.shutdown()
+        return
+
+
 def run_update(office):
     """최신 설치 묶음을 받아 해시를 확인하고 install.sh로 같은 경로에 다시 설치한 뒤 새 프로세스로 다시 시작"""
     def fail(text):
@@ -3237,6 +3264,7 @@ def serve():
     office.sync_teams()
     threading.Thread(target=codex_limits, daemon=True).start()    # 과거 관측을 보조로 표시
     threading.Thread(target=check_update, args=(office.stop,), daemon=True).start()
+    threading.Thread(target=watch_app_files, args=(office,), daemon=True).start()
     for name in AGENTS:
         threading.Thread(target=refresh_provider_limits, args=(name, office.stop), daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGHUP):     # office stop / 콘솔 창 닫기
