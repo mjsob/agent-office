@@ -910,8 +910,8 @@ function usageBlock(n, a) {
   const asof = L.at ? `<div class="tok"><span>한도 기준</span><span>${ago(L.at)}</span></div>` : "";
   return `<div class="usage">${rows ? rows + asof : '<div>사용 한도 정보 아직 없음</div>'}
     ${a.usage_since != null
-      ? `<div class="tok" title="${ago(a.usage_since)}부터 셈 · 캐시 읽기 ${fmtTok(a.cached_tokens)}는 비용이 낮아 따로 뺌"><span>이 대화에서 쓴 양</span><span>${fmtTok(a.tokens)} 토큰</span></div>`
-      : `<div class="tok" title="Claude/Codex 집계 기준이 달라 비교 불가 — 서버 재시작 후 같은 기준으로 새로 셈"><span>이 대화에서 쓴 양 (예전 기준)</span><span>${fmtTok(a.tokens)} 토큰</span></div>`}</div>`;
+      ? `<div class="tok" title="${ago(a.usage_since)}부터 셈 · 캐시 읽기 ${fmtTok(a.cached_tokens)}는 비용이 낮아 따로 뺌"><span>이 대화에서 쓴 양</span><span>${fmtTok(a.tokens)} tokens</span></div>`
+      : `<div class="tok" title="Claude/Codex 집계 기준이 달라 비교 불가 — 서버 재시작 후 같은 기준으로 새로 셈"><span>이 대화에서 쓴 양 (예전 기준)</span><span>${fmtTok(a.tokens)} tokens</span></div>`}</div>`;
 }
 
 // 활동 피드엔 사용자가 볼 것만: 차례 시작, 고친 파일, 작업판/메신저 동작. 읽기·검색·일반 명령·중간 독백은 횟수만
