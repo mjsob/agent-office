@@ -3228,7 +3228,7 @@ class Office:
                 notes.append((t, "wait_notified", f"[백그라운드 {result}] {label}", tail))
             elif t.get("wait_deadline") and now >= t["wait_deadline"] and not t.get("wait_overdue"):
                 notes.append((t, "wait_overdue", f"[기다림 기한 지남] {label} · {int((now - t.get('waiting_at', now)) // 60)}분째", ""))
-            elif (alive and log_at and now - max(log_at, (t.get("progress") or {}).get("at") or 0) >= WAIT_DEADLINE
+            elif (alive and log_at and now - max(log_at, (t.get("progress") or {}).get("at") or 0, t.get("waiting_at") or 0) >= WAIT_DEADLINE
                   and now >= ((t.get("progress") or {}).get("resume_at") or 0) + 300 and not t.get("wait_stale")):
                 notes.append((t, "wait_stale", f"[로그 멈춤] {label} · 프로세스는 살아 있는데 로그가 {int((now - log_at) // 60)}분째 안 바뀌어요", ""))
         if not notes:
