@@ -288,6 +288,9 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .task.waiting > svg { color: var(--muted); }
 .task.done > svg { color: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
+.task-progress { display: grid; gap: 4px; margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.task-progress progress { width: 100%; height: 6px; accent-color: var(--ok); }
+.task-progress .freshness { color: var(--muted); font-size: 11px; }
 .task .ti { flex: 1; min-width: 0; }
 .task.done .ti .t { color: var(--muted); }
 .task .note { display: block; font-size: 11.5px; color: var(--muted); }
@@ -1064,9 +1067,10 @@ function renderAgents(agents) {
     const tno = t => t.job ? `${t.job}-${lastTasks.filter(x => x.job === t.job).indexOf(t) + 1}` : `#${t.id}`;
     const stopped = held.some(t => t.wait_alive === false);
     const running = held.some(t => t.wait_alive === true);
-    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
+    const heldProgress = held.map(t => taskProgressShort(t)).filter(Boolean).join(" · ");
+    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : heldProgress ? heldProgress : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
     const logAt = Math.max(0, ...held.map(t => Number(t.wait_log_at) || 0));
-    const heldTip = held.map(t => `${tno(t)} ${t.title}`).join("\n");
+    const heldTip = held.map(t => `${tno(t)} ${t.title}\n${taskProgressTip(t)}`).join("\n");
     const out = feedRows(a.activity), rows = out.join("");
     // 미리보기는 이번 차례만: 지난 최종 답("대기")이 새 작업 시작 때 다시 뜨지 않게 함.
     const boundary = a.activity.findLastIndex(x => x.kind === "start" || x.kind === "end");
@@ -1327,10 +1331,48 @@ function resvHtml(list, cur) {
     <div class="resvhint">파일마다 고치는 쪽은 한 명. 다른 쪽은 끝날 때까지 기다리거나 읽고 검수만 함</div>
     ${mine.map(row).join("")}${other.length ? `<div class="resvsub">다른 대화</div>${other.map(row).join("")}` : ""}</details>`;
 }
+function progressTime(at) {
+  const d = new Date(at * 1000), today = d.toDateString() === new Date().toDateString();
+  return d.toLocaleString("ko-KR", today ? {hour:"2-digit", minute:"2-digit", hour12:false} : {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+}
+function taskProgressShort(t) {
+  const p = t.progress;
+  if (!p) return "";
+  const amount = Number.isFinite(p.done) && Number.isFinite(p.total) && p.done >= 0 && p.total > 0 ? `${p.done.toLocaleString()}/${p.total.toLocaleString()}` : "";
+  const restart = p.resume_at > 0 && t.wait_alive !== false && t.status !== "done"
+    ? p.resume_at > Date.now()/1000 ? `${progressTime(p.resume_at)} 다시 시작` : p.at > p.resume_at ? "" : "다시 시작할 시각이 지났어요" : "";
+  return [amount, restart].filter(Boolean).join(" · ") || p.text || "";
+}
+function taskProgressTip(t) {
+  const p = t.progress;
+  if (!p) return "";
+  return [`진행: ${taskProgressText(t)}`, `다시 시작: ${p.resume_at > 0 ? progressTime(p.resume_at) : "예정 시각이 없어요"}`, `갱신: ${p.at > 0 ? progressTime(p.at) : "기록이 없어요"}`].join("\n");
+}
+function taskProgressText(t) {
+  const p = t.progress;
+  if (!p || typeof p !== "object") return "";
+  const finite = n => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  const amount = finite(p.done) && finite(p.total) && p.total > 0
+    ? `${p.done.toLocaleString()} / ${p.total.toLocaleString()} · ${Math.min(100, Math.floor(p.done / p.total * 100))}%`
+    : finite(p.done) ? `${p.done.toLocaleString()}` : "";
+  let resume = "";
+  if (finite(p.resume_at) && p.resume_at > 0 && t.wait_alive !== false && t.status !== "done") {
+    const left = Math.ceil(p.resume_at - Date.now() / 1000);
+    const at = progressTime(p.resume_at);
+    resume = left > 0 ? `${at} 다시 시작 · ${left < 60 ? "1분 이내" : Math.ceil(left / 60) + "분 뒤"}` : p.at > p.resume_at ? "" : `${at} 다시 시작할 시각이 지났어요 · 새 기록을 기다려요`;
+  }
+  return [p.text, amount, resume].filter(Boolean).join(" · ");
+}
+function taskProgressHtml(t) {
+  const text = taskProgressText(t);
+  if (!text) return "";
+  const p = t.progress, ratio = typeof p.done === "number" && Number.isFinite(p.done) && p.done >= 0 && typeof p.total === "number" && Number.isFinite(p.total) && p.total > 0;
+  return `<span class="task-progress" data-progress-task="${t.id}" title="${esc(taskProgressTip(t))}"><span class="progress-text">${esc(text)}</span>${ratio ? `<progress max="${p.total}" value="${Math.min(p.done, p.total)}" aria-label="완료한 작업 비율"></progress>` : ""}${typeof p.at === "number" && p.at > 0 ? `<span class="freshness">진행 정보 갱신 ${esc(ago(p.at))}</span>` : ""}</span>`;
+}
 function renderBoard(jobs, tasks, resv = [], cur = "") {
   // 작업 번호는 '요청번호-순번'(3-1)으로: '요청 3'과 '작업 #3'이 헷갈리던 문제. 원래 번호는 툴팁에
   const taskRow = (t, i) => `<div class="task ${t.status} ${t.wait_alive === false ? "wait-stopped" : ""}">${icon(t.status)}
-    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}${t.level ? `<small class="task-level">${esc({light:"가벼움",normal:"보통",heavy:"집중"}[t.level] || t.level)}</small>` : ""}</span>${t.status === "waiting" ? `<span class="note">${t.wait_alive === false ? "백그라운드 작업이 멈췄어요" : t.wait_alive === true ? "백그라운드 실행 중" : "기다리는 중"}${t.wait_log_at ? ` · 마지막 기록 ${ago(t.wait_log_at)}` : ""}${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}</span>
+    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}${t.level ? `<small class="task-level">${esc({light:"가벼움",normal:"보통",heavy:"집중"}[t.level] || t.level)}</small>` : ""}</span>${t.status === "waiting" ? `<span class="note">${t.wait_alive === false ? "백그라운드 작업이 멈췄어요" : t.wait_alive === true ? "백그라운드 실행 중" : "기다리는 중"}${t.wait_log_at ? ` · 마지막 기록 ${ago(t.wait_log_at)}` : ""}${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}${taskProgressHtml(t)}</span>
     <span class="pill ${t.owner || ""}">${t.owner ? nm(t.owner) : "미배정"}</span></div>`;
   const orphan = tasks.filter(t => !t.job);
   // 진행 중인 요청만 카드로. 끝난 건 접어둔 한 줄 목록 (결과 보고는 대화창에 이미 있음)
@@ -1412,6 +1454,13 @@ function cancelJob(id) {
 }
 // 진행 중 요청 묶음의 한 줄 상태: 이 요청을 맡아 일하는 에이전트·멈춘 에이전트·요청 후 경과 시간 (매초 갱신, 다시 그리기 없이 글자만 교체)
 function updateLiveBars(agents) {
+  document.querySelectorAll("[data-progress-task]").forEach(el => {
+    const t = lastTasks.find(t => t.id === +el.dataset.progressTask);
+    if (!t) return;
+    el.querySelector(".progress-text").textContent = taskProgressText(t);
+    const fresh = el.querySelector(".freshness");
+    if (fresh) fresh.textContent = "진행 정보 갱신 " + ago(t.progress.at);
+  });
   document.querySelectorAll(".livebar").forEach(el => {
     const jid = +el.dataset.job, parts = [];
     for (const [n, a] of Object.entries(agents || {})) {
@@ -1432,6 +1481,7 @@ function updateLiveBars(agents) {
       const reasons = [...new Set(jt.filter(t => t.status === "waiting").map(t => t.wait_reason).filter(Boolean))];
       parts.unshift("기다리는 중" + (reasons.length ? " · " + reasons.join(" · ") : ""));
     }
+    const progressing = jt.filter(t => t.status !== "done" && taskProgressText(t));
     const since = +el.dataset.since;   // 요청 시각(날짜 포함): 자정을 넘겨도 경과 시간이 맞게
     const ago = since ? ` · 요청 후 ${elapsed(since)}` : "";
     const warn = parts.some(p => p.startsWith("⚠") || p.includes("일시정지"));
@@ -1440,6 +1490,7 @@ function updateLiveBars(agents) {
     el.querySelector(".lb-text").innerHTML = warn
       ? parts.map(p => { const [h, d] = splitMsg(p); return `<span class="w-head">${esc(h)}</span>${d ? `<span class="w-detail">${esc(d)}</span>` : ""}`; }).join("<br>") + (ago ? `<span class="w-detail">${esc(ago.replace(/^ · /, ""))}</span>` : "")
       : esc((parts.join(" · ") || "다음 차례 대기 중") + ago);
+    el.querySelector(".lb-text").innerHTML += progressing.map(taskProgressHtml).join("");
   });
 }
 function jumpTo(id, again) {

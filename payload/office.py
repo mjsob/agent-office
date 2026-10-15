@@ -533,6 +533,7 @@ def board_text(s, n_msgs=15):
     out.append("== 작업판 ==")
     out += [f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {t['title']}"
             + (f" — 기다리는 중: {t['wait_reason']}" if t["status"] == "waiting" and t.get("wait_reason") else "")
+            + (f" — 진행: {progress_text(t['progress'])}" if t["status"] != "done" and t.get("progress") else "")
             + (f" — {t['note']}" if t.get("note") else "") for t in s["tasks"] if t["status"] != "done" or
             any(j["id"] == t.get("job") and j["status"] != "done" for j in s["jobs"])] or ["(비어있음)"]
     out.append("== 최근 대화 ==")
@@ -791,13 +792,16 @@ def cmd_claim(a):
         if t["owner"] not in (None, me()) or t["status"] == "done":
             sys.exit(f"#{a.id} 는 이미 {t['owner']} 담당/{t['status']} — 못 가져감")
         resumed = t["status"] == "waiting"
+        keep = live_bg_watch(t)
         for key in WAIT_FIELDS:
             t.pop(key, None)
+        t.update(keep)   # 아직 도는 백그라운드는 claim 뒤에도 계속 감시한다
         t.update(owner=me(), status="doing", claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
         event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=message_job(s))
         print(f"#{a.id} 맡음")
 
 
+BG_FIELDS = ("wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd")
 WAIT_FIELDS = ("wait_reason", "waiting_at", "wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_deadline",
                "wait_notified", "wait_overdue", "wait_stale")
 
@@ -820,6 +824,13 @@ def wait_probe(t):
     return alive, log_at
 
 
+def live_bg_watch(t):
+    """작업에 걸린 백그라운드 프로세스가 아직 살아 있으면 그 감시 필드를 돌려준다(다시 wait·claim 해도 감시가 안 풀리게)"""
+    if not t.get("wait_pid") or not wait_probe(t)[0]:
+        return {}
+    return {k: t[k] for k in BG_FIELDS if t.get(k) is not None}
+
+
 def mark_waiting(a, reason, **watch):
     with state(True) as s:
         t = find(s, a.id)
@@ -827,11 +838,14 @@ def mark_waiting(a, reason, **watch):
             sys.exit(f"#{a.id} 는 이미 끝난 작업입니다.")
         if t["owner"] not in (None, me()):
             sys.exit(f"#{a.id} 는 {t['owner']} 담당 — 담당자만 기다림으로 바꿀 수 있습니다.")
+        watch = {k: v for k, v in watch.items() if v is not None}
+        if not watch.get("wait_pid"):
+            watch = {**live_bg_watch(t), **watch}
         for key in WAIT_FIELDS:
             t.pop(key, None)
         minutes = getattr(a, "minutes", None)
         deadline = time.time() + minutes * 60 if minutes else (None if watch.get("wait_pid") else time.time() + WAIT_DEADLINE)
-        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time(), **{k: v for k, v in watch.items() if v is not None})
+        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time(), **watch)
         if deadline:
             t["wait_deadline"] = deadline
         t.setdefault("claimed_at", time.time())
@@ -854,6 +868,70 @@ def cmd_wait(a):
     print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else ""))
 
 
+def progress_text(p, with_age=True):
+    """작업 진행 한 줄: '109/829 (13%) · 유튜브 403으로 쉬는 중 · 20:10 다시 시작 · 3분 전 갱신'"""
+    now, bits = time.time(), []
+    if p.get("total"):
+        bits.append(f"{p.get('done') or 0}/{p['total']} ({int(100 * (p.get('done') or 0) / p['total'])}%)")
+    elif p.get("done") is not None:
+        bits.append(f"{p['done']}개")
+    if p.get("text"):
+        bits.append(p["text"])
+    if p.get("resume_at"):
+        bits.append(time.strftime("%H:%M", time.localtime(p["resume_at"])) + (" 다시 시작" if p["resume_at"] > now else " 다시 시작 예정이었음"))
+    if with_age and p.get("at"):
+        minutes = int((now - p["at"]) // 60)
+        bits.append(f"{minutes}분 전 갱신" if minutes > 0 else "방금 갱신")
+    return " · ".join(bits)
+
+
+def parse_resume_at(value):
+    """'20:10', '+15m', '+90s', ISO 시각, epoch 초를 epoch 로 바꾼다"""
+    if value is None or value == "":
+        return None
+    v = str(value).strip()
+    try:
+        if v.startswith("+"):
+            unit = {"s": 1, "m": 60, "h": 3600}.get(v[-1], 60)
+            return time.time() + float(v[1:].rstrip("smh")) * unit
+        if re.fullmatch(r"\d{1,2}:\d{2}", v):
+            h, m = map(int, v.split(":"))
+            at = datetime.datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
+            if at.timestamp() < time.time() - 60:
+                at += datetime.timedelta(days=1)
+            return at.timestamp()
+        if re.fullmatch(r"\d+(\.\d+)?", v):
+            return float(v)
+        at = datetime.datetime.fromisoformat(v)
+        return at.timestamp()
+    except ValueError:
+        raise UserError(f"입력 내용 확인 — 다시 시작 시각 '{v}' 을 못 읽었어요. 20:10, +15m, ISO 시각 중 하나로 적어 주세요.")
+
+
+def cmd_progress(a):
+    """오래 도는 작업의 진행(몇 개 중 몇 개, 지금 상태, 다시 시작 시각)을 작업에 남긴다. 화면·작업판에 늘 보이고 상대를 깨우지 않는다.
+    office bg 로 띄운 명령 안에서는 OFFICE_TASK 가 잡혀 있어 ID 를 생략할 수 있다"""
+    words = list(a.words or [])
+    task_id = int(words.pop(0)) if words and words[0].isdigit() else int(os.environ.get("OFFICE_TASK") or 0)
+    if not task_id:
+        raise UserError("입력 내용 확인 — 작업 ID 를 적어 주세요 (office bg 안에서는 생략 가능).")
+    text = " ".join(" ".join(words).split())[:160]
+    if a.done is not None and a.done < 0 or a.total is not None and a.total < 0:
+        raise UserError("입력 내용 확인 — 개수는 0 이상으로 적어 주세요.")
+    resume_at = parse_resume_at(a.resume_at)
+    with state(True) as s:
+        t = find(s, task_id)
+        if t["status"] == "done":
+            sys.exit(f"#{task_id} 는 이미 끝난 작업입니다.")
+        old = t.get("progress") or {}
+        p = {"text": text or old.get("text") or "", "done": a.done if a.done is not None else old.get("done"),
+             "total": a.total if a.total is not None else old.get("total"), "resume_at": resume_at, "at": time.time()}
+        t["progress"] = p
+        if a.notify:   # 상태가 바뀌는 순간(쉬기 시작·다시 시작·끝)만 사용자에게 한 줄 알린다
+            post(s, "system", "user", f"[진행] 작업 #{task_id} · {progress_text(p, False)}", "progress", job=t.get("job"))
+    print(f"#{task_id} 진행 기록 · {progress_text(p)}")
+
+
 def cmd_bg(a):
     """오래 걸리는 명령을 Office 가 관리하는 백그라운드로 띄운다. 차례가 끝나도 안 죽고, 끝나면(실패·강제 종료 포함) 담당을 한 번 깨운다"""
     command = (a.command or "").strip()
@@ -864,6 +942,7 @@ def cmd_bg(a):
         t = find(s, a.id)
         if t["status"] == "done" or t["owner"] not in (None, me()):
             sys.exit(f"#{a.id} 는 끝났거나 다른 담당 작업입니다.")
+        task_job = t.get("job")
     folder = sdir(current_sid()) / "bg"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -872,7 +951,9 @@ def cmd_bg(a):
     log.parent.mkdir(parents=True, exist_ok=True)
     script = f"( {command}\n) >>{shlex.quote(str(log))} 2>&1 </dev/null; echo $? >{shlex.quote(str(rc_file))}"
     # 새 세션으로 띄워 에이전트 실행 도구·차례 종료가 프로세스 그룹을 정리해도 같이 죽지 않게 한다
-    proc = subprocess.Popen(["bash", "-c", script], cwd=os.getcwd(), start_new_session=True, close_fds=True,
+    # 명령 안에서 office progress 를 ID 없이 쓰고, 띄운 차례의 요청이 먼저 끝나도 작업이 속한 요청으로 파일을 저장하게
+    env = {**os.environ, "OFFICE_TASK": str(a.id), **({"OFFICE_JOB": str(task_job)} if task_job else {})}
+    proc = subprocess.Popen(["bash", "-c", script], cwd=os.getcwd(), env=env, start_new_session=True, close_fds=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ident = process_identity(proc.pid)
     mark_waiting(a, reason, wait_pid=proc.pid, wait_start=ident and ident["start"], wait_log=str(log), wait_rc=str(rc_file), wait_cmd=command[:500])
@@ -1281,6 +1362,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office done ID "결과 요약"        끝냄
   office wait ID "기다리는 것" [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·감시 프로세스 종료·기한 지나면 깨어남)
   office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
+  office progress ID "지금 상태" [--done N --total M] [--resume-at 20:10] [--notify]   오래 도는 일의 진행을 화면에 남기기 (bg 명령 안에선 ID 생략)
   office handoff ID --to {other} "진행상황/이유"   넘기기
   office say --to {other} "말"      동료에게 의견·리뷰요청·질문 (--to user 는 사용자, --to user --info 는 사용자에게 진행 한 줄)
   office finish "최종 보고"         (리더만) 일 전체 마무리하고 사용자에게 보고
@@ -1292,6 +1374,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 동료 완료·답을 기다릴 때 sleep·백그라운드 작업·반복 확인으로 차례를 붙잡지 마라. 할 일이 없으면 차례를 끝내라. 새 메시지·작업 변화가 생기면 서버가 다시 깨운다(차례를 붙잡고 있으면 그 사이 넘어온 일을 못 받는다).
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
 - 몇 분 넘게 걸리는 수집·다운로드·빌드는 `office bg ID "설명" "명령"`으로 띄우고 차례를 끝내라. nohup·&·실행 도구의 백그라운드 기능은 차례가 끝날 때 같이 죽는다. 끝나면 서버가 깨우니 `office claim ID`로 다시 시작한다. 이미 따로 띄운 프로세스는 `office wait ID "사유" --pid N --log 파일`로 감시를 건다.
+- 수십 분 넘게 도는 수집·반복 작업은 사용자가 묻지 않아도 '몇 개 중 몇 개 했고, 쉬는 중이면 언제 다시 시작하는지' 화면에서 보이게 해라. 스크립트가 진행이 바뀔 때마다 `office progress --done N --total M "상태"`(쉬는 중이면 `--resume-at`)를 부르게 만들고, 쉬기 시작·다시 시작·끝처럼 상태가 바뀔 때만 `--notify` 를 붙인다.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
@@ -3145,7 +3228,8 @@ class Office:
                 notes.append((t, "wait_notified", f"[백그라운드 {result}] {label}", tail))
             elif t.get("wait_deadline") and now >= t["wait_deadline"] and not t.get("wait_overdue"):
                 notes.append((t, "wait_overdue", f"[기다림 기한 지남] {label} · {int((now - t.get('waiting_at', now)) // 60)}분째", ""))
-            elif alive and log_at and now - log_at >= WAIT_DEADLINE and not t.get("wait_stale"):
+            elif (alive and log_at and now - max(log_at, (t.get("progress") or {}).get("at") or 0) >= WAIT_DEADLINE
+                  and now >= ((t.get("progress") or {}).get("resume_at") or 0) + 300 and not t.get("wait_stale")):
                 notes.append((t, "wait_stale", f"[로그 멈춤] {label} · 프로세스는 살아 있는데 로그가 {int((now - log_at) // 60)}분째 안 바뀌어요", ""))
         if not notes:
             return
@@ -4239,7 +4323,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "bg", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "bg", "progress", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -4269,6 +4353,10 @@ def main():
     x = sp.add_parser("bg", help="오래 걸리는 명령을 Office가 관리하는 백그라운드로 실행"); x.add_argument("id", type=int)
     x.add_argument("text", help="무엇을 하는지 짧게"); x.add_argument("command", help="실행할 셸 명령"); x.add_argument("--log", help="로그 파일 (기본: 대화 폴더 bg/)")
     x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움"); x.set_defaults(f=cmd_bg)
+    x = sp.add_parser("progress", help="오래 도는 작업의 진행 남기기 (화면에 늘 보임)")
+    x.add_argument("words", nargs="*", help="[작업 ID] 지금 상태 한 줄"); x.add_argument("--done", type=int); x.add_argument("--total", type=int)
+    x.add_argument("--resume-at", help="쉬는 중이면 다시 시작할 시각 (20:10, +15m, ISO)")
+    x.add_argument("--notify", action="store_true", help="사용자에게도 한 줄 알림 (상태가 바뀔 때만)"); x.set_defaults(f=cmd_progress)
     x = sp.add_parser("handoff"); x.add_argument("id", type=int); x.add_argument("--to", choices=AGENTS, required=True)
     x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_handoff)
     x = sp.add_parser("say"); x.add_argument("text"); x.add_argument("--to", default="all", choices=(*AGENTS, "user", "all"))
