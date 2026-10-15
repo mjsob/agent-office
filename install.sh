@@ -151,8 +151,83 @@ for cmd in codex claude; do command -v "$cmd" >/dev/null || fail "$cmd 설치 �
 codex --version
 DISABLE_AUTOUPDATER=1 claude --version
 
+# Keep pristine incoming files separate from any reapplied local edits.
+local_summary=$("$python_bin" - "$prefix" "$staging" "${files[@]}" <<'PYLOCAL'
+import datetime, hashlib, json, os, shutil, subprocess, sys
+from pathlib import Path
+root, incoming = map(Path, sys.argv[1:3])
+names = sys.argv[3:]
+app = root / 'app'
+def digest(p):
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+manifest_path = app / '.office-manifest.json'
+old = None
+try:
+    old = json.loads(manifest_path.read_text())
+    if not isinstance(old.get('files'), dict): old = None
+except (OSError, ValueError, TypeError):
+    pass
+changed = []
+for name in names:
+    current = app / name
+    if old and name in old['files'] and not current.exists() and not current.is_symlink():
+        changed.append(name)
+    elif current.exists() or current.is_symlink():
+        # An older install has no trustworthy baseline: preserve every differing file.
+        expected = old['files'].get(name) if old else digest(incoming / name)
+        if current.is_symlink() or not current.is_file() or digest(current) != expected:
+            changed.append(name)
+backup = None
+merged, conflicts = [], []
+legacy = old is None and app.is_dir() and any(app.iterdir())
+if changed or legacy:
+    version = str((old or {}).get('version', 'legacy'))
+    version = ''.join(c if c.isalnum() or c in '.-+' else '_' for c in version)[:80] or 'legacy'
+    backups = root / 'backups'
+    if backups.is_symlink(): raise RuntimeError('백업 폴더가 심볼릭 링크예요')
+    backups.mkdir(exist_ok=True)
+    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    backup = backups / (version + '-' + stamp)
+    shutil.copytree(app, backup, symlinks=True)
+# Write baselines before merging. Never treat a locally edited result as upstream.
+orig = incoming / '.office-orig'
+orig.mkdir()
+new_manifest = {'version': (incoming / 'VERSION').read_text().strip(),
+                'files': {name: digest(incoming / name) for name in names}}
+for name in names:
+    shutil.copyfile(incoming / name, orig / name)
+for name in (changed if old else []):
+    current, base, target = app / name, app / '.office-orig' / name, incoming / name
+    # A missing/invalid baseline or binary edit stays in the backup only.
+    if (not old or name == 'VERSION' or not base.is_file() or base.is_symlink()
+            or not current.is_file() or current.is_symlink()
+            or digest(base) != old['files'].get(name)):
+        conflicts.append(name); continue
+    if any(b'\0' in p.read_bytes() for p in (base, current, target)):
+        conflicts.append(name); continue
+    if shutil.which('git'):
+        cmd = ['git', 'merge-file', '-p', str(current), str(base), str(target)]
+    elif shutil.which('diff3'):
+        cmd = ['diff3', '-m', str(current), str(base), str(target)]
+    else:
+        conflicts.append(name); continue
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode == 0:
+        target.write_bytes(result.stdout); merged.append(name)
+    else:
+        conflicts.append(name)
+(incoming / '.office-manifest.json').write_text(json.dumps(new_manifest, ensure_ascii=False) + '\n')
+print('OFFICE_LOCAL: changed=%d merged=%s conflicts=%s backup=%s' %
+      (len(changed) if old else 0, ','.join(merged) or '-', ','.join(conflicts) or '-', str(backup) if backup else '-') + (' legacy=1' if legacy else ''))
+PYLOCAL
+) || fail '로컬 수정 백업 또는 병합에 실패했어요. 기존 설치를 그대로 둬요.'
+
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
+# Replace baseline metadata without following old metadata symlinks.
+rm -rf -- "$prefix/app/.office-orig"
+mv -- "$staging/.office-orig" "$prefix/app/.office-orig"
+mv -f -- "$staging/.office-manifest.json" "$prefix/app/.office-manifest.json"
 # The launcher always starts in the chosen workspace; ~/.local/bin/office is created only when absent.
 # printf %q safely handles spaces/quotes without evaluating paths as shell code.
 {
@@ -226,6 +301,7 @@ trap - EXIT
 # Do not retain the installer lock in the long-running GUI.
 flock -u 9
 exec 9>&-
+printf '%s\n' "$local_summary"
 if (( launch )); then
   printf '별도 작업 폴더에서 Office를 시작합니다.\n'
   "$prefix/bin/office"

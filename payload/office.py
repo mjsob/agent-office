@@ -63,6 +63,9 @@ AGENT_QUIET_NOTICE = 25 * 60
 AGENT_QUIET_TIMEOUT = 30 * 60
 AGENT_SLOW_TOOL = 2 * 60   # 도구 하나가 이보다 오래 돌면 화면에 표시하고 로그에 남김 (멈춘 것처럼 보이는 구간 추적)
 AGENT_TOOL_TIMEOUT = 3 * 60 * 60   # 명령·서브 에이전트가 도는 중엔 출력이 없어도 이 시간까지 기다림 (긴 빌드·테스트)
+RESULT_GRACE = 3      # 초: Claude 최종 답(result) 뒤 프로그램이 스스로 끝나길 기다리는 시간. 넘으면 차례를 끝낸다
+LEAD_BUSY_TAKEOVER = int(os.environ.get("OFFICE_LEAD_BUSY") or 120)   # 초: 담당이 다른 차례를 이만큼 붙잡고 있으면 쉬는 쪽이 새 요청 계획·미착수 작업을 맡는다
+WAIT_DEADLINE = 15 * 60   # 초: office wait 기본 기한(감시 프로세스 없을 때), 백그라운드 로그가 이만큼 안 바뀌어도 담당을 한 번 깨운다
 
 
 def server_log(event, error=None):
@@ -196,6 +199,46 @@ def configured_model(name):
         return os.environ.get("ANTHROPIC_MODEL") or json.loads(path.read_text()).get("model", "opus")
     except (OSError, ValueError):
         return "gpt-6.1-sol" if name == "codex" else "opus"
+
+
+MODEL_LEVELS = {   # 차례 무게별 모델·추론 수준. 빈 값은 각 CLI 기본 설정 그대로. ~/.config/office/models.json 으로 덮어씀
+    "light": {"claude": {"model": "sonnet", "effort": "low"}, "codex": {"effort": "low"}},
+    "normal": {"claude": {}, "codex": {}},
+    "heavy": {"claude": {"effort": "high"}, "codex": {"effort": "high"}},
+}
+TURN_LEVELS = {"plan": "heavy", "review": "light", "chat": "light", "reply": "normal", "work": "normal", "continue": "normal"}
+LEVELS = tuple(MODEL_LEVELS)
+
+
+def model_levels():
+    """(차례 무게별 표 또는 None=끔, 차례 종류→무게). 설정 파일: {"enabled": false} 로 끄거나 levels·turns 일부만 덮어씀"""
+    table, turns = copy.deepcopy(MODEL_LEVELS), dict(TURN_LEVELS)
+    if os.environ.get("OFFICE_MODEL_LEVELS") == "0":
+        return None, turns
+    try:
+        custom = json.loads(Path(os.environ.get("OFFICE_MODELS") or Path.home() / ".config" / "office" / "models.json").read_text())
+    except (OSError, ValueError):
+        custom = {}
+    if not isinstance(custom, dict):
+        return table, turns
+    if custom.get("enabled") is False:
+        return None, turns
+    for level, agents in (custom.get("levels") or {}).items():
+        if level in table and isinstance(agents, dict):
+            for n, value in agents.items():
+                if n in AGENTS and isinstance(value, dict):
+                    table[level][n] = {k: str(x) for k, x in value.items() if k in ("model", "effort") and x}
+    for kind, level in (custom.get("turns") or {}).items():
+        if kind in turns and level in table:
+            turns[kind] = level
+    return table, turns
+
+
+def turn_choice(name, desc, task_level=None):
+    """이번 차례 무게(light|normal|heavy)와 실행에 붙일 모델·effort. 작업에 --level 이 있으면 그 작업 차례는 그 무게로"""
+    table, turns = model_levels()
+    level = task_level if task_level in LEVELS and desc in ("work", "continue") else turns.get(desc, "normal")
+    return level, ({} if table is None else dict(table[level].get(name) or {}))
 
 
 def fallback_model(name, primary):
@@ -514,7 +557,7 @@ def file_digest(path):
         return None
 
 
-def guarded_path(value):
+def guarded_path(value, allow_dir=False):
     sid = current_sid()
     base = wdir(sid).resolve()
     raw = Path(value).expanduser()
@@ -527,7 +570,7 @@ def guarded_path(value):
         protected += [D.resolve(), (Path.home()/".office").resolve()]
     if any(path.is_relative_to(folder.resolve()) for folder in protected):
         raise UserError("참고 자료·인증서·설정·Office 기록은 수정 대상으로 예약할 수 없습니다.")
-    if path.exists() and not path.is_file():
+    if path.exists() and not path.is_file() and not allow_dir:
         raise UserError("일반 파일만 예약할 수 있습니다.")
     return path
 
@@ -656,7 +699,7 @@ def cmd_reserve(a):
 
 
 def cmd_release(a):
-    path, identity = guarded_path(a.path), reservation_owner(allow_closed=True)
+    path, identity = guarded_path(a.path, allow_dir=True), reservation_owner(allow_closed=True)   # 예약 뒤 폴더가 생겨도 풀 수 있게
     with reservation_store(True) as records:
         old = records.get(str(path))
         if old and not owns_reservation(old, identity):
@@ -727,6 +770,8 @@ def cmd_add(a):
         s["seq"] += 1
         s["tasks"].append({"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": a.to,
                            "status": "todo", "note": "", "created_at": time.time()})
+        if getattr(a, "level", None):
+            s["tasks"][-1]["level"] = a.level
         if j:
             j.setdefault("started_at", time.time())
             if j["status"] in ("review", "done"):
@@ -746,27 +791,92 @@ def cmd_claim(a):
         if t["owner"] not in (None, me()) or t["status"] == "done":
             sys.exit(f"#{a.id} 는 이미 {t['owner']} 담당/{t['status']} — 못 가져감")
         resumed = t["status"] == "waiting"
-        t.pop("wait_reason", None); t.pop("waiting_at", None)
+        for key in WAIT_FIELDS:
+            t.pop(key, None)
         t.update(owner=me(), status="doing", claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
         event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=message_job(s))
         print(f"#{a.id} 맡음")
 
 
-def cmd_wait(a):
-    """백그라운드 작업·외부 결과를 기다리는 동안 작업을 열어 둔 채 재촉·진행 멈춤 점검에서 뺀다"""
-    reason = " ".join((a.text or "").split())[:200]
-    if not reason:
-        raise UserError("입력 내용 확인 — 무엇을 기다리는지 적어 주세요.")
+WAIT_FIELDS = ("wait_reason", "waiting_at", "wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_deadline",
+               "wait_notified", "wait_overdue", "wait_stale")
+
+
+def wait_probe(t):
+    """기다림 작업의 감시 대상 상태: alive(True/False/None=감시 대상 없음), log_at(로그 마지막 수정 epoch)"""
+    alive = None
+    if t.get("wait_pid"):
+        ident = process_identity(t["wait_pid"])
+        alive = bool(ident) and (not t.get("wait_start") or ident["start"] == t["wait_start"])
+        if alive:
+            try:   # 끝났는데 부모가 회수 안 한 좀비는 죽은 것으로 본다
+                alive = (Path("/proc") / str(t["wait_pid"]) / "stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+            except (OSError, IndexError):
+                alive = False
+    try:
+        log_at = Path(t["wait_log"]).stat().st_mtime if t.get("wait_log") else None
+    except OSError:
+        log_at = None
+    return alive, log_at
+
+
+def mark_waiting(a, reason, **watch):
     with state(True) as s:
         t = find(s, a.id)
         if t["status"] == "done":
             sys.exit(f"#{a.id} 는 이미 끝난 작업입니다.")
         if t["owner"] not in (None, me()):
             sys.exit(f"#{a.id} 는 {t['owner']} 담당 — 담당자만 기다림으로 바꿀 수 있습니다.")
-        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time())
+        for key in WAIT_FIELDS:
+            t.pop(key, None)
+        minutes = getattr(a, "minutes", None)
+        deadline = time.time() + minutes * 60 if minutes else (None if watch.get("wait_pid") else time.time() + WAIT_DEADLINE)
+        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time(), **{k: v for k, v in watch.items() if v is not None})
+        if deadline:
+            t["wait_deadline"] = deadline
         t.setdefault("claimed_at", time.time())
         event(s, f"작업 #{a.id} 기다리는 중 · {reason}", me(), job=message_job(s))
-        print(f"#{a.id} 기다림")
+        return t.get("job")
+
+
+def cmd_wait(a):
+    """백그라운드 작업·외부 결과를 기다리는 동안 작업을 열어 둔 채 재촉·진행 멈춤 점검에서 뺀다.
+    --pid·--log 를 주면 서버가 그 프로세스·로그를 지켜보다 죽거나 멈추면 담당을 깨운다. 기한(--minutes, 기본 15분)이 지나도 깨운다"""
+    reason = " ".join((a.text or "").split())[:200]
+    if not reason:
+        raise UserError("입력 내용 확인 — 무엇을 기다리는지 적어 주세요.")
+    pid = getattr(a, "pid", None)
+    ident = process_identity(pid) if pid else None
+    if pid and not ident:
+        raise UserError(f"프로세스 확인 — pid {pid} 가 이미 없습니다. 끝났는지 확인하고 office done 하거나 office bg 로 다시 띄우세요.")
+    log = str(Path(a.log).expanduser().resolve()) if getattr(a, "log", None) else None
+    mark_waiting(a, reason, wait_pid=pid, wait_start=ident and ident["start"], wait_log=log)
+    print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else ""))
+
+
+def cmd_bg(a):
+    """오래 걸리는 명령을 Office 가 관리하는 백그라운드로 띄운다. 차례가 끝나도 안 죽고, 끝나면(실패·강제 종료 포함) 담당을 한 번 깨운다"""
+    command = (a.command or "").strip()
+    if not command:
+        raise UserError("입력 내용 확인 — 백그라운드로 돌릴 명령을 적어 주세요.")
+    reason = " ".join((a.text or command).split())[:200]
+    with state() as s:
+        t = find(s, a.id)
+        if t["status"] == "done" or t["owner"] not in (None, me()):
+            sys.exit(f"#{a.id} 는 끝났거나 다른 담당 작업입니다.")
+    folder = sdir(current_sid()) / "bg"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    log = Path(a.log).expanduser().resolve() if a.log else folder / f"{a.id}-{stamp}.log"
+    rc_file = folder / f"{a.id}-{stamp}.rc"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    script = f"( {command}\n) >>{shlex.quote(str(log))} 2>&1 </dev/null; echo $? >{shlex.quote(str(rc_file))}"
+    # 새 세션으로 띄워 에이전트 실행 도구·차례 종료가 프로세스 그룹을 정리해도 같이 죽지 않게 한다
+    proc = subprocess.Popen(["bash", "-c", script], cwd=os.getcwd(), start_new_session=True, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ident = process_identity(proc.pid)
+    mark_waiting(a, reason, wait_pid=proc.pid, wait_start=ident and ident["start"], wait_log=str(log), wait_rc=str(rc_file), wait_cmd=command[:500])
+    print(f"#{a.id} 백그라운드 시작 · pid {proc.pid} · 로그 {log}\n끝나면 서버가 깨워 줘요. 지금 차례는 끝내도 돼요.")
 
 
 def cmd_done(a):
@@ -804,7 +914,7 @@ def cmd_handoff(a):
 def cmd_say(a):
     with state(True) as s:
         job = message_job(s)
-        kind = "note" if getattr(a, "info", False) else "msg"
+        kind = ("progress" if a.to == "user" else "note") if getattr(a, "info", False) else "msg"   # --to user --info: 사용자 진행 알림(차례·결과 카드 아님)
         explicit = getattr(a, "re", None)
         if explicit is not None and (me() not in AGENTS or a.to != "user" or kind != "msg"):
             raise UserError("답장 대상 확인 — --re는 담당자의 사용자 답장에만 사용할 수 있습니다.")
@@ -814,6 +924,8 @@ def cmd_say(a):
             return print("중복 메시지 생략")
         post(s, me(), a.to, a.text, kind, job=job, reply_to=reply_to)
         s["msgs"][-1]["at"] = now
+        if a.to == me() and kind == "msg":
+            s["msgs"][-1]["wake"] = True   # 자기 백그라운드 스크립트가 보낸 완료 알림도 깨운다
 
 
 def report_brief(text):
@@ -1167,9 +1279,10 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office add "할일" --to 이름       작업 만들어 배정 (리더가 일 쪼갤 때)
   office claim ID                  주인 없는 작업 가져가기
   office done ID "결과 요약"        끝냄
-  office wait ID "기다리는 것"      백그라운드 작업·외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지 오면 깨어남)
+  office wait ID "기다리는 것" [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·감시 프로세스 종료·기한 지나면 깨어남)
+  office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
   office handoff ID --to {other} "진행상황/이유"   넘기기
-  office say --to {other} "말"      동료에게 의견·리뷰요청·질문 (--to user 는 사용자)
+  office say --to {other} "말"      동료에게 의견·리뷰요청·질문 (--to user 는 사용자, --to user --info 는 사용자에게 진행 한 줄)
   office finish "최종 보고"         (리더만) 일 전체 마무리하고 사용자에게 보고
   office title "대화 요약 제목"      (리더만) 대화 전체 주제를 요약한 짧은 제목 갱신 (사용자가 정한 이름은 유지)
 일하는 방식:
@@ -1178,12 +1291,14 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 외부 프로세스(tmux·서버·다른 CLI)에 입력을 보냈으면 실제로 들어갔는지 바로 확인해라. 결과를 1분 넘게 반복 확인하며 기다리지 마라.
 - 동료 완료·답을 기다릴 때 sleep·백그라운드 작업·반복 확인으로 차례를 붙잡지 마라. 할 일이 없으면 차례를 끝내라. 새 메시지·작업 변화가 생기면 서버가 다시 깨운다(차례를 붙잡고 있으면 그 사이 넘어온 일을 못 받는다).
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
-- 몇 시간 걸리는 수집·빌드처럼 백그라운드로 도는 일은 시작만 하고 done·finish 하지 마라. 끝나면 `office say --to 담당`이 오도록 연결한 뒤 `office wait ID "무엇을 기다리는지"`로 두고 차례를 끝내라. 알림이 오면 `office claim ID`로 다시 시작한다.
+- 몇 분 넘게 걸리는 수집·다운로드·빌드는 `office bg ID "설명" "명령"`으로 띄우고 차례를 끝내라. nohup·&·실행 도구의 백그라운드 기능은 차례가 끝날 때 같이 죽는다. 끝나면 서버가 깨우니 `office claim ID`로 다시 시작한다. 이미 따로 띄운 프로세스는 `office wait ID "사유" --pid N --log 파일`로 감시를 건다.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
 - 작업 추가 전에 같은 작업이 있는지 확인하고 기존 ID를 사용한다. 작은 수정은 한 명이 끝내고 분리 가능한 작업·독립 검수에만 둘을 쓴다.
-- 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다.- 메시지는 필요한 것만. 인사·감사·맞장구 금지.
+- 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다.
+- 몇 분 넘는 요청에선 단계가 끝났을 때·동료 결과가 왔을 때·막히거나 가정이 틀렸거나 예상보다 길어질 때 `office say --to user --info "한 줄"`로 사용자에게 알린다(사용자 차례를 만들지 않음).
+- 메시지는 필요한 것만. 인사·감사·맞장구 금지.
 - 사용자에게 직접 받은 메시지는 job·작업판이 비어 있어도 요청이다. 질문에는 답하고, 수정·실행 요청은 작업을 등록·claim한 뒤 실제로 완료해라. 단독 요청을 '대기'로 무시하지 마라.
 - 사용자가 '로그인 해줘'라고 하면 각자 `office login start 자기이름`을 실행해 나온 링크를 office say --to user 로 그대로 올린다. 사용자가 Claude 코드를 주면 claude가 `office login code claude 코드`로 넣고 결과를 알린다. codex는 링크를 열면 끝나므로 `office login status codex`로 확인해 알린다.
 - 처리할 사용자 메시지도 담당·미배정 작업도 없을 때만 명령 실행 없이 '대기'라고 답해라.
@@ -1204,6 +1319,8 @@ PLAN = """[리더 차례: 새 요청 접수] 요청 {jid}: {text}
 구현·조사·검증 등 실제 작업을 둘에게 고르게 나눠라. 리더가 계획·검수만을 이유로 구현까지 혼자 맡지 마라.
 독립적으로 진행할 작업은 먼저 동료에게 배정해 동시 진행하고, 단순 문구 변경처럼 나눌 필요 없는 작업만 직접 처리해라.
 배정 전 작업판에서 각자 아직 안 끝난 작업 수를 확인해 덜 바쁜 쪽에 먼저 준다. 단 한쪽이 확실히 더 잘하는 일(그 사람이 이미 손대는 파일 포함)이면 바빠도 그쪽에 준다.
+작업이 2개 이상이거나 몇 분 넘게 걸릴 것 같으면 배정 직후 `office say --to user --info "계획"`으로 누가 무엇을, 대략 얼마나 걸리는지 2~3줄 먼저 알리고 답을 기다리지 말고 진행해라. 짧은 요청은 결과만 보고한다.
+작업이 가볍거나(문구·확인) 무거우면(장애 분석·큰 구현) `office add ... --level light|heavy`로 표시한다(그 무게에 맞는 모델로 돈다).
 배정 후엔 네 몫부터 바로 시작해라. 사용자 보고는 위 '사용자 보고 형식'(결론 한 줄, 문단 중심, 목록은 필요할 때만)을 따른다.
 아래 대화 전체 요청 이력을 참고해 전체 주제를 아우르는 15자 내외의 짧은 어구로 `office title "제목"`을 실행해라. 마지막 요청 원문을 그대로 제목으로 쓰지 마라."""
 
@@ -1687,12 +1804,21 @@ class Worker:
                 cmd += ["-c", f"sandbox_workspace_write.writable_roots={json.dumps([str(sdir(self.sid))])}"]
             cmd += ["--json", prompt]
             self.begin_codex_usage(sid)
-        if model_override:
+        pick = getattr(self, "turn_pick", None) or {}
+        model, effort = model_override or pick.get("model"), pick.get("effort")
+        if effort:
             if self.name == "codex":
-                cmd[-1:-1] = ["--model", model_override]
+                cmd[-1:-1] = ["-c", f'model_reasoning_effort="{effort}"']
             else:
-                cmd += ["--model", model_override]
+                cmd += ["--effort", effort]
+        if model:
+            if self.name == "codex":
+                cmd[-1:-1] = ["--model", model]
+            else:
+                cmd += ["--model", model]
+        self.turn_effort = effort
         final = ""
+        result_at, ended_after_result, self.bg_dropped = None, False, []
         with tempfile.TemporaryFile() as lg:
             # 차례 준비 중 취소·중단됐으면 새 프로세스를 만들지 않는다.
             if self.stop.is_set() or self.interrupted_job is not None or self.immediate_pause:
@@ -1728,6 +1854,15 @@ class Worker:
                         server_log("agent.timeout")
                         terminate_process(proc)
                         break
+                    if result_at and time.monotonic() - result_at >= RESULT_GRACE and proc.poll() is None \
+                            and not any(v.get("kind") == "agent" for v in self.subs.values()):
+                        # 최종 답을 냈는데 차례 안에서 띄운 백그라운드 명령 때문에 안 끝나는 경우: 차례를 끝낸다.
+                        # Claude는 끝날 때 그 명령도 정리하므로 무엇이 정리됐는지 대화에 남긴다(오래 걸리는 일은 office bg)
+                        self.bg_dropped = [v["desc"] for v in self.subs.values()]
+                        ended_after_result = True
+                        self.agent_log("최종 답 뒤 끝나지 않아 차례 종료" + (f" · 정리된 백그라운드 {len(self.bg_dropped)}개" if self.bg_dropped else ""))
+                        terminate_process(proc)
+                        break
                     if quiet >= AGENT_QUIET_NOTICE and not running_tool:
                         self.notice = "응답 대기 중 — 새 응답을 기다리는 중입니다. 오래 걸리면 연결 상태를 확인하세요."
                     if not selector.select(.5):
@@ -1738,6 +1873,7 @@ class Worker:
                     if not chunk:
                         break
                     received = time.monotonic()
+                    self.last_output = time.time()
                     if self.notice == "응답 대기 중 — 새 응답을 기다리는 중입니다. 오래 걸리면 연결 상태를 확인하세요.":
                         self.notice = None
                     pending += chunk
@@ -1752,16 +1888,18 @@ class Worker:
                         if not isinstance(ev, dict):
                             continue
                         final = (self.parse_claude(ev) if self.name == "claude" else self.parse_codex(ev, sid)) or final
+                        if self.name == "claude" and ev.get("type") == "result":
+                            result_at = time.monotonic() if self.claude_result_received else None
                 proc.wait(timeout=2)
             finally:
                 selector.close()
                 if proc.poll() is None:
                     terminate_process(proc)
-                self.rc = proc.returncode
+                self.rc = 0 if ended_after_result else proc.returncode
                 lg.seek(0, os.SEEK_END)
                 lg.seek(max(0, lg.tell()-65536))
                 diagnostic = safe_agent_diagnostic(lg.read().decode(errors="replace"))
-                if diagnostic:
+                if diagnostic and not ended_after_result:
                     with open(sdir(self.sid) / f"{self.name}.log", "a") as log:
                         log.write(diagnostic)
                     if self.rc and not self.error:
@@ -1788,7 +1926,7 @@ class Worker:
             if key:
                 if key not in self.subs:
                     desc = str(ev.get("description") or "보조 작업")[:120]
-                    self.subs[key] = {"desc": desc, "since": time.time()}
+                    self.subs[key] = {"desc": desc, "since": time.time(), "kind": "bg"}   # 백그라운드 명령: 차례가 끝나면 Claude가 같이 정리함
                     self.act("sub", "보조 시작: " + desc)
                 self.subs[key]["task"] = ev.get("task_id")
         elif ev.get("type") == "system" and ev.get("subtype") in ("task_notification", "task_updated"):
@@ -1812,7 +1950,7 @@ class Worker:
                     i = c.get("input", {})
                     if c.get("name") in ("Agent", "Task") and c.get("id"):
                         desc = str(i.get("description") or i.get("prompt") or "보조 작업")[:120]
-                        self.subs[c["id"]] = {"desc": desc, "since": time.time()}
+                        self.subs[c["id"]] = {"desc": desc, "since": time.time(), "kind": "agent"}
                         self.act("sub", "보조 시작: " + desc)
                     arg = str(i.get("command") or i.get("file_path") or i.get("pattern")
                               or json.dumps(i, ensure_ascii=False)[:150]).replace(str(wdir(self.sid)) + "/", "")
@@ -1823,7 +1961,8 @@ class Worker:
             for c in ev.get("message", {}).get("content", []):
                 if isinstance(c, dict) and c.get("type") == "tool_result":
                     self.tool_done(c.get("tool_use_id"))
-                if isinstance(c, dict) and c.get("type") == "tool_result" and not self.async_launch(c):
+                if isinstance(c, dict) and c.get("type") == "tool_result" and not self.async_launch(c) \
+                        and (self.subs.get(c.get("tool_use_id")) or {}).get("kind") != "bg":   # 백그라운드 명령은 끝남 알림 때 뺀다
                     sub = self.subs.pop(c.get("tool_use_id"), None)
                     if sub:
                         self.act("sub", "보조 종료: " + sub["desc"])
@@ -1965,7 +2104,7 @@ class Worker:
         cancelled = {j["id"] for j in s["jobs"] if j.get("cancelled")}
         new = [m for m in s["msgs"][self.read_upto:] if m.get("kind", "msg") == "msg"
                and m.get("job") not in cancelled
-               and m["from"] not in (self.name, "system") and m["to"] in (self.name, "all")
+               and (m["from"] not in (self.name, "system") or m.get("wake") and m["to"] == self.name) and m["to"] in (self.name, "all")
                and not (m["from"] != "user" and m["text"].strip() in ("대기", "확인", "확인했음", "알겠습니다", "고마워"))]
         body = "\n".join(f"- {m['from']}: {m['text']}" for m in new)
         jobs = [j for j in s["jobs"] if j["status"] != "done"]
@@ -2166,6 +2305,9 @@ class Worker:
                 if self.read_upto is None:
                     self.read_upto = len(s["msgs"])
                 nt = self.next_turn(s)
+                task_level = next((t.get("level") for t in s["tasks"] if nt and t.get("job") == nt[1] and t.get("owner") == self.name
+                                   and t["status"] in ("todo", "doing") and t.get("level")), None)
+                my_todo = [t["id"] for t in s["tasks"] if t.get("owner") == self.name and t["status"] == "todo"]
                 snap, total = board_text(s), len(s["msgs"])
                 missed = missed_text(s["msgs"][self.read_upto:], self.name)
                 title_history = request_history(s["jobs"])
@@ -2194,6 +2336,10 @@ class Worker:
             self.rc, self.error, self.error_kind = 0, None, None
             self.model_notice = None
             self.primary_model = configured_model(self.name)
+            self.turn_level, self.turn_pick = turn_choice(self.name, "chat" if only_chat else desc, task_level)
+            if self.turn_pick.get("model"):
+                self.primary_model = self.turn_pick["model"]
+            self.last_output = time.time()
             self.status, self.since, self.doing = "working", time.time(), {"kind": desc, "job": job}
             self.save_checkpoint()   # 첫 차례 도중 서버가 꺼져도 재시작 후 이 메시지부터 다시 읽게 시작 위치를 남김
             self.act("start", f"{desc}|{job or ''}")
@@ -2210,6 +2356,9 @@ class Worker:
                 prompt += "이전 차례가 중단되어 이어서 시작한다. 이미 수정한 파일과 완료 작업을 먼저 확인하고, 반쯤 진행한 작업은 검증해서 이어가라. 같은 변경을 반복하거나 덮어쓰지 마라.\n"
                 prompt += "이전 실행의 파일 예약은 풀렸다. 파일을 고치기 전에 office reserve 를 다시 하고, office write 결과를 확인한 뒤에만 완료 처리해라.\n"
             prompt += "메시지에 이미지·파일 경로가 있으면 해당 파일을 직접 열어서 확인해라. Claude는 Read, Codex는 이미지 보기 도구를 사용한다.\n"
+            peer = office.teams.get(sid, {}).get("w", {}).get(self.other) if hasattr(office, "teams") else None
+            if peer is not None and peer.status == "idle" and not peer.paused and len(my_todo) > 1:
+                prompt += f"동료 {self.other}는 지금 쉬는 중이다. 네 몫 중 아직 시작 안 한 작업({', '.join('#' + str(x) for x in my_todo)})은 오래 걸릴 것 같으면 `office handoff ID --to {self.other}`로 넘겨라.\n"
             prompt += f"{tail}\n\n대화 전체 요청 이력 (제목 요약 참고):\n{title_history}"
             turn_started = time.monotonic()
             tokens_before = self.tokens
@@ -2317,6 +2466,17 @@ class Worker:
                 for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
                         j["status"] = "working"
+                planned = [t for t in s["tasks"] if t.get("job") == job and t["status"] != "done"] if desc == "plan" and job else []
+                told = any(m["from"] == self.name and m["to"] == "user" and m.get("kind") in ("progress", "msg") and m.get("job") == job for m in s["msgs"][total:])
+                if len(planned) >= 2 and not told:   # 리더가 계획 알림을 빠뜨려도 누가 무엇을 하는지 한 줄씩 보이게
+                    lines = "\n".join(f"- {disp(t['owner']) if t.get('owner') else '담당 없음'}: {t['title'][:80]}" for t in planned)
+                    post(s, "system", "user", f"진행 계획 · 작업 {len(planned)}개\n{lines}", "progress", job=job)
+                if getattr(self, "bg_dropped", None):
+                    names = ", ".join(self.bg_dropped)[:200]
+                    post(s, "system", "user", ui_notice("백그라운드 작업 정리됨", f"{disp(self.name)} 차례가 끝나며 차례 안에서 띄운 백그라운드 작업이 같이 멈췄어요: {names}"), "event", job=job)
+                    post(s, "system", self.name, f"네 차례가 끝나며 차례 안에서 띄운 백그라운드 명령이 같이 정리됐다: {names}. 계속 돌려야 하면 `office bg ID \"설명\" \"명령\"`으로 다시 띄워라.", "msg", job=job)
+                    s["msgs"][-1]["wake"] = True
+                    self.bg_dropped = []
                 if closing:
                     summary = report or out
                     closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary))
@@ -2718,6 +2878,29 @@ def check_update(stop):
             save_update_cache()
 
 
+def local_changes_text(output):
+    """install.sh 의 'OFFICE_LOCAL: changed=N merged=a,b conflicts=c backup=경로' 줄을 화면 문구로"""
+    line = next((x for x in reversed((output or "").splitlines()) if x.startswith("OFFICE_LOCAL:")), "")
+    fields = dict(part.split("=", 1) for part in line[len("OFFICE_LOCAL:"):].split() if "=" in part)
+    try:
+        changed = int(fields.get("changed", 0))
+    except ValueError:
+        return None
+    if not changed:
+        backup = fields.get("backup", "-")
+        return f"이번 업데이트부터 로컬 수정을 지켜 줘요. 예전 파일은 {backup}에 백업해 뒀어요." if fields.get("legacy") == "1" and backup != "-" else None
+    merged = [x for x in fields.get("merged", "").split(",") if x not in ("", "-")]
+    conflicts = [x for x in fields.get("conflicts", "").split(",") if x not in ("", "-")]
+    text = f"로컬 수정 {changed}개를 찾았어요."
+    if merged:
+        text += f" {', '.join(merged)}는 새 버전에 다시 넣었어요."
+    if conflicts:
+        text += f" {', '.join(conflicts)}는 새 버전과 겹쳐서 새 버전으로 바꿨어요."
+    if fields.get("backup", "-") != "-":
+        text += f" 예전 파일은 {fields['backup']}에 있어요."
+    return text
+
+
 def run_update(office):
     """최신 설치 묶음을 받아 해시를 확인하고 install.sh로 같은 경로에 다시 설치한 뒤 새 프로세스로 다시 시작"""
     def fail(text):
@@ -2754,8 +2937,15 @@ def run_update(office):
     except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
         server_log("update.run", error)
         return fail("업데이트 파일을 받지 못했어요. 인터넷 연결을 확인해 보세요.")
+    local = local_changes_text(r.stdout)
+    if local:   # 다시 켜진 뒤 대화창에 알리려고 남긴다(메모리 상태는 재시작 때 사라짐)
+        server_log("update.local_changes")
+        try:
+            (D / "update-note.txt").write_text(local)
+        except OSError as error:
+            server_log("update.local_note", error)
     with UPDATE_LOCK:
-        UPDATE.update(state="restarting", message=None)
+        UPDATE.update(state="restarting", message=local)
     office.restart = [sys.executable, str(Path(prefix) / "app" / "office.py"), *sys.argv[1:]]
     time.sleep(2)   # 화면이 restarting 상태를 한 번은 받아 가게
     office.shutdown()
@@ -2844,6 +3034,7 @@ class Office:
             stop = threading.Event()
             ws = {n: Worker(n, sid, stop) for n in AGENTS}
             threads = [threading.Thread(target=w.loop, args=(self,), daemon=True) for w in ws.values()]
+            threads.append(threading.Thread(target=self.watch_team, args=(sid, stop), daemon=True))
             self.teams[sid] = {"stop": stop, "w": ws, "threads": threads}
             for thread in threads:
                 thread.start()
@@ -2875,6 +3066,101 @@ class Office:
             if sid not in live:
                 self.stop_team(sid)
 
+    def watch_team(self, sid, stop):
+        """둘 다 차례를 붙잡고 있어도 도는 감시: 바쁜 리더 대신 계획·미착수 작업 넘기기, 기다림 작업의 프로세스·기한 확인"""
+        while not (stop.is_set() or self.stop.is_set()):
+            for check in (self.reconcile_busy, self.check_waits):
+                try:
+                    check(sid)
+                except (OSError, StorageError, UserError) as error:
+                    server_log("team.watch", error)
+            stop.wait(2)
+
+    def reconcile_busy(self, sid):
+        """담당이 다른 차례를 LEAD_BUSY_TAKEOVER 초 넘게 붙잡고 있으면 쉬는 쪽에게 새 요청 계획(리더 대행)과 미착수 작업을 넘긴다.
+        오류 복구(reconcile_failover)와 달리 원래 담당이 쉬어도 계획 중엔 되돌리지 않고, 계획이 끝난 뒤 둘 다 쉴 때 리더만 되돌린다"""
+        team = self.teams.get(sid)
+        if not team or team["stop"].is_set():
+            return
+        workers, now = team["w"], time.time()
+        def free(w):
+            return w is not None and w.status == "idle" and not w.paused and not w.error and getattr(w, "retry_at", 0) <= now
+        def held(w, job):   # 다른 일로 오래 붙잡고 있음
+            doing = w.doing if isinstance(w.doing, dict) else {}
+            return w is not None and w.status == "working" and now - w.since >= LEAD_BUSY_TAKEOVER and (job is None or doing.get("job") != job)
+        def plan(record):
+            changes = []
+            active = {j["id"]: j for j in record["jobs"] if j["status"] != "done" and not j.get("cancelled")}
+            for j in active.values():
+                lead = j.get("acting_lead", j["lead"]); other = next(n for n in AGENTS if n != lead)
+                if j["status"] == "planning" and now - j.get("started_at", now) >= LEAD_BUSY_TAKEOVER and held(workers.get(lead), j["id"]) and free(workers.get(other)):
+                    j.update(acting_lead=other, acting_reason="busy")
+                    changes.append((j["id"], f"{disp(lead)}가 다른 일로 바빠 {disp(other)}가 요청 {j['id']} 리더 대행"))
+                elif j.get("acting_reason") == "busy" and j["status"] != "planning" and free(workers.get(j["lead"])) and free(workers.get(j.get("acting_lead"))):
+                    j.pop("acting_lead", None); j.pop("acting_reason", None)
+                    changes.append((j["id"], f"요청 {j['id']} 원래 리더 {disp(j['lead'])} 복구"))
+            for t in record["tasks"]:
+                if t["status"] != "todo" or t.get("job") not in active or t.get("owner") not in AGENTS or t.get("failover_from"):
+                    continue
+                source = t["owner"]; target = next(n for n in AGENTS if n != source)
+                if t.get("handoffs") and t["handoffs"][-1].get("to") == source:
+                    continue   # 일부러 넘겨받은 작업은 그대로 둔다
+                if now - t.get("created_at", now) >= LEAD_BUSY_TAKEOVER and held(workers.get(source), None) and free(workers.get(target)):
+                    t.update(owner=target, failover_from=source, failover_to=target, failover_at=now, failover_reason="busy")
+                    changes.append((t.get("job"), f"{disp(source)}가 다른 차례를 오래 잡고 있어 미착수 작업 #{t['id']}을 {disp(target)}에게 넘김"))
+            return changes
+        with state(sid=sid) as record:
+            if not plan(copy.deepcopy(record)):
+                return
+        with state(True, sid) as record:
+            for job, text in plan(record):
+                event(record, text, job=job)
+                post(record, "system", "user", text, "progress", job=job)
+
+    def check_waits(self, sid):
+        """기다림 작업: 감시 프로세스가 끝나면(실패·강제 종료 포함), 기한이 지나면, 로그가 오래 멈추면 담당을 한 번씩 깨운다"""
+        now = time.time()
+        with state(sid=sid) as s:
+            waits = [dict(t) for t in s["tasks"] if t["status"] == "waiting" and t.get("owner") in AGENTS]
+        notes = []
+        for t in waits:
+            alive, log_at = wait_probe(t)
+            label = f"작업 #{t['id']} · {t.get('wait_reason') or '기다림'}"
+            if alive is False and not t.get("wait_notified"):
+                rc = None
+                try:
+                    rc = int(Path(t["wait_rc"]).read_text().strip()) if t.get("wait_rc") else None
+                except (OSError, ValueError):
+                    pass
+                tail = ""
+                try:
+                    if t.get("wait_log"):
+                        with open(t["wait_log"], "rb") as f:
+                            f.seek(max(0, Path(t["wait_log"]).stat().st_size - 1500))
+                            tail = safe_agent_diagnostic(f.read().decode(errors="replace")).strip()[-600:]
+                except OSError:
+                    pass
+                result = (f"끝났어요(종료 코드 0)" if rc == 0 else f"실패했어요(종료 코드 {rc})" if rc is not None
+                          else "중간에 멈췄어요(종료 코드 없음 — 강제 종료됐을 수 있어요)")
+                notes.append((t, "wait_notified", f"[백그라운드 {result}] {label}", tail))
+            elif t.get("wait_deadline") and now >= t["wait_deadline"] and not t.get("wait_overdue"):
+                notes.append((t, "wait_overdue", f"[기다림 기한 지남] {label} · {int((now - t.get('waiting_at', now)) // 60)}분째", ""))
+            elif alive and log_at and now - log_at >= WAIT_DEADLINE and not t.get("wait_stale"):
+                notes.append((t, "wait_stale", f"[로그 멈춤] {label} · 프로세스는 살아 있는데 로그가 {int((now - log_at) // 60)}분째 안 바뀌어요", ""))
+        if not notes:
+            return
+        with state(True, sid) as s:
+            for t, flag, head, tail in notes:
+                cur = next((x for x in s["tasks"] if x["id"] == t["id"]), None)
+                if not cur or cur["status"] != "waiting" or cur.get(flag):
+                    continue
+                cur[flag] = now
+                post(s, "system", "user", head, "progress", job=cur.get("job"))
+                body = head + (f"\n로그 끝:\n{tail}" if tail else "") + f"\n확인한 뒤 `office claim {cur['id']}`로 이어가거나 끝났으면 `office done {cur['id']}`. 더 기다릴 거면 `office wait {cur['id']} \"사유\"`로 다시 걸어라."
+                post(s, "system", cur["owner"], body, "msg", job=cur.get("job"))
+                s["msgs"][-1]["wake"] = True
+                server_log("task.wait." + flag)
+
     def reconcile_failover(self, sid):
         team = self.teams.get(sid)
         if not team or team.get("stop", threading.Event()).is_set():
@@ -2889,6 +3175,8 @@ class Office:
                 if task.get("job") not in active or task["status"] != "todo":
                     continue
                 original = task.get("failover_from")
+                if task.get("failover_reason") == "busy":
+                    continue
                 if original and original in healthy and task.get("owner") == task.get("failover_to"):
                     task["owner"] = original
                     task.pop("failover_from", None); task.pop("failover_to", None)
@@ -2903,6 +3191,8 @@ class Office:
                 lead = job["lead"]
                 acting_worker = workers.get(job.get("acting_lead"))
                 acting_busy = acting_worker and acting_worker.status == "working" and isinstance(acting_worker.doing, dict) and acting_worker.doing.get("job") == job["id"]
+                if job.get("acting_reason") == "busy" and lead not in failed:
+                    continue
                 if lead in healthy and job.get("acting_lead") and not acting_busy:
                     job.pop("acting_lead", None)
                     changes.append((job["id"], f"요청 {job['id']} 원래 리더 {disp(lead)} 복구"))
@@ -3118,6 +3408,10 @@ class Office:
         self.ensure_team(cur)
         with state(sid=cur) as s:
             data = dict(s)
+        data["tasks"] = [dict(t) for t in data.get("tasks", [])]
+        for t in data["tasks"]:
+            if t["status"] == "waiting":
+                t["wait_alive"], t["wait_log_at"] = wait_probe(t)
         with meta() as m:
             sessions = [dict(x) for x in m["sessions"]]
         notice = {}
@@ -3154,6 +3448,9 @@ class Office:
             data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
         data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "notice": w.notice or getattr(w, "model_notice", None),
                               "model": getattr(w, "primary_model", None) or configured_model(n),
+                              "effort": getattr(w, "turn_effort", None) if w.status == "working" else None,
+                              "level": getattr(w, "turn_level", None) if w.status == "working" else None,
+                              "last_output": getattr(w, "last_output", None) if w.status == "working" else None,
                               "tokens": w.tokens, "cached_tokens": w.cached_tokens, "legacy_tokens": w.legacy_tokens,
                               "usage_since": w.usage_since, "limits": limits_for(n), "subs": list(getattr(w, "subs", {}).values()) if w.status == "working" else [],
                               "activity": list(w.activity)[-25:]} for n, w in team.items()}
@@ -3566,8 +3863,24 @@ def make_handler(office):
     return H
 
 
+def post_update_note():
+    """업데이트 때 찾은 로컬 수정 결과를 다시 켜진 뒤 지금 대화에 한 번 알린다"""
+    note = D / "update-note.txt"
+    try:
+        text = note.read_text().strip()
+        note.unlink()
+        if text:
+            with state(True, current_sid()) as s:
+                post(s, "system", "user", ui_notice("업데이트하며 로컬 수정을 확인했어요", text), "event")
+    except FileNotFoundError:
+        pass
+    except (OSError, UserError) as error:
+        server_log("update.local_note", error)
+
+
 def serve():
     load_limits()   # 에이전트 시작 전에 지난 관측의 유효한 창을 복원
+    post_update_note()
     office = Office()
     global LOGIN_HOOK
     LOGIN_HOOK = office.offer_login
@@ -3926,7 +4239,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "bg", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -3946,10 +4259,16 @@ def main():
     x = sp.add_parser("reserve"); x.add_argument("path"); x.set_defaults(f=cmd_reserve)
     x = sp.add_parser("release"); x.add_argument("path"); x.set_defaults(f=cmd_release)
     x = sp.add_parser("write"); x.add_argument("path"); x.add_argument("--from", dest="source", required=True); x.set_defaults(f=cmd_write)
-    x = sp.add_parser("add"); x.add_argument("text"); x.add_argument("--to", choices=AGENTS); x.set_defaults(f=cmd_add)
+    x = sp.add_parser("add"); x.add_argument("text"); x.add_argument("--to", choices=AGENTS)
+    x.add_argument("--level", choices=LEVELS, help="작업 무게: light(문구·확인) normal heavy(장애 분석·큰 구현)"); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
     x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_done)
-    x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text"); x.set_defaults(f=cmd_wait)
+    x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
+    x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
+    x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움. 기본 15분, --pid 를 주면 기한 없음"); x.set_defaults(f=cmd_wait)
+    x = sp.add_parser("bg", help="오래 걸리는 명령을 Office가 관리하는 백그라운드로 실행"); x.add_argument("id", type=int)
+    x.add_argument("text", help="무엇을 하는지 짧게"); x.add_argument("command", help="실행할 셸 명령"); x.add_argument("--log", help="로그 파일 (기본: 대화 폴더 bg/)")
+    x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움"); x.set_defaults(f=cmd_bg)
     x = sp.add_parser("handoff"); x.add_argument("id", type=int); x.add_argument("--to", choices=AGENTS, required=True)
     x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_handoff)
     x = sp.add_parser("say"); x.add_argument("text"); x.add_argument("--to", default="all", choices=(*AGENTS, "user", "all"))
