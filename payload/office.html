@@ -1349,6 +1349,10 @@ function threadHtml(t) {
     return who && all.some(x => x.from === who && x.id > m.id);
   })();
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
+  // 중간 설명(질문 답장이 아닌 일반 메시지)은 최신 한 건만 본문에 두고 지난 것은 진행 과정에 접음. 최종 보고·경고·질문 답장은 그대로
+  const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null);
+  const foldedMsgs = plainMsgs.slice(0, -1);
+  if (foldedMsgs.length) t = {...t, steps: [...t.steps, ...foldedMsgs].sort((x, y) => x.id - y.id), reports: t.reports.filter(m => !foldedMsgs.includes(m))};
   const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
   const live = status && status !== "done";
   const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div>${readNote(t.req)}</div>` : "";
