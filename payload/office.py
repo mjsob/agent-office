@@ -4652,11 +4652,23 @@ def status_line(office, port, opened=True):
 def status_loop(office, port, opened, interactive):
     print(f"{paint(' Office ', 1, 30, 46)}  {paint(f'http://localhost:{port}/', 4, 36)}")
     print(f"{paint('폴더', 2)}    {ROOT}")
-    print(paint("이 콘솔은 켜 두세요 · 앱 창 다시 열기 R + Enter · 종료 Ctrl+C", 2))
+    print(paint("이 콘솔은 켜 두세요 · 앱 창 다시 열기 R · 종료 Ctrl+C", 2))
     if not opened:
         print(paint("창을 자동으로 열지 못했어요. 위 주소를 브라우저에서 열어 보세요.", 33))
     print()
     start, i, last, drawn = time.time(), 0, None, 0
+    # 키를 눌러도 화면에 글자·줄바꿈이 찍히지 않게 입력 에코를 끈다(Enter 가 찍히면 커서가 내려가 상태 줄이 아래로 쌓임)
+    tty_fd, tty_saved = None, None
+    if interactive and sys.stdin.isatty():
+        try:
+            import termios
+            tty_fd = sys.stdin.fileno()
+            tty_saved = termios.tcgetattr(tty_fd)
+            raw = termios.tcgetattr(tty_fd)
+            raw[3] &= ~(termios.ECHO | termios.ICANON)
+            termios.tcsetattr(tty_fd, termios.TCSADRAIN, raw)
+        except (ImportError, OSError, termios.error):
+            tty_fd = tty_saved = None
     try:
         while not office.stop.is_set():
             lines, key = console_status(office, int(time.time() - start), i)
@@ -4671,11 +4683,23 @@ def status_loop(office, port, opened, interactive):
             i += 1
             if interactive and sys.stdin.isatty():
                 import select
-                if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower() == "r":
-                    open_window(port, app_only=True)
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    if tty_fd is None:
+                        pressed = sys.stdin.readline().strip().lower() == "r"
+                    else:
+                        pressed = "r" in os.read(tty_fd, 256).decode(errors="ignore").lower()
+                    if pressed:
+                        open_window(port, app_only=True)
             office.stop.wait(0.2)
     except KeyboardInterrupt:
         office.shutdown()
+    finally:
+        if tty_fd is not None:
+            import termios
+            try:
+                termios.tcsetattr(tty_fd, termios.TCSADRAIN, tty_saved)
+            except (OSError, termios.error):
+                pass
     time.sleep(1)
 
 
