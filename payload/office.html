@@ -284,6 +284,8 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .job .hd { display: flex; gap: 8px; align-items: flex-start; }
 .job .tx { font-weight: 600; flex: 1; min-width: 0; }
 .resolved { font-size: 11px; color: var(--ok); margin-left: 6px; white-space: nowrap; }
+.user-action { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); display: grid; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.user-action small { color: var(--muted); }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
 .settings-panel { position: fixed; top: calc(var(--office-header-height, 52px) + 12px); right: 16px; z-index: 20; width: 320px; max-height: calc(100dvh - var(--office-header-height, 52px) - 24px); overflow-y: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 13px; word-break: keep-all; }
 #settingsBtn { white-space: nowrap; flex-shrink: 0; }
@@ -1155,7 +1157,7 @@ const openAgent = new Set(), openMore = new Set();
 let lastAgentSig = "";
 function renderAgents(agents) {
   // 바뀐 게 없으면 다시 그리지 않음(포커스·선택·클릭이 매초 날아가던 문제). 경과 시간만 글자 교체
-  const sig = JSON.stringify(agents) + JSON.stringify(lastTasks);   // since는 차례 시작 시각이라 고정값 — 경과 시간은 아래에서 따로 갱신
+  const sig = JSON.stringify(agents) + JSON.stringify(lastTasks) + JSON.stringify(lastJobs.map(j => [j.id, j.status]));   // since는 차례 시작 시각이라 고정값 — 경과 시간은 아래에서 따로 갱신
   if (sig === lastAgentSig) {
     document.querySelectorAll("#agents span[data-since]").forEach(e => e.textContent = elapsed(+e.dataset.since));
     updatePulses();
@@ -1172,9 +1174,10 @@ function renderAgents(agents) {
     // 번호는 현황판과 같은 '요청번호-순번'으로
     const tno = t => t.job ? `${t.job}-${lastTasks.filter(x => x.job === t.job).indexOf(t) + 1}` : `#${t.id}`;
     const stopped = held.some(t => t.wait_alive === false);
-    const running = held.some(t => t.wait_alive === true);
+    const running = held.some(t => t.wait_alive === true && t.wait_kind !== "waiting" && t.progress?.state !== "waiting");
+    const waiting = held.some(t => t.wait_kind === "waiting" || t.progress?.state === "waiting");
     const heldProgress = held.map(t => taskProgressShort(t)).filter(Boolean).join(" · ");
-    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : heldProgress ? heldProgress : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
+    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : waiting && !running ? "기다리는 중" + (heldProgress ? ` · ${heldProgress}` : "") : heldProgress ? heldProgress : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
     const logAt = Math.max(0, ...held.map(t => Number(t.wait_log_at) || 0));
     // 요청은 끝났는데 차례만 마무리 중이면 초록 점멸 대신 회색 '정리 중' (완료 알림과 작업 중 표시가 같이 떠 헷갈리던 문제)
     const djob = a.status === "working" && a.doing?.job ? lastJobs.find(x => x.id === a.doing.job) : null;
@@ -1312,8 +1315,29 @@ function md(s, lead) {
 // 요청현황용 한 줄 요약: 서버가 준 brief → 없으면 보고 첫 줄
 const firstLine = s => String(s ?? "").replace(/[*`#>]/g, "").split("\n").map(x => x.trim()).find(Boolean) || "";
 const briefOf = j => firstLine(j.brief || j.summary);
-const fold = (key, summary, body, cls = "") => `<details class="fold ${cls}" data-k="${key}" ${openTurns.has(key) ? "open" : ""}>
-  <summary>${icon("chevron", "sm")}${summary}</summary>${body}</details>`;
+const lazyFoldBodies = new Map();
+const fold = (key, summary, body, cls = "") => {
+  const opened = openTurns.has(key);
+  if (typeof body === "function" && !opened) lazyFoldBodies.set(key, body);
+  return `<details class="fold ${cls}" data-k="${key}" ${opened ? "open" : ""}>
+    <summary>${icon("chevron", "sm")}${summary}</summary>${typeof body === "function" ? opened ? body() : `<div data-lazy-fold="${key}"></div>` : body}</details>`;
+};
+function bindTimelineFolds(root) {
+  root.querySelectorAll("details.fold").forEach(d => d.ontoggle = () => {
+    d.open ? openTurns.add(d.dataset.k) : openTurns.delete(d.dataset.k);
+    const slot = d.querySelector(":scope > [data-lazy-fold]");
+    if (d.open && slot) {
+      const body = lazyFoldBodies.get(d.dataset.k);
+      if (body) { slot.innerHTML = body(); slot.removeAttribute("data-lazy-fold"); bindTimelineFolds(slot); }
+    }
+  });
+}
+// 같은 표시를 매초 다시 만들지 않아 선택한 글자와 펼친 내용을 유지해요.
+function setHtmlIfChanged(el, html) {
+  if (el._renderedHtml === html) return;
+  el.innerHTML = html; el._renderedHtml = html;
+}
+function setTextIfChanged(el, text) { if (el.textContent !== text) el.textContent = text; }
 
 // 사용자 알림의 링크는 먼저 HTML 문자를 이스케이프한 뒤 https 주소만 링크로 만든다.
 const noticeLinks = s => esc(s).replace(/https:\/\/(?:(?!&(?:quot|#39|lt|gt);)[^\s<])+/g,
@@ -1334,7 +1358,7 @@ function msgHtml(m, compact) {
     return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${esc(when(m))}</span></div>`;
   }
   if (m.kind === "turn") {
-    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${esc(when(m))}`, `<pre>${esc(m.text)}</pre>`, "turn");
+    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${esc(when(m))}`, () => `<pre>${esc(m.text)}</pre>`, "turn");
     // 단독 대화의 답변은 클릭 없이 본문으로 표시한다. 기존 기록에도 적용.
     m = {...m, kind: "msg", to: "user", job: null};
   }
@@ -1409,8 +1433,9 @@ function threadHtml(t) {
   // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
-  return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${bar}${progress.map(m => msgHtml(m)).join("")}
-    ${steps.length ? fold("j" + j.id, sum, `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
+  const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><span>${esc(u.text || "대화창에 필요한 내용을 보내세요.")}</span>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
+  return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${bar}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
+    ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}
     ${status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
       ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}</div>`;
@@ -1418,6 +1443,7 @@ function threadHtml(t) {
 
 function renderTimeline(msgs, jobs) {
   const tl = $("#timeline"), sec = tl.parentElement;
+  lazyFoldBodies.clear();
   const stick = forceBottom || sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
   forceBottom = false;
   // 위쪽을 읽던 중이면, 보던 요청 묶음이 다시 그린 뒤에도 같은 위치에 오게 기억 (위 요청이 접혀도 화면이 안 튀게)
@@ -1433,13 +1459,11 @@ function renderTimeline(msgs, jobs) {
     : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
         ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
-  const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
+  const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, () => `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
   const empty = !items.length;
   tl.classList.toggle("empty-timeline", empty);
   tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + rest.map(x => x.m ? msgHtml(x.m) : threadHtml(x)).join("");
-  tl.querySelectorAll("details.fold").forEach(d => d.ontoggle = () => {
-    d.open ? openTurns.add(d.dataset.k) : openTurns.delete(d.dataset.k);
-  });
+  bindTimelineFolds(tl);
   if (stick) sec.scrollTop = sec.scrollHeight;
   else {
     const again = anchorId && document.getElementById(anchorId);
@@ -1605,7 +1629,7 @@ function updateTyping(agents) {
     const last = liveNow ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
-  el.innerHTML = rows; el.hidden = !rows;
+  setHtmlIfChanged(el, rows); el.hidden = !rows;
   if (stick) sec.scrollTop = sec.scrollHeight;
 }
 // '짧은 제목 — 상세 설명' 문구를 [제목, 상세]로 (구분자 없으면 상세 없음)
@@ -1634,13 +1658,16 @@ function updateLiveBars(agents) {
   document.querySelectorAll("[data-progress-task]").forEach(el => {
     const t = lastTasks.find(t => t.id === +el.dataset.progressTask);
     if (!t) return;
-    el.querySelector(".progress-text").textContent = taskProgressText(t);
+    setTextIfChanged(el.querySelector(".progress-text"), taskProgressText(t));
     const fresh = el.querySelector(".freshness");
-    if (fresh) fresh.textContent = "진행 정보 갱신 " + ago(t.progress.at);
+    if (fresh) setTextIfChanged(fresh, "진행 정보 갱신 " + ago(t.progress.at));
   });
   document.querySelectorAll(".livebar").forEach(el => {
     const jid = +el.dataset.job, parts = [];
+    const job = lastJobs.find(x => x.id === jid), jt = lastTasks.filter(x => x.job === jid);
     for (const [n, a] of Object.entries(agents || {})) {
+      const assigned = a.doing?.job === jid || jt.some(t => t.owner === n && t.status !== "done") || job?.lead === n && !a.doing?.job;
+      if (!assigned) continue;
       if (a.error) parts.push(`⚠ ${NAME[n]}${lastJobs.find(x => x.id === jid)?.lead === n ? "(리더)" : ""} ${errHelp(n, a).title} — 오른쪽 카드의 해결 방법대로 한 뒤 [다시 시도]`);
       else if (a.paused) parts.push(`${NAME[n]} 일시정지됨 — 재개해야 진행돼요`);
       else if ((a.notice || "").startsWith("자동 재시도 대기"))   // 좁은 화면에선 에이전트 카드가 접혀 있어 여기에도 띄움
@@ -1649,11 +1676,10 @@ function updateLiveBars(agents) {
         parts.push(`${NAME[n]}: ${doingText(a.doing) || "작업 중"}${(a.subs || []).length ? ` (보조 ${a.subs.length})` : ""}`);
     }
     // 단계 점: 계획 → 작업(완료 작업 n/m) → 확인 → 완료
-    const job = lastJobs.find(x => x.id === jid), jt = lastTasks.filter(x => x.job === jid);
     const order = ["planning", "working", "review", "done"], cur = Math.max(0, order.indexOf(job ? (jobStatus(job) === "waiting" ? "working" : jobStatus(job)) : "planning"));
     const label = ["계획", jt.length ? `작업 ${jt.filter(x => x.status === "done").length}/${jt.length}` : "작업", "확인", "완료"];
-    el.querySelector(".stage").innerHTML = label.map((l, i) =>
-      `<span class="st ${i < cur ? "past" : i === cur ? "now" : ""}">${l}</span>`).join('<span class="arr">›</span>');
+    setHtmlIfChanged(el.querySelector(".stage"), label.map((l, i) =>
+      `<span class="st ${i < cur ? "past" : i === cur ? "now" : ""}">${l}</span>`).join('<span class="arr">›</span>'));
     if (job && jobStatus(job) === "waiting") {
       const reasons = [...new Set((job.display_reason ? [job.display_reason] : jt.filter(t => t.status === "waiting").map(t => t.wait_detail || t.wait_reason).filter(Boolean)))];
       parts.unshift((jt.some(t => t.status === "waiting" && t.wait_alive !== false && (t.wait_kind ? t.wait_kind === "working" : t.wait_alive === true)) ? "백그라운드 실행 중" : "기다리는 중") + (reasons.length ? " · " + reasons.join(" · ") : ""));
@@ -1667,10 +1693,16 @@ function updateLiveBars(agents) {
     const warn = parts.some(p => p.startsWith("⚠") || p.includes("일시정지"));
     el.classList.toggle("warn", warn);
     // 경고가 있으면 줄을 통째로 아랫줄에 두고 경고마다 '제목 굵게 + 상세 작게' (길어져도 단계 칩 옆에서 꼬이지 않게)
-    el.querySelector(".lb-text").innerHTML = warn
-      ? parts.map(p => { const [h, d] = splitMsg(p); return `<span class="w-head">${esc(h)}</span>${d ? `<span class="w-detail">${esc(d)}</span>` : ""}`; }).join("<br>") + (ago ? `<span class="w-detail">${esc(ago.replace(/^ · /, ""))}</span>` : "")
-      : esc((parts.join(" · ") || job?.wait_why || "다음 차례 대기 중") + ago);
-    el.querySelector(".lb-text").innerHTML += progressing.map(taskProgressHtml).join("");
+    const text = el.querySelector(".lb-text");
+    if (!text.querySelector(".lb-status")) text.innerHTML = '<span class="lb-status"></span><span class="lb-progress"></span>';
+    const status = text.querySelector(".lb-status");
+    if (warn) {
+      setHtmlIfChanged(status, parts.map(p => { const [h, d] = splitMsg(p); return `<span class="w-head">${esc(h)}</span>${d ? `<span class="w-detail">${esc(d)}</span>` : ""}`; }).join("<br>") + (ago ? `<span class="w-detail">${esc(ago.replace(/^ · /, ""))}</span>` : ""));
+    } else {
+      setTextIfChanged(status, (parts.join(" · ") || job?.wait_why || "다음 차례 대기 중") + ago);
+      status._renderedHtml = null;
+    }
+    setHtmlIfChanged(text.querySelector(".lb-progress"), progressing.map(taskProgressHtml).join(""));
   });
 }
 function jumpTo(id, again) {
@@ -1740,6 +1772,8 @@ async function doRefresh() {
     // 대화 전환·새 대화·복원 직후엔 옛 대화를 고정하지 말고 서버가 정한 현재 대화를 받아옴
     // 바뀐 게 없으면 서버가 {unchanged} 만 보내게 마지막 rev를 같이 보냄 (같은 대화일 때만)
     let q = curSession && !follow ? "?session=" + encodeURIComponent(curSession) + (lastRev != null && revSession === curSession && lastSig && lastSess ? "&since_rev=" + lastRev : "") : "";
+    if (curSession && !follow && lastMessagesSession === curSession && lastMessagesKey)
+      q += (q ? "&" : "?") + "since_msgs=" + encodeURIComponent(lastMessagesKey);
     if (clientId) q += (q ? "&" : "?") + "client=" + encodeURIComponent(clientId);
     const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(15000)});
     s = await r.json().catch(() => ({}));
@@ -1748,7 +1782,7 @@ async function doRefresh() {
     // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
     if (updateState.state === "restarting" && e.name === "TypeError") { closeOfficeWindow(true); return; }
     downCount = e.name === "TypeError" ? downCount + 1 : 0;
-    lastRev = null;   // 복구 뒤 전체 상태를 받아 지연 안내도 정상 화면으로 되돌려요.
+    lastRev = null; lastMessagesKey = null;   // 복구 뒤 전체 상태와 대화 기록을 다시 받아요.
     if (!headlessClient && e.name === "TypeError" && downCount >= 3) { closeOfficeWindow(); return; }
     const conn = $("#conn");
     if (conn) {
@@ -1785,8 +1819,14 @@ async function doRefresh() {
       if (curSession) drafts[curSession] = $("#input").value;
       $("#input").value = drafts[s.session] || ""; grow();
       curSession = s.session; forceBottom = false; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
+      lastMessagesKey = null; lastMessagesSession = null; lastMessages = [];
     }
-    const msgs = s.msgs || [], jobs = s.jobs || [], tasks = s.tasks || [];
+    if (s.msgs_unchanged && lastMessagesSession !== s.session) {
+      lastRev = null; lastMessagesKey = null; return;   // 캐시 없는 부분 응답은 다음 조회에서 전체 기록을 받아요.
+    }
+    const msgs = s.msgs_unchanged ? lastMessages : s.msgs || [], jobs = s.jobs || [], tasks = s.tasks || [];
+    lastMessages = msgs; lastMessagesSession = s.session;
+    lastMessagesKey = typeof s.msgs_key === "string" ? s.msgs_key : null;
     stampMsgs(msgs, jobs);
     lastJobs = jobs; lastTasks = tasks;
     // 서명은 그리기에 성공한 뒤에만 저장 — 실패하면 다음 틱에 다시 시도
@@ -1797,7 +1837,9 @@ async function doRefresh() {
     safe("resources", () => renderResources(s.resources));
     const last = msgs[msgs.length - 1];
     lastDay = new Date().toDateString();
-    const tsig = lastDay + "|" + msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs) + JSON.stringify(tasks);
+    const structure = JSON.stringify([jobs.map(({display_reason, wait_why, ...j}) => j), tasks.map(t => [t.id, t.job, t.status])]);
+    const messageSig = lastMessagesKey || msgs.length + "|" + (last && last.id + last.text?.length);
+    const tsig = lastDay + "|" + messageSig + "|" + structure;
     if (tsig !== lastSig && safe("timeline", () => renderTimeline(msgs, jobs))) lastSig = tsig;
     const resv = s.file_reservations || [];
     const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업 상태와 예약이 바뀌면 현황판도 갱신해요.
@@ -1840,10 +1882,20 @@ async function applyResources() {
   lastResSig = "";
   await api({action: "resource_limits", cpu_percent: +$("#resCpu").value, memory_high_gb: +$("#resMem").value});
 }
+let lastMessages = [], lastMessagesKey = null, lastMessagesSession = null;
 let downCount = 0, lastSessAt = 0, lastBoardSig = "", lastJobs = [], lastTasks = [], lastRev = null, revSession = null, lastAgentState = {};
 setMode(["job", "claude", "codex"].includes(localStorage.officeMode) ? localStorage.officeMode : "job");
-// 최소화된 창도 서버 종료를 감지한다 (브라우저가 백그라운드 타이머를 늦출 수 있음).
-refresh(); const refreshTimer = setInterval(refresh, 1000);
+// 화면을 보지 않을 때는 조회를 줄이고, 돌아오면 바로 최신 상태를 받아요.
+let lastPollAt = -Infinity;
+function pollRefresh() {
+  if (officeClosed || document.hidden && performance.now() - lastPollAt < 3000) return;
+  lastPollAt = performance.now();
+  return refresh();
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { lastPollAt = performance.now(); refresh(); }
+});
+pollRefresh(); const refreshTimer = setInterval(pollRefresh, 1000);
 </script>
 </body>
 </html>
