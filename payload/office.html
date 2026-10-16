@@ -157,7 +157,8 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 /* 오래 조용한 건 오류가 아님(긴 생각·긴 명령 실행 중) — 경고색 없이 차분하게. 진짜 오류는 서버가 error/notice로 따로 알림 */
 .readnote { margin: 6px 0 0; font-size: 11.5px; color: var(--faint); word-break: keep-all; }
 .pulse.quiet { color: var(--muted); }
-.pulse.quiet::before { background: var(--faint); }
+.pulse.quiet::before { background: var(--faint); animation: none; }
+.dot.wrap { background: var(--faint); animation: none; }
 .agent details.subs { margin: 0 12px 6px; }
 .subchip { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--text); }
 .subrow { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0 3px 18px; }
@@ -229,6 +230,8 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .msg .body th { background: var(--chip); font-weight: 600; }
 .msg .body tbody tr:last-child td { border-bottom: 0; }
 .msg .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
+.msg .body code.path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.msg .body code.path:hover { color: var(--accent); }
 .msg .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
 .msg .body .code-lang { display: block; margin-bottom: 6px; color: var(--muted); font: 11px ui-monospace, monospace; }
 .msg .body .gap { height: 8px; }
@@ -278,6 +281,11 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .job.closed { opacity: .72; }
 .job .hd { display: flex; gap: 8px; align-items: flex-start; }
 .job .tx { font-weight: 600; flex: 1; min-width: 0; }
+.job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
+#resbox { font-size: 12px; color: var(--muted); margin: 10px 0; }
+#resbox .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+#resbox input[type=range] { flex: 1; }
+#resbox input[type=number] { width: 64px; }
 .job .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 .pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .pill.working, .pill.planning, .pill.review { color: var(--text); }
@@ -415,6 +423,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; gap: 2px; }
 .seg button { border: 0; border-radius: 7px; padding: 4px 10px; color: var(--muted); }
 .seg button.on { background: var(--accent); color: var(--on-accent); }
+#verify button { padding: 4px 8px; }
 .lead { margin-left: 4px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 select { font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
 .inrow { display: flex; gap: 8px; align-items: stretch; }
@@ -494,6 +503,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <span class="root" id="root"></span>
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
+  <button id="appWindow" class="ghost" hidden onclick="openAppWindow()">앱 창으로 열기</button>
   <button id="theme" class="ghost" onclick="cycleTheme()"></button>
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
 </header>
@@ -531,7 +541,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <section id="tlsec" onscroll="onTimelineScroll()"><div id="timeline"></div><div id="typing" hidden></div>
     <button class="tobottom" id="toBottom" hidden onclick="const s=$('#tlsec');s.scrollTop=s.scrollHeight">↓ 맨 아래로<span class="newmark">새 메시지</span></button></section>
   <section class="side"><h2>에이전트</h2><div id="agents"></div>
-    <div id="gitbox"></div><h2>요청 현황</h2><div id="board"></div></section>
+    <div id="gitbox"></div><div id="resbox" hidden></div><h2>요청 현황</h2><div id="board"></div></section>
 </main>
 
 <footer>
@@ -544,6 +554,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <label class="lead" id="leadBox">리더
       <select id="lead"><option value="claude">Claude</option><option value="codex">Codex</option></select>
     </label>
+    <div class="lead" id="verifyBox">검증
+    <div class="seg" id="verify" role="group" aria-label="검증">
+      <button data-v="quick" title="빠르게 · 요청한 결과와 핵심 동작만 확인">빠르게</button>
+      <button data-v="standard" title="기본 · 핵심 동작과 영향 받는 부분까지 확인">기본</button>
+      <button data-v="thorough" title="꼼꼼하게 · 예외 사례와 독립 검수까지 확인 · 시간이 더 걸려요">꼼꼼하게</button>
+    </div></div>
   </div>
   <div class="inrow">
     <textarea id="input" aria-label="메시지 입력"></textarea>
@@ -603,11 +619,20 @@ function setMode(m) {
   localStorage.officeMode = m;
   document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-pressed", b.dataset.m === m); });
   $("#input").placeholder = PH[m];
-  $("#leadBox").style.visibility = m === "job" ? "visible" : "hidden";
+  $("#leadBox").style.visibility = $("#verifyBox").style.visibility = m === "job" ? "visible" : "hidden";
   $("#hint").textContent = HINT[m];
   $("#input").focus();
 }
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
+// 검증 강도: 새 요청마다 같이 보냄. 고른 값은 다음 요청에도 유지하고, 이미 진행 중인 요청엔 적용하지 않음
+const VERIFY = {quick: "빠르게", standard: "기본", thorough: "꼼꼼하게"};
+let verify = VERIFY[localStorage.officeVerify] ? localStorage.officeVerify : "standard";
+function setVerify(v) {
+  verify = v; localStorage.officeVerify = v;
+  document.querySelectorAll("#verify button").forEach(b => { b.classList.toggle("on", b.dataset.v === v); b.setAttribute("aria-pressed", b.dataset.v === v); });
+}
+document.querySelectorAll("#verify button").forEach(b => b.onclick = () => { setVerify(b.dataset.v); $("#input").focus(); });
+setVerify(verify);
 
 let updateState = {}, updateSubmitting = false, updateSignature = "";
 const closedUpdateVersions = new Set();
@@ -783,7 +808,7 @@ async function send() {
   if (!text || sending) return;
   sending = true; $("#send").disabled = true;
   const from = curSession;
-  const ok = mode === "job" ? await api({action: "job", text, lead: $("#lead").value})
+  const ok = mode === "job" ? await api({action: "job", text, lead: $("#lead").value, verification: verify})
                             : await api({action: "msg", text, to: mode});
   if (ok && curSession === from) {
     forceBottom = true;
@@ -1083,6 +1108,10 @@ function renderAgents(agents) {
     const heldProgress = held.map(t => taskProgressShort(t)).filter(Boolean).join(" · ");
     const heldText = stopped ? "백그라운드 작업이 멈췄어요" : heldProgress ? heldProgress : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
     const logAt = Math.max(0, ...held.map(t => Number(t.wait_log_at) || 0));
+    // 요청은 끝났는데 차례만 마무리 중이면 초록 점멸 대신 회색 '정리 중' (완료 알림과 작업 중 표시가 같이 떠 헷갈리던 문제)
+    const djob = a.status === "working" && a.doing?.job ? lastJobs.find(x => x.id === a.doing.job) : null;
+    const wrapping = !!djob && djob.status === "done" && !lastTasks.some(t => t.job === djob.id && t.status !== "done");
+    const liveHeld = held.some(t => t.wait_alive === true && t.wait_kind !== "waiting");
     const heldTip = held.map(t => `${tno(t)} ${t.title}\n${taskProgressTip(t)}`).join("\n");
     const out = feedRows(a.activity), rows = out.join("");
     // 미리보기는 이번 차례만: 지난 최종 답("대기")이 새 작업 시작 때 다시 뜨지 않게 함.
@@ -1094,18 +1123,21 @@ function renderAgents(agents) {
     const [wk, L] = [["five_hour", "5시간"], ["seven_day", "7일"]].map(([k, lbl]) => [lbl, a.limits?.[k]])
       .filter(([, w]) => w && w.used != null).sort((x, y) => y[1].used - x[1].used)[0] || [];
     const hot = L && L.used >= 80 ? `<span class="hot" title="${resetIn(L.resets)}">한도 ${L.used}%</span>` : "";
+    const RPH = {diagnosing: "원인을 살피는 중", recovering: "복구하는 중", verifying: "복구 확인 중", recovered: "복구됐어요", needs_user: "확인이 필요해요", failed: "복구하지 못했어요"};
+    const rc = a.recovery;
+    const rtag = rc && RPH[rc.phase] ? `<span class="hot" title="${esc(rc.reason || "")}">${RPH[rc.phase]}${rc.attempt && rc.limit && !["recovered", "needs_user"].includes(rc.phase) ? ` ${rc.attempt}/${rc.limit}` : ""}</span>` : "";
     return `<div class="agent">
       <div class="top">
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
         <div class="meta">
           <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(String(a.model).replace(/^claude-/, ""))}${a.effort ? ` · ${esc(a.effort)}` : ""}</span>` : ""}</div>
-          <div class="st ${stopped ? "wait-stopped" : a.status === "working" ? "now" : ""}" title="${esc(doing || heldTip)}">${held.length ? icon(stopped ? "alert" : "waiting", "sm") : ""}<span class="dot ${a.status}" ${held.length ? "hidden" : ""} style="${a.status === "working" ? `background:var(--${n})` : ""}"></span><span class="what">${
-            a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : heldText ? esc(heldText) : (STATUS[a.status] ?? a.status)}</span></div></div>
-        <div class="ctl">${hot}
+          <div class="st ${stopped ? "wait-stopped" : a.status === "working" && !wrapping ? "now" : ""}" title="${esc(doing || heldTip)}">${held.length ? icon(stopped ? "alert" : "waiting", "sm") : ""}<span class="dot ${wrapping ? "wrap" : a.status}" ${held.length ? "hidden" : ""} style="${a.status === "working" && !wrapping ? `background:var(--${n})` : ""}"></span><span class="what">${
+            wrapping ? "정리 중" : a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : heldText ? esc(heldText) : (STATUS[a.status] ?? a.status)}</span></div></div>
+        <div class="ctl">${rtag}${hot}
         <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "다시 시작" : a.status === "working" ? "이번 차례 끝나면 멈춤" : "잠시 멈춤"}" aria-label="${a.paused ? "다시 시작" : "잠시 멈춤"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}</button>
         ${a.status === "working" && !a.paused ? `<button class="ghost" aria-label="중단" title="지금 바로 멈춤" onclick='if(confirm("${NAME[n]}의 지금 차례를 바로 끊을까요?\\n이미 고친 파일은 그대로 남고, [다시 시작]하면 이어서 합니다.")){this.disabled=true;api({action:"pause_now",agent:"${n}"})}'>${icon("x", "sm")}</button>` : ""}</div>
       </div>
-      ${logAt ? `<div class="pulse">마지막 기록 ${ago(logAt)}</div>` : ""}
+      ${logAt ? `<div class="pulse ${liveHeld ? "" : "quiet"}">마지막 기록 ${ago(logAt)}</div>` : ""}
       ${a.error ? (h => `<div class="agerr">${icon("alert", "sm")}<div><b>${h.title}</b>${a.fail_count > 1 ? ` (같은 오류 ${a.fail_count}번째)` : ""}
           <div class="how">${esc(h.how(n, a))}</div>
           <details class="raw"><summary>원문 보기</summary><code>${esc(friendlyErr(a.error))}</code></details></div></div>`)(errHelp(n, a)) : ""}
@@ -1133,8 +1165,22 @@ function renderAgents(agents) {
 // 셸 인자로 넘어오며 줄바꿈이 글자 그대로 '\n'이 된 보고(예: office finish "...\n- ...")를 진짜 줄바꿈으로
 // 진짜 줄바꿈이 하나도 없고 '\n- ' 같은 보고 목록 꼴일 때만 바꿈 (코드 속 글자 '\n'은 그대로 둠)
 const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n)?\s*[-•*]\s/.test(s) ? s.replace(/\\n/g, "\n") : s; };
+// 보고 속 `코드`가 통째로 로컬 경로면 눌러서 탐색기로 연다. 명령문(옵션·파이프·변수)은 경로로 보지 않는다
+const isPath = c => /^(~\/|\/(home|mnt|tmp|root|opt|srv|var|etc|usr)\/|[A-Za-z]:\\|\\\\wsl)/.test(c) && !/[|;&$<>*`]| -/.test(c);
+async function openPath(path) {
+  path = path.replace(/:\d+(:\d+)?$/, "");   // 줄 번호(:12)는 떼고 연다
+  if (await api({action: "open_path", path})) return;
+  try { await navigator.clipboard.writeText(path); toast("열지 못해서 경로를 복사했어요"); } catch {}
+}
+document.addEventListener("click", e => { const el = e.target.closest("code.path"); if (el) openPath(el.dataset.path); });
+document.addEventListener("keydown", e => { const el = e.target.closest?.("code.path"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPath(el.dataset.path); } });
+// 주소를 직접 열어 주소창 있는 일반 탭으로 보고 있으면 앱 창으로 다시 여는 버튼을 보여 줘요
+$("#appWindow").hidden = !window.toolbar?.visible;
+async function openAppWindow() {
+  if (await api({action: "open_window"})) setTimeout(() => window.close(), 800);   // 스크립트로 연 탭이 아니면 브라우저가 안 닫을 수 있어요
+}
 function md(s, lead) {
-  const inline = t => t.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const inline = t => t.replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
   const item = line => {
     const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
@@ -1413,7 +1459,8 @@ function renderBoard(jobs, tasks, resv = [], cur = "") {
     return `<div class="job ${status === "done" ? "closed" : ""}">
       <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${status}">${st}</span>
         ${j.status !== "done" ? `<button class="ghost" aria-label="요청 취소" onclick='cancelJob(${j.id})'>${icon("x", "sm")}</button>` : ""}</div>
-      <div class="sub">요청 ${j.id} · 리더 ${nm(j.lead)}${j.acting_lead ? ` → ${nm(j.acting_lead)} 대행` : ""} · 작업 ${jt.filter(t => t.status === "done").length}/${jt.length}</div>
+      <div class="sub">요청 ${j.id} · 리더 ${nm(j.lead)}${j.acting_lead ? ` → ${nm(j.acting_lead)} 대행` : ""} · 작업 ${jt.filter(t => t.status === "done").length}/${jt.length}${VERIFY[j.verification] ? ` · 검증 ${VERIFY[j.verification]}` : ""}</div>
+      ${(j.needs_user || []).map(u => `<div class="ask" role="status"><b>확인이 필요해요</b> · ${esc(u.text || "")}${u.status === "expired" ? " · 기한이 지났어요" : u.expires_at ? ` · ${new Date(u.expires_at * 1000).toTimeString().slice(0, 5)}까지` : ""}</div>`).join("")}
       ${jt.map(taskRow).join("")}
     </div>`;
   }).join("") + (orphan.filter(t => t.status !== "done").length ? `<div class="job"><div class="hd"><span class="tx">개별 작업</span></div>${orphan.filter(t => t.status !== "done").map(taskRow).join("")}</div>` : "");
@@ -1669,6 +1716,7 @@ async function doRefresh() {
     if ((ss !== lastSess || Date.now() - lastSessAt > 30000) && safe("sessions", () => renderSessions(s.sessions || [], s.session))) { lastSess = ss; lastSessAt = Date.now(); }
     safe("agents", () => renderAgents(s.agents || {}));
     safe("git", () => renderGit(s.git, s.parallel));
+    safe("resources", () => renderResources(s.resources));
     const last = msgs[msgs.length - 1];
     lastDay = new Date().toDateString();
     const tsig = lastDay + "|" + msgs.length + "|" + (last && last.id + last.text?.length) + JSON.stringify(jobs) + JSON.stringify(tasks);
@@ -1679,6 +1727,28 @@ async function doRefresh() {
     safe("livebars", () => updateLiveBars(s.agents));
     safe("typing", () => updateTyping(s.agents));
   }
+}
+// 리소스 한도: 새로 시작하는 작업부터 적용. 입력 중엔 다시 그리지 않음
+let lastResSig = "";
+function renderResources(r) {
+  const box = $("#resbox");
+  if (!r) { box.hidden = true; return; }
+  if (box.contains(document.activeElement)) return;
+  const sig = JSON.stringify(r);
+  if (sig === lastResSig) return;
+  lastResSig = sig; box.hidden = false;
+  if (!r.supported) { box.innerHTML = `<b>리소스 한도</b><div>이 PC에서는 쓸 수 없어요${r.reason ? ` · ${esc(r.reason)}` : ""}</div>`; return; }
+  const gb = x => x == null ? "-" : (x / 1024 ** 3).toFixed(1) + "GB";
+  const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
+  box.innerHTML = `<b>리소스 한도</b>
+    <div class="row">CPU <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
+    <div class="row">메모리 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB <span>0은 제한 없음</span></div>
+    <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>지금 ${r.cpu_usage_percent == null ? "-" : Math.round(r.cpu_usage_percent) + "%"} · ${gb(r.memory_current_bytes)}</span></div>
+    <div>${esc(r.applies_to || "")} 부터 적용해요. 다음은 제어하지 못해요: ${esc(r.uncontrolled || "")}</div>`;
+}
+async function applyResources() {
+  lastResSig = "";
+  await api({action: "resource_limits", cpu_percent: +$("#resCpu").value, memory_high_gb: +$("#resMem").value});
 }
 let downCount = 0, lastSessAt = 0, lastBoardSig = "", lastJobs = [], lastTasks = [], lastRev = null, revSession = null, lastAgentState = {};
 setMode(["job", "claude", "codex"].includes(localStorage.officeMode) ? localStorage.officeMode : "job");
