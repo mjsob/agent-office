@@ -43,6 +43,8 @@ header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; bord
 .version.has-update::after { content: ""; position: absolute; top: 0; right: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--codex); }
 .version:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 .brand .mark svg { width: 14px; height: 14px; }
+.root.path { cursor: pointer; }
+.root.path:hover { color: var(--accent); }
 .root { color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn { font-size: 12px; color: var(--warn); }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
@@ -1325,7 +1327,20 @@ function renderAgents(agents) {
 // 진짜 줄바꿈이 하나도 없고 '\n- ' 같은 보고 목록 꼴일 때만 바꿈 (코드 속 글자 '\n'은 그대로 둠)
 const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n)?\s*[-•*]\s/.test(s) ? s.replace(/\\n/g, "\n") : s; };
 // 보고 속 `코드`가 통째로 로컬 경로면 눌러서 탐색기로 연다. 명령문(옵션·파이프·변수)은 경로로 보지 않는다
-const isPath = c => /^(~\/|\/(home|mnt|tmp|root|opt|srv|var|etc|usr)\/|[A-Za-z]:\\|\\\\wsl)/.test(c) && !/[|;&$<>*`]| -/.test(c);
+const isPath = c => /^(~\/|\/(home|mnt|tmp|root|opt|srv|var|etc|usr)\/|[A-Za-z]:[\\/]|\\\\wsl)/.test(c) && !/[|;&$<>*`]| -/.test(c);
+// 코드 표시 없이 글 속에 그냥 적힌 절대경로도 눌러서 열게: 태그·이미 경로로 감싼 곳은 건너뛰고, 뒤에 붙은 조사(를·에서 등)는 경로에서 뺌
+const PLAIN_PATH = /(?<![\w/\\.:~-])((?:~|\/(?:home|mnt|tmp|root|opt|srv|var|etc|usr)|[A-Za-z]:)[\\/][^\s<>"'`|;&$*()\[\]]*?(?::\d+){0,2})(?=(?:으로|에서|을|를|은|는|이|가|에|로|와|과|도|의|만)?(?:[\s<,;!?)\]]|\.(?=\s|<|$)|:(?!\d)|$))/g;
+function linkPlainPaths(html) {
+  let skip = 0;
+  return html.split(/(<[^>]*>)/).map(part => {
+    if (part[0] === "<") {
+      if (/^<(code|span class="path"|a )/.test(part)) skip++;
+      else if (/^<\/(code|span|a)>/.test(part) && skip) skip--;
+      return part;
+    }
+    return skip ? part : part.replace(PLAIN_PATH, (m, p) => isPath(p) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${p.replace(/"/g, "&quot;")}">${p}</span>` : m);
+  }).join("");
+}
 async function openPath(path) {
   path = path.replace(/:\d+(:\d+)?$/, "");   // 줄 번호(:12)는 떼고 연다
   if (await api({action: "open_path", path})) return;
@@ -1340,7 +1355,8 @@ async function openAppWindow() {
 }
 function md(s, lead) {
   const pathAttr = c => c.replace(/"/g, "&quot;");
-  const inline = t => t.replace(/\[([^\]\n]+)\]\((?:&lt;(.+?)&gt;((?::\d+){0,2})|([^)\s]+))\)/g, (all, label, angled, line, plain) => { const url = angled ? angled + line : plain; return isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all; }).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const inline = t => linkPlainPaths(inline0(t));
+  const inline0 = t => t.replace(/\[([^\]\n]+)\]\((?:&lt;(.+?)&gt;((?::\d+){0,2})|([^)\s]+))\)/g, (all, label, angled, line, plain) => { const url = angled ? angled + line : plain; return isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all; }).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
   const item = line => {
     const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
@@ -1904,6 +1920,7 @@ async function doRefresh() {
     const warn = (s.warnings || []).join(" · ");
     $("#conn").textContent = warn; $("#conn").removeAttribute("title"); $("#conn").hidden = !warn;
     $("#root").textContent = s.root;
+    $("#root").dataset.path = s.root; $("#root").classList.add("path"); $("#root").tabIndex = 0; $("#root").setAttribute("role", "button"); $("#root").title = "탐색기에서 열기";
     const version = typeof s.version === "string" ? s.version.trim() : "";
     $("#version").textContent = version ? "v" + version.replace(/^v/, "") : "";
     $("#version").hidden = !version;
