@@ -137,7 +137,7 @@ python3 - "$tag" "$title" "$work/notes.md" "$commit" "$work/create.json" <<'PY'
 import json,sys
 from pathlib import Path
 tag,title,notes,commit,out=sys.argv[1:]
-Path(out).write_text(json.dumps(dict(tag_name=tag,target_commitish=commit,name=title,body=Path(notes).read_text(),draft=True,prerelease=False)))
+Path(out).write_text(json.dumps(dict(tag_name=tag,target_commitish=commit,name=f"Office {tag}",body=Path(notes).read_text(),draft=True,prerelease=False)))
 PY
 api POST "$api_base/releases" "$work/create.json"
 release_id=$(python3 - "$work/response.json" <<'PY'
