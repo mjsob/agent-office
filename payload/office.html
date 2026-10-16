@@ -1405,6 +1405,7 @@ function threads(msgs, jobs) {
   return items;
 }
 
+const RECENT_LIVE = 3;   // 진행 중 요청에서 바로 보이는 최근 안내 수
 function threadHtml(t) {
   // 지나간 경고(예: 'Codex 일시정지')는 그 에이전트가 이후에 다시 움직였으면 해결된 것 → 결과 자리에서 빼서 진행 과정으로 접음
   const all = [...t.steps, ...t.reports];
@@ -1419,15 +1420,18 @@ function threadHtml(t) {
   })();
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
   // 중간 설명(질문 답장이 아닌 일반 메시지)은 최신 한 건만 본문에 두고 지난 것은 진행 과정에 접음. 최종 보고·경고·질문 답장은 그대로
-  const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null);
-  const foldedMsgs = plainMsgs.slice(0, -1);
-  if (foldedMsgs.length) t = {...t, steps: [...t.steps, ...foldedMsgs].sort((x, y) => x.id - y.id), reports: t.reports.filter(m => !foldedMsgs.includes(m))};
+  // 진행 중인 요청은 진행 알림과 중간 설명을 합쳐 최근 3건을 밖에 두어 '진짜 진행되는 느낌'을 주고, 끝난 요청은 최신 한 건만 둠
   const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
   const live = status && status !== "done";
+  const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null);
+  const recent = live ? [...t.steps.filter(m => m.kind === "progress"), ...plainMsgs].sort((x, y) => x.id - y.id).slice(-RECENT_LIVE) : [];
+  const foldedMsgs = live ? plainMsgs.filter(m => !recent.includes(m)) : plainMsgs.slice(0, -1);
+  if (live) t = {...t, reports: t.reports.filter(m => !recent.includes(m))};
+  if (foldedMsgs.length) t = {...t, steps: [...t.steps, ...foldedMsgs].sort((x, y) => x.id - y.id), reports: t.reports.filter(m => !foldedMsgs.includes(m))};
   const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div>${readNote(t.req)}</div>` : "";
   // 진행 알림은 가장 최근 한 줄만 밖에 두고, 지난 것은 진행 과정 안에 접어 둠
   const allProgress = t.steps.filter(m => m.kind === "progress");
-  const progress = allProgress.slice(-1);
+  const progress = live ? recent : allProgress.slice(-1);
   const steps = t.steps.filter(m => !progress.includes(m) && !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
   const sum = `<span class="pill ${status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (${j.acting_reason === "busy" ? "바빠서" : "멈춰서"} ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
   // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
