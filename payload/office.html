@@ -446,7 +446,10 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 .composer { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); display: grid; }
 .composer:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
 .ctools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 8px 0; }
-.cfoot { display: flex; justify-content: flex-end; padding: 0 8px 8px; }
+/* 입력칸이 길어져도 아래에 빈 줄이 안 생기게: 보내기는 입력칸 오른쪽 아래에 붙여요 */
+.cinput { display: flex; align-items: flex-end; gap: 8px; padding: 0 8px 8px 0; }
+.cinput textarea { flex: 1; }
+.cinput .send { flex: none; margin-left: 0; }
 .jobopts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .jobopts[hidden] { display: none; }
 #modes button { gap: 0; }   /* '모두'+'에게' 사이 버튼 기본 간격 없애기 */
@@ -615,8 +618,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         </div></div>
       </div>
     </div>
-    <textarea id="input" aria-label="메시지 입력"></textarea>
-    <div class="cfoot">
+    <div class="cinput">
+      <textarea id="input" aria-label="메시지 입력"></textarea>
       <button class="send" id="send" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
     </div>
   </div>
