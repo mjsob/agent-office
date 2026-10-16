@@ -226,8 +226,10 @@ PYLOCAL
 
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
-# 바이트코드 캐시는 내용 해시로 검사하게 미리 만든다(수정 시각·길이가 같은 변경도 놓치지 않음). 실패해도 설치는 계속한다.
-"$python_bin" -c 'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)' "$prefix/app/office.py" >/dev/null 2>&1 || true
+# 바이트코드 캐시는 내용 해시로 검사하게 미리 만든다(수정 시각·길이가 같은 변경도 놓치지 않음).
+# 만들지 못하면 캐시를 쓰지 않는 실행기로 둔다(옛 캐시가 남아 있어도 쓰지 않음).
+pyc_hash=0
+if "$python_bin" -c 'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)' "$prefix/app/office.py" >/dev/null 2>&1; then pyc_hash=1; fi
 # Replace baseline metadata without following old metadata symlinks.
 rm -rf -- "$prefix/app/.office-orig"
 mv -- "$staging/.office-orig" "$prefix/app/.office-orig"
@@ -245,10 +247,14 @@ mv -f -- "$staging/.office-manifest.json" "$prefix/app/.office-manifest.json"
   printf '  unset OFFICE_DIR OFFICE_SESSION OFFICE_JOB OFFICE_AS\n'
   printf 'elif [[ -z ${OFFICE_DIR:-} ]]; then\n'
   printf '  cd -- "$work_dir"\n'
-  # office.py 를 직접 실행하면 매번 컴파일해 명령마다 0.1초가 더 걸린다. 같은 파일을 __main__ 으로 불러와 바이트코드 캐시(__pycache__)를 쓴다.
-  # 캐시는 파일 수정 시각으로 무효화되고, 폴더에 쓸 수 없으면 파이썬이 조용히 매번 컴파일한다.
-  printf '%s\n' 'fi' "loader='import sys, importlib.util as u; p = sys.argv[1]; sys.argv = [p, *sys.argv[2:]]; sys.path.insert(0, p.rsplit(\"/\", 1)[0]); s = u.spec_from_file_location(\"__main__\", p); m = u.module_from_spec(s); sys.modules[\"__main__\"] = m; s.loader.exec_module(m)'"
-  printf 'exec "$python_bin" -c "$loader" "$install_root/app/office.py" "$@"\n'
+  if ((pyc_hash)); then
+    # office.py 를 직접 실행하면 매번 컴파일해 명령마다 0.1초가 더 걸린다. 같은 파일을 __main__ 으로 불러와 바이트코드 캐시(__pycache__)를 쓴다.
+    # 캐시는 내용 해시로 검사해 파일이 바뀌면 다시 컴파일한다. 폴더에 쓸 수 없으면 파이썬이 조용히 매번 컴파일한다.
+    printf '%s\n' 'fi' "loader='import sys, importlib.util as u; p = sys.argv[1]; sys.argv = [p, *sys.argv[2:]]; sys.path.insert(0, p.rsplit(\"/\", 1)[0]); s = u.spec_from_file_location(\"__main__\", p); m = u.module_from_spec(s); sys.modules[\"__main__\"] = m; s.loader.exec_module(m)'"
+    printf 'exec "$python_bin" -c "$loader" "$install_root/app/office.py" "$@"\n'
+  else
+    printf 'fi\nexec "$python_bin" "$install_root/app/office.py" "$@"\n'
+  fi
 } > "$staging/office-launcher"
 chmod 700 "$staging/office-launcher"
 cp -- "$staging/office-launcher" "$staging/office-global"
