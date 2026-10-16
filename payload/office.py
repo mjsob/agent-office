@@ -3762,8 +3762,7 @@ class Office:
                         post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요."), "event")
                     for team in list(self.teams.values()):
                         w = team["w"].get(n)
-                        if w and w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
-                            # 재개 버튼과 같게: 멈춘 차례를 다시 실행
+                        if w:
                             with state(True, w.sid) as record:
                                 for task in record["tasks"]:
                                     request = task.get("user_request") or {}
@@ -3773,6 +3772,8 @@ class Office:
                                         if task["status"] == "done":
                                             task["done_at"] = time.time()
                                         task.pop("wait_reason", None)
+                        if w and w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
+                            # 사용자 정지는 유지하고 인증 오류로 멈춘 차례만 다시 실행해요.
                             w.set_recovery("verifying", "로그인 성공을 확인했어요. 중단된 차례의 재개를 확인해요.")
                             w.paused, w.error, w.error_kind = False, None, None
                             w.cont = w.chatter = 0
