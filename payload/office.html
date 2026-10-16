@@ -283,6 +283,10 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .job .tx { font-weight: 600; flex: 1; min-width: 0; }
 .resolved { font-size: 11px; color: var(--ok); margin-left: 6px; white-space: nowrap; }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
+.settings-panel { position: fixed; top: calc(var(--office-header-height, 52px) + 12px); right: 16px; z-index: 20; width: 320px; max-height: calc(100dvh - var(--office-header-height, 52px) - 24px); overflow-y: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 13px; word-break: keep-all; }
+.settings-panel h3 { margin: 0 0 10px; font-size: 14px; }
+.settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+@media (max-width: 760px) { .settings-panel { left: 12px; right: 12px; width: auto; } }
 #resbox { font-size: 12px; color: var(--muted); margin: 10px 0; }
 #resbox .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 #resbox input[type=range] { flex: 1; }
@@ -505,9 +509,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <span class="conn" id="conn" hidden>서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하세요</span>
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
   <button id="appWindow" class="ghost" hidden onclick="openAppWindow()">앱 창으로 열기</button>
-  <button id="theme" class="ghost" onclick="cycleTheme()"></button>
+  <button id="settingsBtn" class="ghost" aria-controls="settings" aria-expanded="false" onclick="toggleSettings()">설정</button>
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
 </header>
+
+<section id="settings" class="settings-panel" aria-label="설정" hidden>
+  <h3>설정</h3>
+  <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
+  <div id="resbox" hidden></div>
+</section>
 
 <section id="updateNotice" class="update-notice" aria-label="앱 업데이트" aria-live="polite" hidden>
   <div class="update-row">
@@ -542,7 +552,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <section id="tlsec" onscroll="onTimelineScroll()"><div id="timeline"></div><div id="typing" hidden></div>
     <button class="tobottom" id="toBottom" hidden onclick="const s=$('#tlsec');s.scrollTop=s.scrollHeight">↓ 맨 아래로<span class="newmark">새 메시지</span></button></section>
   <section class="side"><h2>에이전트</h2><div id="agents"></div>
-    <div id="gitbox"></div><div id="resbox" hidden></div><h2>요청 현황</h2><div id="board"></div></section>
+    <div id="gitbox"></div><h2>요청 현황</h2><div id="board"></div></section>
 </main>
 
 <footer>
@@ -880,7 +890,14 @@ function startRename(id) {
   inp.onclick = e => e.stopPropagation();
   inp.onblur = () => finish(true);
 }
-// 헤더 테마 버튼: 자동(OS 따라감) → 밝게 → 어둡게 순환, 이 PC에 기억
+// 설정 창: 화면 색·리소스 한도. 바깥을 누르거나 Esc로 닫음
+function toggleSettings(force) {
+  const p = $("#settings"), open = force ?? p.hidden;
+  p.hidden = !open; $("#settingsBtn").setAttribute("aria-expanded", String(open));
+}
+document.addEventListener("click", e => { if (!$("#settings").hidden && !e.target.closest("#settings, #settingsBtn")) toggleSettings(false); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#settings").hidden) toggleSettings(false); });
+// 설정의 테마 버튼: 자동(OS 따라감) → 밝게 → 어둡게 순환, 이 PC에 기억
 const THEMES = {auto: "◐ 자동", light: "☀ 밝게", dark: "☾ 어둡게"};
 function applyTheme(t) {
   if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
