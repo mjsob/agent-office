@@ -26,6 +26,7 @@ from urllib.parse import urlsplit, parse_qs
 
 AGENTS = ("claude", "codex")
 ROTATE_CTX = int(os.environ.get("OFFICE_ROTATE_CTX") or 150_000)   # 새 요청 시작 때 이보다 긴 세션은 새로 시작
+IDLE_RECHECK = 10      # 초: 할 일 없이 쉬는 동안 기록이 그대로여도 장애 전환·멈춤 점검은 이 간격으로 다시 해요
 POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반영
 MODEL_FALLBACKS = {"codex": ["gpt-6-sol", "gpt-6-luna"], "claude": ["sonnet", "opus"]}
 MAX_CONT = 2          # 하던 일 남았는데 조용할 때 "이어서 해" 재촉 횟수
@@ -111,20 +112,35 @@ def state_valid(data):
     if type(data.get("seq", 0)) is not int or data.get("seq", 0) < 0:
         return False
     for key in ("jobs", "tasks", "msgs"):
-        if not isinstance(data.get(key, []), list):
+        items = data.get(key, [])
+        if not isinstance(items, list):
             return False
-        for item in data.get(key, []):
-            if not isinstance(item, dict) or type(item.get("id")) is not int or item["id"] < 1:
+        for item in items:   # 대화가 길면 msgs 가 수천 개라 매 항목 검사를 가볍게 유지해요
+            if not isinstance(item, dict):
                 return False
-            if key == "jobs" and (item.get("status") not in ("planning", "working", "review", "done")
-                    or item.get("lead") not in AGENTS or not isinstance(item.get("text"), str)):
+            get = item.get
+            if type(get("id")) is not int or item["id"] < 1:
                 return False
-            if key == "tasks" and (item.get("status") not in ("todo", "doing", "waiting", "done")
-                    or item.get("owner") not in (*AGENTS, None) or not isinstance(item.get("title"), str)):
-                return False
-            if key == "msgs" and any(not isinstance(item.get(field), str) for field in ("ts", "from", "to", "text")):
+            if key == "msgs":
+                if not (isinstance(get("ts"), str) and isinstance(get("from"), str) and isinstance(get("to"), str) and isinstance(get("text"), str)):
+                    return False
+            elif key == "jobs":
+                if get("status") not in ("planning", "working", "review", "done") or get("lead") not in AGENTS or not isinstance(get("text"), str):
+                    return False
+            elif get("status") not in ("todo", "doing", "waiting", "done") or get("owner") not in (*AGENTS, None) or not isinstance(get("title"), str):
                 return False
     return True
+
+
+_GOOD_FILES = {}   # 경로 -> 검사를 통과한 파일 식별값. 저장할 때 직전 정상본을 또 해석하지 않으려고 둬요
+
+
+def file_key(path):
+    try:
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size, st.st_ino
+    except OSError:
+        return None
 
 
 def read_json_file(path, default, validator=None, required=False):
@@ -132,9 +148,11 @@ def read_json_file(path, default, validator=None, required=False):
     if not path.exists():
         return copy.deepcopy(default)
     try:
+        key = file_key(path)   # 읽기 전에 구해 둬요: 읽는 사이 바뀌었으면 다음 저장 때 다시 검사해요
         data = json.loads(path.read_text())
         if not check(data):
             raise ValueError("schema")
+        _GOOD_FILES[str(path)] = key
         return data
     except (ValueError, UnicodeError) as error:
         backup = path.with_suffix(path.suffix + ".bak")
@@ -165,11 +183,14 @@ def atomic_json(path, value, validator=None):
         payload = json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            try:
-                old = json.loads(path.read_text())
-                good = check(old)
-            except (ValueError, UnicodeError):
-                good = False
+            if _GOOD_FILES.get(str(path)) == file_key(path):   # 우리가 방금 읽었거나 쓴 그대로면 다시 해석하지 않아도 정상본이에요
+                good = True
+            else:
+                try:
+                    old = json.loads(path.read_text())
+                    good = check(old)
+                except (ValueError, UnicodeError):
+                    good = False
             target = path.with_suffix(path.suffix + ".bak") if good else path.with_name(path.name + ".corrupt-" + uuid.uuid4().hex[:8])
             shutil.copy2(path, target)
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
@@ -178,6 +199,7 @@ def atomic_json(path, value, validator=None):
             f.write(payload); f.flush()   # fsync 는 하지 않음: 디스크가 바쁠 때 잠금을 쥔 채 수 초씩 멈추던 원인. 직전 정상본(.bak)으로 복구함
         temporary.replace(path)
         temporary = None
+        _GOOD_FILES[str(path)] = file_key(path)
     except (OSError, ValueError) as error:
         server_log("storage.write", error)
         raise StorageError(f"파일 저장 실패 — {path.name}을 저장하지 못했습니다. 원본은 유지됩니다. 디스크 용량과 폴더 권한을 확인하세요.") from None
@@ -462,6 +484,33 @@ def state_view(sid):
         s.setdefault(k, [])
     s.setdefault("seq", 0)
     return s
+
+
+_STATE_CACHE = {}   # 경로 -> (파일 식별값, 읽은 상태, 마지막 소식 번호). 파일이 그대로면 매초 다시 읽고 검사하지 않음
+_STATE_CACHE_LOCK = threading.Lock()
+
+
+def state_view_cached(sid):
+    """state_view 와 같지만 파일이 안 바뀌었으면 읽어 둔 값을 그대로 줘요. 돌려준 값은 고치지 말고 읽기만 해요."""
+    path = sdir(sid) / "state.json"
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        key = None
+    with _STATE_CACHE_LOCK:
+        hit = _STATE_CACHE.get(str(path))
+    if key is not None and hit and hit[0] == key:
+        return hit[1], hit[2], key
+    s = state_view(sid)
+    notice = last_notice(s.get("msgs", []))
+    if key is not None and not STORAGE_WARNINGS.get(str(path)):   # 백업으로 읽었거나 손상이면 담아 두지 않고 매번 확인
+        with _STATE_CACHE_LOCK:
+            _STATE_CACHE[str(path)] = (key, s, notice)
+            if len(_STATE_CACHE) > 64:
+                _STATE_CACHE.pop(next(iter(_STATE_CACHE)))
+        return s, notice, key
+    return s, notice, None
 
 
 def meta_view():
@@ -1818,6 +1867,7 @@ class Worker:
     def __init__(self, name, sid, stop):
         self.name, self.other = name, AGENTS[1 - AGENTS.index(name)]
         self.sid, self.stop = sid, stop
+        self.idle_mark = None   # (기록 파일 식별값, 시각): 할 일 없이 쉬는 중이면 기록이 그대로인 동안 전체 점검을 건너뜀
         self.status, self.since, self.doing = "idle", time.time(), None
         self.paused = False
         self.error = None
@@ -2673,6 +2723,13 @@ class Worker:
         self.ctx_tokens = 0
         return True
 
+    def state_mark(self):
+        try:
+            st = (sdir(self.sid) / "state.json").stat()
+            return st.st_mtime_ns, st.st_size, st.st_ino
+        except OSError:
+            return None
+
     def wait_change(self, timeout):
         """할 일이 없을 때 쉬는 시간. 작업판·메시지(state.json)가 바뀌면 바로 깨어나 다음 차례를 빨리 잡는다.
         office 명령은 별도 프로세스라 파일 변화로만 알 수 있어 0.1초마다 수정 시각만 본다(읽기·해석은 안 함)"""
@@ -2685,12 +2742,18 @@ class Worker:
                 return None
         before, end = mark(), time.monotonic() + timeout
         while not self.stop.is_set() and time.monotonic() < end:
-            if self.stop.wait(0.1) or mark() != before:
+            if self.stop.wait(0.25) or mark() != before:
                 return
 
     def _loop(self, office):
         sid = self.sid
         while not (self.stop.is_set() or office.stop.is_set()):
+            mark_now = self.state_mark()
+            idle = self.idle_mark
+            if idle and mark_now == idle[0] and not self.paused and not getattr(self, "retry_at", 0) and time.monotonic() - idle[1] < IDLE_RECHECK:
+                self.wait_change(POLL)   # 할 일이 없고 기록도 그대로면 매초 전체를 읽지 않고, 변화가 생기면 바로 깨어나요
+                continue
+            self.idle_mark = None
             if hasattr(office, "reconcile_failover"):
                 office.reconcile_failover(sid)
             if hasattr(office, "check_stall"):
@@ -2716,7 +2779,7 @@ class Worker:
                 selected_job = next((j for j in s["jobs"] if nt and j["id"] == nt[1]), {})
                 verification = selected_job.get("verification", "standard")
             if not nt:
-                self.idle(); self.wait_change(POLL)
+                self.idle(); self.idle_mark = (mark_now, time.monotonic()); self.wait_change(POLL)
                 continue
             tail, job, desc, new = nt
             if self.resume_turn and not self.restart_reported:
@@ -4050,13 +4113,14 @@ class Office:
         self.gitcache[sid] = (time.time(), info)
         return info
 
-    def snapshot(self, sid=None, since_rev=None):
+    def snapshot(self, sid=None, since_rev=None, since_msgs=None):
         cur = sid or current_sid()
         m = meta_view()
         if not valid_sid(cur) or not any(x["id"] == cur and not x["deleted"] for x in m["sessions"]):
             raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록에서 다시 선택하세요.")
         self.ensure_team(cur)
-        data = state_view(cur)
+        cached, _, msgs_key = state_view_cached(cur)
+        data = dict(cached)   # 겉복사: 아래에서 키를 더하고 jobs·tasks 는 복사해서 고쳐요
         data["tasks"] = [dict(t) for t in data.get("tasks", [])]
         display_now = time.time()
         def worker_status(session):
@@ -4074,10 +4138,9 @@ class Office:
         notice, display_busy = {}, {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
             try:
-                st = read_json_file(sdir(x["id"]) / "state.json", {}, state_valid)
+                st, notice[x["id"]], _ = state_view_cached(x["id"])
                 x.update(session_display_status(st, worker_status(x["id"]), display_now))
                 x["needs_user"] = sum(bool(pending_user_request(t, display_now)) for t in st.get("tasks", []))
-                notice[x["id"]] = last_notice(st.get("msgs", []))
                 completed = {j["id"] for j in st.get("jobs", []) if j["status"] == "done"}
                 display_busy[x["id"]] = any(w.status == "working" and (w.doing or {}).get("job") not in completed for w in self.teams.get(x["id"], {}).get("w", {}).values())
             except (OSError, ValueError, StorageError) as error:
@@ -4120,7 +4183,9 @@ class Office:
         for j in data["jobs"]:
             j["wait_why"] = self.job_wait_reason(data, j, team) if j["status"] != "done" and not j.get("cancelled") else None
         # since/since(epoch)는 시작 시각이며 매초 경과 숫자는 화면에서 계산한다.
-        signature = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).digest()
+        # 가장 큰 msgs 는 파일이 그대로면 같으니 파일 식별값으로 갈음하고 나머지만 해시해요
+        sign = {k: v for k, v in data.items() if k != "msgs"} if msgs_key else data
+        signature = hashlib.sha256(json.dumps([sign, msgs_key], ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).digest()
         with self.rev_lock:
             prior = self.revisions.get(cur)
             if prior is None or prior[0] != signature:
@@ -4131,6 +4196,11 @@ class Office:
             return {"unchanged": True, "rev": rev}
         data["rev"] = rev
         data["version"] = office_version()
+        # 대화 기록(msgs)은 가장 크고 진행 표시만 바뀔 땐 그대로라서, 화면이 가진 기록 표식과 같으면 빼고 보내요
+        data["msgs_key"] = "-".join(map(str, msgs_key)) if msgs_key else None
+        if since_msgs and since_msgs == data["msgs_key"]:
+            data["msgs"] = None
+            data["msgs_unchanged"] = True
         return data
 
     def merge(self, sid):
@@ -4498,8 +4568,11 @@ def make_handler(office):
                     if value is not None and (not value.isascii() or not value.isdigit() or len(value) > 16):
                         return self.json_reply(400, {"error": "변경 번호 확인 — 변경 번호가 올바르지 않습니다."})
                     previous = int(value) if value is not None else None
-                    if previous is not None:
-                        snapshot = office.snapshot(selected, since_rev=previous)
+                    since_msgs = query.get("since_msgs", [None])[0]
+                    if since_msgs is not None and (len(since_msgs) > 64 or not re.fullmatch(r"[0-9-]+", since_msgs)):
+                        since_msgs = None
+                    if previous is not None or since_msgs:
+                        snapshot = office.snapshot(selected, since_rev=previous, since_msgs=since_msgs)
                     else:
                         snapshot = office.snapshot(selected) if selected else office.snapshot()
                     # 창은 하나만: 가장 최근에 인사한 창이 주인. 서버가 꺼지는 중이면 closing 으로 창을 닫게 한다
