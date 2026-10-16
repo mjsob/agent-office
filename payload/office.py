@@ -3707,6 +3707,7 @@ class Office:
     def __init__(self):
         self.stop = threading.Event()
         self.cleanup_done = threading.Event()
+        self.server_instance = uuid.uuid4().hex   # 같은 포트로 빠르게 다시 떠도 이전 창을 구별해요.
         self.teams = {}            # 대화 id → {"stop": Event, "w": {이름: Worker}}
         self.lock = threading.Lock()
         self.gitcache = {}
@@ -4665,6 +4666,7 @@ def make_handler(office):
                         if snapshot["owner"]:
                             office.window_seen = time.time()
                     snapshot["closing"] = office.stop.is_set()
+                    snapshot["server_instance"] = office.server_instance
                     self.json_reply(200, snapshot)
                 elif path == "/api/window":
                     self.json_reply(200, {"open": time.time() - getattr(office, "window_seen", 0) < 6})
