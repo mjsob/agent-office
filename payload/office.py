@@ -15,7 +15,7 @@ GUI에서 '작업 요청'으로 보내면: 리더가 쪼개서 분배 → 둘이
   office claim ID | done ID "요약" | wait ID "기다리는 것" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
 """
 import math, tomllib, hashlib, ssl
-import argparse, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
+import argparse, queue, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
 from collections import deque
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -373,9 +373,39 @@ def new_session(m, title="새 대화"):
     return sid
 
 
+META_QUEUE = queue.Queue()
+CURRENT_HINT = {"sid": None, "at": 0.0}
+
+
+def meta_later(change):
+    """화면 클릭에 바로 답해야 하는 저장(대화 전환·읽음 표시)은 뒤에서 한 줄로 저장해요.
+    디스크가 바쁠 때 저장이 몇 초 걸려도 클릭이 같이 멈추지 않아요."""
+    META_QUEUE.put(change)
+    if not getattr(meta_later, "started", False):
+        meta_later.started = True
+        threading.Thread(target=meta_writer, daemon=True).start()
+
+
+def meta_writer():
+    while True:
+        change = META_QUEUE.get()
+        try:
+            with meta(True) as m:
+                change(m)
+                while True:   # 밀린 변경은 한 번에 저장
+                    try:
+                        META_QUEUE.get_nowait()(m)
+                    except queue.Empty:
+                        break
+        except Exception as error:
+            server_log("meta.later", error)
+
+
 def current_sid():
     if os.environ.get("OFFICE_SESSION"):
         return os.environ["OFFICE_SESSION"]
+    if CURRENT_HINT["sid"] and time.time() - CURRENT_HINT["at"] < 30:   # 방금 클릭한 대화(저장이 끝나기 전)
+        return CURRENT_HINT["sid"]
     try:   # 고칠 게 없으면 잠금·저장 없이 읽기만 해요(조회마다 meta.json 을 다시 쓰지 않게)
         m = meta_view()
         if any(x["id"] == m.get("current") and not x["deleted"] for x in m["sessions"]):
@@ -4018,13 +4048,15 @@ class Office:
                 notice[x["id"]] = 0
         # 알림 점: 사용자에게 온 보고·메시지·요청 완료가 있는데 아직 안 본 대화. 보고 있는 대화는 본 것으로 처리
         if any("seen" not in x or (x["id"] == cur and x["seen"] < notice[x["id"]]) for x in sessions):
-            with meta(True) as m:
+            marks = {x["id"]: max(x.get("seen", 0), notice[x["id"]]) for x in sessions
+                     if "seen" not in x or x["id"] == cur}
+            def save_seen(m):
                 for y in m["sessions"]:
-                    if y["id"] in notice and ("seen" not in y or y["id"] == cur):
-                        y["seen"] = max(y.get("seen", 0), notice[y["id"]])
-                seen = {y["id"]: y["seen"] for y in m["sessions"] if "seen" in y}
+                    if y["id"] in marks:
+                        y["seen"] = max(y.get("seen", 0), marks[y["id"]])
+            meta_later(save_seen)   # 조회 응답이 저장을 기다리지 않게
             for x in sessions:
-                x["seen"] = seen.get(x["id"], notice[x["id"]])
+                x["seen"] = marks.get(x["id"], x.get("seen", notice[x["id"]]))
         for x in sessions:
             # 진행 중인 요청이 남아 있으면 중간 보고라도 반짝이지 않는다. 다 끝난 뒤(또는 요청 없이 온 결과)에만 알린다
             x["unread"] = x["id"] != cur and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
@@ -4121,14 +4153,14 @@ class Office:
             target = p.get("id")
             if not valid_sid(target):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
-            with meta() as m:
-                found = next((x for x in m["sessions"] if x["id"] == target), None)
-                if not found:
-                    raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록을 새로고침하세요.")
-                if act in ("switch", "rename", "pin", "delete") and found["deleted"]:
-                    raise UserError("삭제된 대화 — 삭제된 대화입니다. 휴지통에서 복원하세요.")
-                if act in ("restore", "purge") and not found["deleted"]:
-                    raise UserError("휴지통 대화 확인 — 휴지통에 있는 대화만 처리할 수 있습니다.")
+            m = meta_view()
+            found = next((x for x in m["sessions"] if x["id"] == target), None)
+            if not found:
+                raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록을 새로고침하세요.")
+            if act in ("switch", "rename", "pin", "delete") and found["deleted"]:
+                raise UserError("삭제된 대화 — 삭제된 대화입니다. 휴지통에서 복원하세요.")
+            if act in ("restore", "purge") and not found["deleted"]:
+                raise UserError("휴지통 대화 확인 — 휴지통에 있는 대화만 처리할 수 있습니다.")
         if act == "rename" and (not isinstance(p.get("title"), str) or not p["title"].strip()):
             raise UserError("대화 제목 필요 — 대화 제목을 입력하세요.")
         if act == "cancel_job" and (type(p.get("id")) is not int or p["id"] < 1):
@@ -4138,9 +4170,9 @@ class Office:
             sid = (p.get("id") or p.get("session") or current_sid()) if act == "merge" else (p.get("session") or current_sid())
             if not valid_sid(sid):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
-            with meta() as m:
-                if not any(x["id"] == sid and not x["deleted"] for x in m["sessions"]):
-                    raise UserError("열린 대화 확인 필요 — 대화가 삭제되었거나 더 이상 열려 있지 않습니다. 대화 목록에서 다시 선택하세요.")
+            m = meta_view()
+            if not any(x["id"] == sid and not x["deleted"] for x in m["sessions"]):
+                raise UserError("열린 대화 확인 필요 — 대화가 삭제되었거나 더 이상 열려 있지 않습니다. 대화 목록에서 다시 선택하세요.")
         if act in ("job", "msg"):
             if not isinstance(p.get("text"), str) or not p["text"].strip():
                 raise UserError("보낼 내용 필요 — 보낼 내용을 입력하세요.")
@@ -4173,9 +4205,11 @@ class Office:
                         server_log("session.prepare.cleanup", cleanup_error)
                     raise UserError("새 대화 준비 실패 — 새 대화를 준비하지 못했습니다. 기존 대화는 유지됩니다.") from None
         elif act == "switch":
-            with meta(True) as m:
-                if any(x["id"] == p["id"] and not x["deleted"] for x in m["sessions"]):
-                    m["current"] = p["id"]
+            CURRENT_HINT.update(sid=p["id"], at=time.time())
+            def save_current(m, sid=p["id"]):
+                if any(x["id"] == sid and not x["deleted"] for x in m["sessions"]):
+                    m["current"] = sid
+            meta_later(save_current)
         elif act == "rename":
             with meta(True) as m:
                 for x in m["sessions"]:
