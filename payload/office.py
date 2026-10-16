@@ -868,11 +868,29 @@ def cmd_wait(a):
     print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else ""))
 
 
+def progress_remaining(p):
+    """남은 시간(초). 측정 시작(since) 뒤 처리 속도로 계산하고, 1분 넘게 쌓이고 개수가 늘었을 때만 낸다. 못 내면 None"""
+    done, total, since, base, at = p.get("done"), p.get("total"), p.get("since"), p.get("since_done"), p.get("at")
+    if not (total and done is not None and since and base is not None and at) or done >= total:
+        return None
+    if done <= base or at - since < 60:
+        return None
+    return (total - done) * (at - since) / (done - base)
+
+
+def remaining_text(seconds):
+    minutes = max(1, int(-(-seconds // 60)))
+    return f"남은 시간 약 {minutes // 60}시간" + (f" {minutes % 60}분" if minutes % 60 else "") if minutes >= 60 else f"남은 시간 약 {minutes}분"
+
+
 def progress_text(p, with_age=True):
-    """작업 진행 한 줄: '109/829 (13%) · 유튜브 403으로 쉬는 중 · 20:10 다시 시작 · 3분 전 갱신'"""
+    """작업 진행 한 줄: '109/829 (13%) · 남은 시간 약 40분 · 유튜브 403으로 쉬는 중 · 20:10 다시 시작 · 3분 전 갱신'"""
     now, bits = time.time(), []
     if p.get("total"):
         bits.append(f"{p.get('done') or 0}/{p['total']} ({int(100 * (p.get('done') or 0) / p['total'])}%)")
+        if (p.get("done") or 0) < p["total"] and not (p.get("resume_at") and p["resume_at"] > now):   # 쉬는 중엔 남은 시간을 안 냄
+            left = progress_remaining(p)
+            bits.append(remaining_text(left) if left is not None else "남은 시간 산정 중")
     elif p.get("done") is not None:
         bits.append(f"{p['done']}개")
     if p.get("text"):
@@ -924,8 +942,13 @@ def cmd_progress(a):
         if t["status"] == "done":
             sys.exit(f"#{task_id} 는 이미 끝난 작업입니다.")
         old = t.get("progress") or {}
+        now = time.time()
         p = {"text": text or old.get("text") or "", "done": a.done if a.done is not None else old.get("done"),
-             "total": a.total if a.total is not None else old.get("total"), "resume_at": resume_at, "at": time.time()}
+             "total": a.total if a.total is not None else old.get("total"), "resume_at": resume_at, "at": now}
+        # 남은 시간 계산용 측정 시작점. 전체 개수가 바뀌거나 개수가 줄면(새로 시작) 다시 잰다
+        keep = (old.get("since") and old.get("since_done") is not None and p["done"] is not None
+                and p["total"] == old.get("total") and p["done"] >= old["since_done"])
+        p["since"], p["since_done"] = (old["since"], old["since_done"]) if keep else (now if p["done"] is not None else None, p["done"])
         t["progress"] = p
         if a.notify:   # 상태가 바뀌는 순간(쉬기 시작·다시 시작·끝)만 사용자에게 한 줄 알린다
             post(s, "system", "user", f"[진행] 작업 #{task_id} · {progress_text(p, False)}", "progress", job=t.get("job"))
