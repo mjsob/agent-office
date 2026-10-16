@@ -234,6 +234,8 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .msg .body th { background: var(--chip); font-weight: 600; }
 .msg .body tbody tr:last-child td { border-bottom: 0; }
 .msg .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
+.msg .body a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.msg .body a:hover { color: var(--accent); }
 .msg .body .path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .msg .body .path:hover { color: var(--accent); }
 .msg .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
@@ -443,7 +445,8 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 /* 입력 상자 하나 안에 글 쓰는 칸 + 아래 도구 줄(보낼 대상 · 요청 옵션 · 보내기) */
 .composer { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); display: grid; }
 .composer:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
-.ctools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 0 8px 8px; }
+.ctools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 8px 0; }
+.cfoot { display: flex; justify-content: flex-end; padding: 0 8px 8px; }
 .jobopts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .jobopts[hidden] { display: none; }
 #modes button { gap: 0; }   /* '모두'+'에게' 사이 버튼 기본 간격 없애기 */
@@ -457,7 +460,7 @@ select { font: inherit; font-size: 12px; background: var(--panel); color: var(--
 #tlsec, .composer textarea { min-width: 0; }
 textarea { flex: 1; resize: none; height: 56px; font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.composer textarea { border: 0; background: transparent; padding: 10px 12px 6px; }
+.composer textarea { border: 0; background: transparent; padding: 8px 12px 6px; }
 .composer textarea:focus { outline: 0; }
 .send { background: var(--accent); color: var(--on-accent); border-color: var(--accent); padding: 6px 14px; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .send:hover { background: var(--accent); opacity: .88; }
@@ -581,7 +584,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <footer>
   <div class="composer">
-    <textarea id="input" aria-label="메시지 입력"></textarea>
     <div class="ctools">
       <div class="seg" id="modes" role="group" aria-label="보낼 대상">
         <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두<span class="to">에게</span></button>
@@ -600,6 +602,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
           <button data-v="thorough" title="꼼꼼하게 · 예외 사례와 독립 검수까지 확인 · 시간이 더 걸려요">꼼꼼하게</button>
         </div></div>
       </div>
+    </div>
+    <textarea id="input" aria-label="메시지 입력"></textarea>
+    <div class="cfoot">
       <button class="send" id="send" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
     </div>
   </div>
@@ -655,7 +660,8 @@ const CHAT_DEFAULT = {mode: "job", lead: "claude", verification: "standard"};
 const LEGACY_OPTS_KEY = "officeChatOptionsMigrated";
 let verify = "standard";
 // optsEdit: 이 창에서 바꾼 횟수. 조회가 시작된 뒤 바꿨거나 저장 중이면 서버 값으로 되돌리지 않음
-let optsSupported = false, optsSession = null, optsEarly = false, optsEdit = 0, optsSaving = 0, optsSaveTimer = null, optsPending = null;
+let optsSupported = false, optsSession = null, optsEarly = false, optsEdit = 0, optsSaving = 0, optsSaveTimer = null;
+const optsQueue = new Map(), optsFlight = new Map();   // 대화 id → 보낼·보내는 중인 선택 (대화마다 마지막 값을 따로 보관)
 function setMode(m, focus = true) {
   mode = m;
   document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-pressed", b.dataset.m === m); });
@@ -691,7 +697,7 @@ function markLegacyMigrated() {
   try { localStorage[LEGACY_OPTS_KEY] = "1"; ["officeMode", "officeLead", "officeVerify"].forEach(k => localStorage.removeItem(k)); } catch (e) {}
 }
 // 조회를 시작할 때의 선택 상태. 저장 중에 시작한 조회는 옛 값을 들고 올 수 있어 따라가지 않음
-const chatOptionsMark = () => ({edit: optsEdit, busy: optsSaving > 0 || !!optsPending});
+const chatOptionsMark = () => ({edit: optsEdit, busy: optsSaving > 0 || optsQueue.size > 0});
 // 조회 응답의 선택을 화면에 반영
 function syncChatOptions(s, mark) {
   if (!s.session) return;
@@ -703,8 +709,10 @@ function syncChatOptions(s, mark) {
     optsSession = s.session; optsEarly = false;
     if (early) { saveChatOptions(true); return; }
     clearTimeout(optsSaveTimer); optsSaveTimer = null;
-    if (optsPending) flushChatOptions();   // 옮기기 직전에 바꾼 값은 원래 대화에 저장
-    if (saved) applyChatOptions(saved);
+    flushChatOptions();   // 옮기기 직전에 바꾼 값은 원래 대화에 저장
+    const mine = optsQueue.get(s.session) || optsFlight.get(s.session);   // 아직 서버에 반영 안 된 내 선택이 있으면 서버의 옛 값보다 우선
+    if (mine) applyChatOptions(mine);
+    else if (saved) applyChatOptions(saved);
     else {
       const legacy = legacyChatOptions();   // 옛 서버면 보여주기만 하고 지우지 않음
       applyChatOptions(legacy || CHAT_DEFAULT);
@@ -713,13 +721,14 @@ function syncChatOptions(s, mark) {
     return;
   }
   // 같은 대화: 다른 창에서 바꾼 값만 따라감. 이 창에서 방금 바꾼 값은 덮어쓰지 않음
-  if (saved && !mark.busy && !optsSaving && !optsPending && mark.edit === optsEdit) applyChatOptions(saved);
+  if (saved && !mark.busy && !optsSaving && !optsQueue.size && mark.edit === optsEdit) applyChatOptions(saved);
 }
 async function flushChatOptions() {
   optsSaveTimer = null;
-  if (optsSaving) return;   // 저장 중이면 끝난 뒤 finally 에서 마지막 값을 이어서 보냄
-  const body = optsPending; optsPending = null;
-  if (!body) return;
+  if (optsSaving) return;   // 저장 중이면 끝난 뒤 finally 에서 다음 대화·마지막 값을 이어서 보냄
+  const first = optsQueue.entries().next().value;
+  if (!first) return;
+  const body = first[1]; optsQueue.delete(first[0]); optsFlight.set(body.session, body);
   optsSaving++;
   try {
     const res = await fetch("/api", {method: "POST", body: JSON.stringify({action: "chat_options", ...body}), signal: AbortSignal.timeout(15000)});
@@ -727,7 +736,7 @@ async function flushChatOptions() {
     if (!res.ok || r.error) toast(r.error || "선택을 저장하지 못했어요. 다시 골라 보세요.");
   } catch (e) {
     toast("선택을 저장하지 못했어요. 서버 연결을 확인해 보세요.");
-  } finally { optsSaving--; if (optsPending && !optsSaveTimer) flushChatOptions(); }
+  } finally { optsSaving--; optsFlight.delete(body.session); if (optsQueue.size && !optsSaveTimer) flushChatOptions(); }
 }
 // 옛 전역 선택 옮기기: 다른 창이 먼저 골랐으면 서버 값을 그대로 둠(initialize_only)
 async function migrateChatOptions(session, legacy) {
@@ -737,8 +746,8 @@ async function migrateChatOptions(session, legacy) {
     const res = await fetch("/api", {method: "POST", body: JSON.stringify({action: "chat_options", session, ...legacy, initialize_only: true}), signal: AbortSignal.timeout(15000)});
     const r = await res.json().catch(() => ({}));
     if (res.ok && !r.error && r.chat_options) markLegacyMigrated();
-    if (res.ok && !r.error && r.chat_options && optsSession === session && optsEdit === edit && !optsPending) applyChatOptions(r.chat_options);
-  } catch (e) {} finally { optsSaving--; }
+    if (res.ok && !r.error && r.chat_options && optsSession === session && optsEdit === edit && !optsQueue.has(session)) applyChatOptions(r.chat_options);
+  } catch (e) {} finally { optsSaving--; if (optsQueue.size && !optsSaveTimer) flushChatOptions(); }
 }
 // 빠르게 여러 번 눌러도 마지막 값 하나만 보내요. 보낼 대화는 누른 순간의 대화로 고정
 function saveChatOptions(now = false) {
@@ -748,12 +757,12 @@ function saveChatOptions(now = false) {
     try { localStorage["officeChatOptions:" + optsSession] = JSON.stringify(chatOptions()); } catch (e) {}
     return;
   }
-  optsPending = {session: optsSession, ...chatOptions()};
+  optsQueue.set(optsSession, {session: optsSession, ...chatOptions()});
   clearTimeout(optsSaveTimer);
   if (now) flushChatOptions(); else optsSaveTimer = setTimeout(flushChatOptions, 250);
 }
-window.addEventListener("pagehide", () => { if (optsPending && optsSupported) { clearTimeout(optsSaveTimer);
-  try { navigator.sendBeacon?.("/api", JSON.stringify({action: "chat_options", ...optsPending})); } catch (e) {} } });
+window.addEventListener("pagehide", () => { if (optsSupported) { clearTimeout(optsSaveTimer);
+  for (const body of optsQueue.values()) try { navigator.sendBeacon?.("/api", JSON.stringify({action: "chat_options", ...body})); } catch (e) {} } });
 document.querySelectorAll("#modes button").forEach(b => b.onclick = () => { setMode(b.dataset.m); saveChatOptions(); });
 $("#lead").addEventListener("change", () => saveChatOptions());
 // 검증 강도: 새 요청마다 같이 보냄. 이미 진행 중인 요청엔 적용하지 않음
@@ -1330,6 +1339,8 @@ const unescNl = s => { s = String(s ?? ""); return !s.includes("\n") && /\\n(\\n
 const isPath = c => /^(~\/|\/(home|mnt|tmp|root|opt|srv|var|etc|usr)\/|[A-Za-z]:[\\/]|\\\\wsl)/.test(c) && !/[|;&$<>*`]| -/.test(c);
 // 코드 표시 없이 글 속에 그냥 적힌 절대경로도 눌러서 열게: 태그·이미 경로로 감싼 곳은 건너뛰고, 뒤에 붙은 조사(를·에서 등)는 경로에서 뺌
 const PLAIN_PATH = /(?<![\w/\\.:~-])((?:~|\/(?:home|mnt|tmp|root|opt|srv|var|etc|usr)|[A-Za-z]:)[\\/][^\s<>"'`|;&$*()\[\]]*?(?::\d+){0,2})(?=(?:으로|에서|을|를|은|는|이|가|에|로|와|과|도|의|만)?(?:[\s<,;!?)\]]|\.(?=\s|<|$)|:(?!\d)|$))/g;
+// 글 속 웹 주소(https://…)도 새 탭으로 열리는 링크로. 끝의 마침표·쉼표·괄호는 주소에서 뺌
+const PLAIN_URL = /(?<![\w"'=])(https?:\/\/(?:(?!&(?:quot|#39|lt|gt);)[^\s<>"'`])*?[^\s<>"'`.,;:!?)\]])(?=(?:으로|에서|을|를|은|는|이|가|에|로|와|과|도|의|만)?([.,;:!?)\]]*(?:\s|<|$)))/g;
 function linkPlainPaths(html) {
   let skip = 0;
   return html.split(/(<[^>]*>)/).map(part => {
@@ -1338,7 +1349,7 @@ function linkPlainPaths(html) {
       else if (/^<\/(code|span|a)>/.test(part) && skip) skip--;
       return part;
     }
-    return skip ? part : part.replace(PLAIN_PATH, (m, p) => isPath(p) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${p.replace(/"/g, "&quot;")}">${p}</span>` : m);
+    return skip ? part : part.replace(PLAIN_URL, (m, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`).replace(PLAIN_PATH, (m, p) => isPath(p) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${p.replace(/"/g, "&quot;")}">${p}</span>` : m);
   }).join("");
 }
 async function openPath(path) {
@@ -1356,7 +1367,7 @@ async function openAppWindow() {
 function md(s, lead) {
   const pathAttr = c => c.replace(/"/g, "&quot;");
   const inline = t => linkPlainPaths(inline0(t));
-  const inline0 = t => t.replace(/\[([^\]\n]+)\]\((?:&lt;(.+?)&gt;((?::\d+){0,2})|([^)\s]+))\)/g, (all, label, angled, line, plain) => { const url = angled ? angled + line : plain; return isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all; }).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const inline0 = t => t.replace(/\[([^\]\n]+)\]\((?:&lt;(.+?)&gt;((?::\d+){0,2})|([^)\s]+))\)/g, (all, label, angled, line, plain) => { const url = angled ? angled + line : plain; if (/^https?:\/\//.test(url)) return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`; return isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all; }).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
   const item = line => {
     const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
