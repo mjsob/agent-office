@@ -106,6 +106,19 @@ def meta_valid(data):
                     and isinstance(x.get("deleted"), bool) for x in data["sessions"]))
 
 
+CHAT_OPTION_VALUES = {"mode": ("job", "claude", "codex"), "lead": AGENTS,
+                      "verification": ("quick", "standard", "thorough")}
+CHAT_OPTION_DEFAULTS = {"mode": "job", "lead": "claude", "verification": "standard"}
+
+
+def chat_options_view(value):
+    """옛 대화의 미설정 상태와 저장된 선택을 구분하고 잘못된 값은 기본값으로 보여줘요."""
+    if not isinstance(value, dict):
+        return None
+    return {key: value.get(key) if value.get(key) in allowed else CHAT_OPTION_DEFAULTS[key]
+            for key, allowed in CHAT_OPTION_VALUES.items()}
+
+
 def state_valid(data):
     if not isinstance(data, dict):
         return False
@@ -390,6 +403,8 @@ def last_notice(msgs):
 def new_session(m, title="새 대화"):
     sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     sdir(sid).mkdir(parents=True)
+    with state(True, sid) as saved:
+        saved["chat_options"] = dict(CHAT_OPTION_DEFAULTS)
     m["sessions"].append({"id": sid, "title": title, "created": time.time(), "updated": time.time(), "deleted": False})
     m["current"] = sid
     return sid
@@ -4121,6 +4136,8 @@ class Office:
         self.ensure_team(cur)
         cached, _, msgs_key = state_view_cached(cur)
         data = dict(cached)   # 겉복사: 아래에서 키를 더하고 jobs·tasks 는 복사해서 고쳐요
+        data["chat_options_supported"] = True
+        data["chat_options"] = chat_options_view(data.get("chat_options"))
         data["tasks"] = [dict(t) for t in data.get("tasks", [])]
         display_now = time.time()
         def worker_status(session):
@@ -4254,7 +4271,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -4274,7 +4291,7 @@ class Office:
         if act == "cancel_job" and (type(p.get("id")) is not int or p["id"] < 1):
             raise UserError("요청 선택 확인 — 올바른 요청을 선택하세요.")
         sid = None
-        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "merge", "open_path"):
+        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "merge", "open_path", "chat_options"):
             sid = (p.get("id") or p.get("session") or current_sid()) if act == "merge" else (p.get("session") or current_sid())
             if not valid_sid(sid):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -4292,6 +4309,18 @@ class Office:
                 raise UserError("리더 선택 확인 — 리더는 Claude 또는 Codex를 선택하세요.")
             if act == "msg" and p.get("to", "all") not in (*AGENTS, "all"):
                 raise UserError("받는 에이전트 확인 — 메시지를 받을 에이전트를 다시 선택하세요.")
+        if act == "chat_options":
+            changes = {key: p[key] for key in CHAT_OPTION_VALUES if key in p}
+            if not changes or any(value not in CHAT_OPTION_VALUES[key] for key, value in changes.items()):
+                raise UserError("대화 선택을 저장하지 못했어요. 대상·리더·검증을 다시 선택하세요.")
+            if "initialize_only" in p and type(p["initialize_only"]) is not bool:
+                raise UserError("대화 선택을 저장하지 못했어요. 화면을 새로고침하세요.")
+            with state(True, sid) as saved:
+                options = chat_options_view(saved.get("chat_options"))
+                if options is None or not p.get("initialize_only", False):
+                    options = {**(options or CHAT_OPTION_DEFAULTS), **changes}
+                    saved["chat_options"] = options
+            return {"chat_options": options}
         if act == "hello":                      # 새로 열린 창이 주인. 이전 창은 owner:false 를 받고 스스로 닫힌다
             client = p.get("client")
             if not isinstance(client, str) or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", client):
