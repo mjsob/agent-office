@@ -1867,6 +1867,7 @@ class Worker:
         self.subs.clear()
         self.open_tools = {}   # 결과를 아직 안 받은 도구 호출: 이게 있으면 조용해도 명령이 도는 중
         self.tool_labels, self.slow_tools = {}, set()   # 도구 호출 id → 짧은 설명, 오래 걸린다고 기록한 id
+        self.gen = None   # 지금 생성 중인 블록(생각·답·도구 입력)과 받은 글자 수. Claude 부분 메시지로만 채움
         self.codex_message_rows.clear()
         self.claude_result_received = False
         if self.immediate_pause:
@@ -1896,7 +1897,8 @@ class Worker:
                 cmd = ["claude", "-p", prompt, "--session-id", sid]
             else:
                 cmd = ["claude", "-p", prompt, "--resume", sid]
-            cmd += ["--output-format", "stream-json", "--verbose"]
+            # 부분 메시지: 긴 생각·긴 파일 쓰기처럼 완성 전까지 출력이 없는 구간도 글자 수로 보여 멈춘 걸로 안 보이게
+            cmd += ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
             cmd += (["--permission-mode", "acceptEdits", "--allowedTools", "Bash(office *)", "Read"] if sandbox
                     else ["--permission-mode", "bypassPermissions"])
         else:
@@ -2023,7 +2025,27 @@ class Worker:
         return final.strip()
 
 
+    def stream_progress(self, e, parent):
+        """부분 메시지로 지금 생성 중인 블록을 따라간다. 보조 에이전트 생성은 보조 작업 줄로 따로 보인다"""
+        if parent or not isinstance(e, dict):
+            return
+        kind = e.get("type")
+        if kind == "content_block_start":
+            block = e.get("content_block") or {}
+            what = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "text", "tool_use": "tool"}.get(block.get("type"))
+            self.gen = {"kind": what, "name": str(block.get("name") or "")[:40], "chars": 0, "since": time.time()} if what else None
+        elif kind == "content_block_delta" and self.gen:
+            d = e.get("delta") or {}
+            grown = len(d.get("text") or d.get("thinking") or d.get("partial_json") or "")
+            if grown:
+                self.gen = {**self.gen, "chars": self.gen["chars"] + grown}   # 화면 스냅샷이 도중에 읽어도 깨지지 않게 통째로 바꿈
+        elif kind in ("content_block_stop", "message_stop"):
+            self.gen = None
+
     def parse_claude(self, ev):
+        if ev.get("type") == "stream_event":
+            self.stream_progress(ev.get("event"), ev.get("parent_tool_use_id"))
+            return None
         if ev.get("type") == "system" and ev.get("subtype") == "init" and isinstance(ev.get("model"), str):
             self.primary_model = ev["model"]
         if ev.get("type") == "system" and ev.get("subtype") == "task_started":
@@ -3489,6 +3511,69 @@ class Office:
                     "사용자 결정이 필요하면 `office say --to user` 로 묻고, 할 게 없으면 '대기'라고만 답해라.", j["id"])]
                 server_log("job.stall.nudge")
 
+    @staticmethod
+    def live_view(w, msgs):
+        """화면이 '멈췄나?'를 풀어 주는 값: 어디까지 읽었는지, 결과를 기다리는 도구, Claude가 지금 쓰는 블록"""
+        cursor = w.read_upto if isinstance(w.read_upto, int) else 0
+        read_id = msgs[min(cursor, len(msgs)) - 1].get("id", 0) if cursor and msgs else 0
+        tool = gen = None
+        if w.status == "working":
+            tools = dict(getattr(w, "open_tools", {}))
+            if tools:
+                key, since = min(tools.items(), key=lambda item: item[1])
+                tool = {"label": getattr(w, "tool_labels", {}).get(key, "도구"), "since": since}
+            gen = getattr(w, "gen", None)
+        if gen:   # 글자 수는 100자 단위로만 바꿔 화면 갱신이 토큰마다 일어나지 않게
+            gen = {**gen, "chars": gen["chars"] // 100 * 100}
+        return {"read_id": read_id, "tool": tool, "gen": gen}
+
+    @staticmethod
+    def job_wait_reason(data, j, team):
+        """열린 요청을 지금 아무도 안 잡고 있을 때 화면에 보일 이유 한 줄. 일하는 중·일시정지·오류·기다림은 화면이 따로 보여 준다"""
+        now = time.time()
+        jid = j["id"]
+        def doing(w):
+            return w.doing if isinstance(w.doing, dict) else {}
+        def elsewhere(name):   # 다른 일로 차례를 붙잡고 있으면 그 일 이름, 아니면 None
+            w = team.get(name)
+            if w is None or w.status != "working" or doing(w).get("job") == jid:
+                return None
+            other_job = doing(w).get("job")
+            return f"요청 {other_job}" if other_job else "직접 받은 메시지"
+        def free(name):
+            w = team.get(name)
+            return w is not None and w.status == "idle" and not w.paused and not w.error and getattr(w, "retry_at", 0) <= now
+        if any(w.status == "working" and doing(w).get("job") == jid for w in team.values()) \
+                or any(w.paused or w.error or getattr(w, "retry_at", 0) > now for w in team.values()):
+            return None
+        left = [t for t in data["tasks"] if t.get("job") == jid and t["status"] != "done"]
+        if left and all(t["status"] == "waiting" for t in left):
+            return None
+        lead = j.get("acting_lead", j["lead"])
+        other = next((n for n in AGENTS if n != lead), None)
+        takeover = f" {max(1, LEAD_BUSY_TAKEOVER // 60)}분 넘으면 {disp(other)}가 대신 맡아요." if other and free(other) else ""
+        if j["status"] == "planning":
+            busy = elsewhere(lead)
+            return f"리더 {disp(lead)}가 {busy} 처리 중이라 계획을 기다려요.{takeover}" if busy else "리더가 곧 계획을 세워요."
+        if not left:
+            busy = elsewhere(lead)
+            return f"작업이 다 끝났어요. 리더 {disp(lead)}가 {busy} 처리를 마치면 결과를 확인해요." if busy else "작업이 다 끝났어요. 리더가 곧 결과를 확인해요."
+        for t in left:
+            owner = t.get("owner")
+            if owner is None:
+                continue
+            busy = elsewhere(owner)
+            if busy:
+                return f"작업 #{t['id']} 대기 · {disp(owner)}가 {busy} 처리 중이에요."
+            if t["status"] == "doing" and free(owner) and now - team[owner].since >= 10:   # 차례 사이 1초 쉬는 틈은 빼고
+                w = team[owner]
+                if w.waiting_on_peer(data, [t]):
+                    return f"{disp(owner)}가 {disp(w.other)} 답을 기다려요."
+                return f"{disp(owner)}가 작업 #{t['id']} 진행을 멈췄어요. {STALL_NOTICE // 60}분 넘게 진척이 없으면 리더가 점검해요."
+        if any(t.get("owner") is None for t in left):
+            return "담당 없는 작업이 있어요. 쉬는 쪽이 곧 가져가요."
+        return None
+
     def busy(self, sid):
         t = self.teams.get(sid)
         return bool(t) and any(w.status == "working" for w in t["w"].values())
@@ -3560,7 +3645,10 @@ class Office:
                               "last_output": getattr(w, "last_output", None) if w.status == "working" else None,
                               "tokens": w.tokens, "cached_tokens": w.cached_tokens, "legacy_tokens": w.legacy_tokens,
                               "usage_since": w.usage_since, "limits": limits_for(n), "subs": list(getattr(w, "subs", {}).values()) if w.status == "working" else [],
-                              "activity": list(w.activity)[-25:]} for n, w in team.items()}
+                              "activity": list(w.activity)[-25:], **self.live_view(w, data["msgs"])} for n, w in team.items()}
+        data["jobs"] = [dict(j) for j in data.get("jobs", [])]   # 화면용 값을 붙여도 저장된 상태엔 안 섞이게
+        for j in data["jobs"]:
+            j["wait_why"] = self.job_wait_reason(data, j, team) if j["status"] != "done" and not j.get("cancelled") else None
         # since/since(epoch)는 시작 시각이며 매초 경과 숫자는 화면에서 계산한다.
         signature = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).digest()
         with self.rev_lock:
