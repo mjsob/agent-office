@@ -3507,6 +3507,38 @@ def resource_status(refresh=False):
         return dict(data)
 
 
+def resource_view():
+    """화면용: systemctl 을 기다리지 않게 마지막 값을 바로 돌려주고, 3초 지났으면 뒤에서 다시 구해요.
+    값이 아직 없는 서버 시작 직후 한 번만 직접 구해요(없다고 잘못 보이지 않게)"""
+    cache = dict(RESOURCE_CACHE)
+    if cache.get("root") != str(ROOT) or "value" not in cache:
+        return resource_status()
+    if time.time() - cache.get("at", 0) >= 3:
+        refresh_later("resources", resource_status)
+    return dict(cache["value"])
+
+
+REFRESHING = set()
+REFRESHING_LOCK = threading.Lock()
+
+
+def refresh_later(key, fn):
+    """같은 값을 동시에 두 번 구하지 않게 key 하나에 뒤 작업 하나만 돌려요"""
+    with REFRESHING_LOCK:
+        if key in REFRESHING:
+            return
+        REFRESHING.add(key)
+    def run():
+        try:
+            fn()
+        except Exception as error:
+            server_log("refresh." + key.split(":")[0], error)
+        finally:
+            with REFRESHING_LOCK:
+                REFRESHING.discard(key)
+    threading.Thread(target=run, daemon=True).start()
+
+
 def limited_command(command):
     info = resource_status()
     if not info["supported"]:
@@ -3999,13 +4031,19 @@ class Office:
         return bool(t) and any(w.status == "working" for w in t["w"].values())
 
     def git_info(self, sid):
+        """화면용: 마지막 값을 바로 돌려주고 3초 지났으면 뒤에서 다시 구해요.
+        디스크가 밀리면 git 실행이 몇 초씩 걸려 조회 응답이 같이 멈췄어요. 처음 한 번은 값 없이(None) 답해요"""
         if not WT or not wtree(sid).exists():
             return None
         hit = self.gitcache.get(sid)
-        if hit and time.time() - hit[0] < 3:
-            return hit[1]
+        if not hit or time.time() - hit[0] >= 3:
+            refresh_later("git:" + sid, lambda: self.read_git_info(sid))
+        return hit[1] if hit else None
+
+    def read_git_info(self, sid):
         br = f"office/{sid}"
-        changed = len([l for l in git("status", "--porcelain", cwd=wtree(sid)).stdout.splitlines() if l.strip()])
+        # 화면 조회만 하므로 index.lock 을 잡지 않게(에이전트의 git 작업과 부딪히지 않게)
+        changed = len([l for l in git("--no-optional-locks", "status", "--porcelain", cwd=wtree(sid)).stdout.splitlines() if l.strip()])
         ahead = git("rev-list", "--count", f"HEAD..{br}").stdout.strip()
         info = {"branch": br, "path": str(wdir(sid).relative_to(ROOT)), "changed": changed,
                 "ahead": int(ahead or 0), "main": git("branch", "--show-current").stdout.strip() or "HEAD"}
@@ -4063,7 +4101,7 @@ class Office:
             x["busy"] = display_busy.get(x["id"], self.busy(x["id"]))
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
-                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_status())
+                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_view())
         team = self.teams[cur]["w"]
         for w in team.values():
             if w.status == "working":
