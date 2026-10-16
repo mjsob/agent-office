@@ -10,18 +10,18 @@
 <style>
 :root {
   --bg: #f5f5f3; --panel: #ffffff; --line: #e4e3df; --text: #1d1d1b; --muted: #6a6862; --faint: #85827b;
-  --claude: #9c4a20; --claude-soft: #f6e8df; --codex: #2c64b0; --codex-soft: #e2ebf7;
+  --wait: #6a4cb0; --wait-soft: #ece6f8; --claude: #9c4a20; --claude-soft: #f6e8df; --codex: #2c64b0; --codex-soft: #e2ebf7;
   --user-soft: #ecebe7; --accent: #1d1d1b; --pin: #a07a52; --on-accent: #ffffff; --warn: #8a5f00; --warn-soft: #fbf1d9;
   --ok: #2f7d4f; --chip: #f0efeb;
 }
 /* 테마: 기본은 OS 설정 따라감, 헤더 버튼으로 밝게/어둡게 고정(data-theme) */
 :root[data-theme="dark"] { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
-  --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
+  --wait: #b9a0f0; --wait-soft: #2a2340; --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
   --user-soft: #2a2a27; --accent: #ecebe6; --pin: #c4a07c; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
   --ok: #6cc290; --chip: #262624; color-scheme: dark; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { --bg: #151514; --panel: #1d1d1b; --line: #2f2e2b; --text: #ecebe6; --muted: #9a978f; --faint: #85827b;
-    --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
+    --wait: #b9a0f0; --wait-soft: #2a2340; --claude: #e3916a; --claude-soft: #33241c; --codex: #79a6e8; --codex-soft: #1c2738;
     --user-soft: #2a2a27; --accent: #ecebe6; --pin: #c4a07c; --on-accent: #151514; --warn: #e5b94e; --warn-soft: #3a2f14;
     --ok: #6cc290; --chip: #262624; color-scheme: dark; }
 }
@@ -370,6 +370,10 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .empty.center { text-align: center; padding: 48px 0; }
 
 .wait-stopped { color: var(--warn); }
+/* 기다리는 중(작업을 잡고 결과 대기)은 쉬는 중(회색 점)과 달리 보라색 칩으로 */
+.agent .st.held:not(.wait-stopped) { width: fit-content; max-width: 100%; padding: 2px 10px 2px 7px; border-radius: 99px; background: var(--wait-soft); color: var(--wait); font-weight: 600; }
+.agent .st.held:not(.wait-stopped) .what { color: var(--wait); }
+.pill.waiting { background: var(--wait-soft); color: var(--wait); }
 .user-progress { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 6px 12px; white-space: pre-line; overflow-wrap: anywhere; }
 .task-level { color: var(--muted); font-size: 10px; margin-left: 6px; font-weight: 400; }
 /* 업데이트 알림 */
@@ -1191,7 +1195,7 @@ function renderAgents(agents) {
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>
         <div class="meta">
           <div class="name">${NAME[n]}${a.model ? `<span class="model" title="${esc(a.model)}">${esc(String(a.model).replace(/^claude-/, ""))}${a.effort ? ` · ${esc(a.effort)}` : ""}</span>` : ""}</div>
-          <div class="st ${stopped ? "wait-stopped" : a.status === "working" && !wrapping ? "now" : ""}" title="${esc(doing || heldTip)}">${held.length ? icon(stopped ? "alert" : "waiting", "sm") : ""}<span class="dot ${wrapping ? "wrap" : a.status}" ${held.length ? "hidden" : ""} style="${a.status === "working" && !wrapping ? `background:var(--${n})` : ""}"></span><span class="what">${
+          <div class="st ${held.length ? "held" : ""} ${stopped ? "wait-stopped" : a.status === "working" && !wrapping ? "now" : ""}" title="${esc(doing || heldTip)}">${held.length ? icon(stopped ? "alert" : "waiting", "sm") : ""}<span class="dot ${wrapping ? "wrap" : a.status}" ${held.length ? "hidden" : ""} style="${a.status === "working" && !wrapping ? `background:var(--${n})` : ""}"></span><span class="what">${
             wrapping ? "정리 중" : a.status === "working" ? esc(doing || "작업 중") + (a.paused ? " · 끝나면 멈춤" : "") : heldText ? esc(heldText) : (STATUS[a.status] ?? a.status)}</span></div></div>
         <div class="ctl">${rtag}${hot}
         <button class="ghost" ${a.status === "idle" && !a.paused ? "hidden" : ""} title="${a.paused ? "다시 시작" : a.status === "working" ? "이번 차례 끝나면 멈춤" : "잠시 멈춤"}" aria-label="${a.paused ? "다시 시작" : "잠시 멈춤"}" onclick='this.disabled=true;api({action:"pause",agent:"${n}",paused:${!a.paused}})'>${icon(a.paused ? "start" : "pause", "sm")}</button>
