@@ -376,6 +376,12 @@ def new_session(m, title="새 대화"):
 def current_sid():
     if os.environ.get("OFFICE_SESSION"):
         return os.environ["OFFICE_SESSION"]
+    try:   # 고칠 게 없으면 잠금·저장 없이 읽기만 해요(조회마다 meta.json 을 다시 쓰지 않게)
+        m = meta_view()
+        if any(x["id"] == m.get("current") and not x["deleted"] for x in m["sessions"]):
+            return m["current"]
+    except (StorageError, KeyError, TypeError):
+        pass
     with meta(True) as m:
         live = [x for x in m["sessions"] if not x["deleted"]]
         if not m["sessions"] and (D / "state.json").exists():      # 세션 기능 전 기록 → '이전 대화'로 이관
@@ -416,6 +422,20 @@ def state(write=False, sid=None):
         yield s
         if write:
             atomic_json(STATE, s, state_valid)
+
+
+def state_view(sid):
+    """화면용 읽기. 저장은 임시 파일을 바꿔치기하므로 잠금 없이 읽어도 항상 온전해요.
+    다른 명령이 잠금을 오래 쥐고 있어도 화면 조회가 같이 멈추지 않게 해요."""
+    s = read_json_file(sdir(sid) / "state.json", {}, state_valid, required=True)
+    for k in ("jobs", "tasks", "msgs"):
+        s.setdefault(k, [])
+    s.setdefault("seq", 0)
+    return s
+
+
+def meta_view():
+    return read_json_file(D / "meta.json", {"current": None, "sessions": []}, meta_valid, required=True)
 
 
 def reply_target(s, actor, explicit=None):
@@ -3956,12 +3976,11 @@ class Office:
 
     def snapshot(self, sid=None, since_rev=None):
         cur = sid or current_sid()
-        with meta() as m:
-            if not valid_sid(cur) or not any(x["id"] == cur and not x["deleted"] for x in m["sessions"]):
-                raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록에서 다시 선택하세요.")
+        m = meta_view()
+        if not valid_sid(cur) or not any(x["id"] == cur and not x["deleted"] for x in m["sessions"]):
+            raise UserError("대화를 찾을 수 없음 — 대화가 없습니다. 대화 목록에서 다시 선택하세요.")
         self.ensure_team(cur)
-        with state(sid=cur) as s:
-            data = dict(s)
+        data = state_view(cur)
         data["tasks"] = [dict(t) for t in data.get("tasks", [])]
         display_now = time.time()
         def worker_status(session):
@@ -3975,8 +3994,7 @@ class Office:
             j["needs_user"] = [{"task_id": t["id"], **request} for t in data["tasks"] if t.get("job") == j["id"] and (request := pending_user_request(t, display_now))]
             j["verification"] = j.get("verification", "standard")
             j["display_status"], j["display_reason"] = job_display_status(j, data["tasks"], worker_status(cur), display_now)
-        with meta() as m:
-            sessions = [dict(x) for x in m["sessions"]]
+        sessions = [dict(x) for x in m["sessions"]]
         notice, display_busy = {}, {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
             try:
@@ -4010,8 +4028,8 @@ class Office:
         for w in team.values():
             if w.status == "working":
                 w.update_codex_usage()
-        with reservation_store() as reservations:
-            data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
+        reservations = read_json_file(Path.home()/".office"/"reservations.json", {}, reservations_valid)   # 화면용: 잠금·정리 없이 읽기만
+        data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
         data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "recovery": getattr(w, "recovery", None), "notice": w.notice or getattr(w, "model_notice", None),
                               "model": getattr(w, "primary_model", None) or configured_model(n),
                               "effort": getattr(w, "turn_effort", None) if w.status == "working" else None,
