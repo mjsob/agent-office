@@ -424,7 +424,7 @@ def reply_target(s, actor, explicit=None):
                   and m.get("to") in (actor, "all") and m.get("kind") == "msg"
                   and m.get("job") is None]
     if explicit is not None:
-        if type(explicit) is not int or not any(m["id"] == explicit for m in candidates):
+        if type(explicit) is not int or not any(m["id"] == explicit and m.get("from") == "user" and m.get("to") in (actor, "all") and m.get("kind") in ("msg", "request") for m in s["msgs"]):
             raise UserError("답장 대상 확인 — 해당 담당에게 온 사용자 메시지 ID를 지정하세요.")
         return explicit
     legacy_end = max((m["id"] for m in s["msgs"] if m.get("from") == actor
@@ -447,6 +447,13 @@ def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
     if reply_to is not None:
         row["re"] = reply_to
     s["msgs"].append(row)
+    if job is not None and frm in AGENTS and to == "user" and kind in ("progress", "msg", "report"):
+        request = next((j for j in s["jobs"] if j["id"] == job), None)
+        if request:
+            request["last_user_notice_at"] = row["at"]
+            request.setdefault("first_user_notice_at", row["at"])
+            if request.get("started_at"):
+                request.setdefault("first_user_notice_seconds", round(max(0, row["at"] - request["started_at"]), 3))
 
 
 def event(s, text, actor="system", job: int | None = None):
@@ -478,6 +485,13 @@ def message_job(s):
     jid = os.environ.get("OFFICE_JOB")
     if jid:
         return int(jid)
+    reply = os.environ.get("OFFICE_REPLY_TO")
+    if reply and reply.isdecimal():
+        source = next((m for m in s["msgs"] if m["id"] == int(reply)), None)
+        if source is not None:
+            return source.get("job")
+    if os.environ.get("OFFICE_DIRECT") == "1":
+        return None
     j = open_job(s)
     return j["id"] if j else None
 
@@ -533,6 +547,7 @@ def board_text(s, n_msgs=15):
     out.append("== 작업판 ==")
     out += [f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {t['title']}"
             + (f" — 기다리는 중: {t['wait_reason']}" if t["status"] == "waiting" and t.get("wait_reason") else "")
+            + (f" — 사용자 확인 필요: {pending_user_request(t)['text']}" if pending_user_request(t) else "")
             + (f" — 진행: {progress_text(t['progress'])}" if t["status"] != "done" and t.get("progress") else "")
             + (f" — {t['note']}" if t.get("note") else "") for t in s["tasks"] if t["status"] != "done" or
             any(j["id"] == t.get("job") and j["status"] != "done" for j in s["jobs"])] or ["(비어있음)"]
@@ -756,6 +771,11 @@ def cmd_write(a):
         if saved:
             raise UserError("파일은 저장됐지만 예약 기록 갱신에 실패했습니다. 원본을 확인한 뒤 예약을 다시 잡으세요.") from None
         raise
+    try:
+        with state(True) as record:
+            record["work_revision"] = record.get("work_revision", 0) + 1
+    except (OSError, StorageError) as error:
+        server_log("write.progress", error)
     print(f"안전 저장 완료: {path}")
 
 
@@ -791,6 +811,8 @@ def cmd_claim(a):
         t = find(s, a.id)
         if t["owner"] not in (None, me()) or t["status"] == "done":
             sys.exit(f"#{a.id} 는 이미 {t['owner']} 담당/{t['status']} — 못 가져감")
+        if pending_user_request(t):
+            raise UserError("사용자 확인 대기 — 받은 자료나 답을 확인한 뒤 resolve-user로 해결하세요.")
         resumed = t["status"] == "waiting"
         keep = live_bg_watch(t)
         for key in WAIT_FIELDS:
@@ -828,6 +850,9 @@ def task_wait_status(t, now=None):
     """차례 대기와 실제 백그라운드 실행을 나눠요. PID 생존보다 명시한 대기 상태를 우선해요."""
     now = time.time() if now is None else now
     alive, log_at = wait_probe(t)
+    user_request = pending_user_request(t, now)
+    if user_request:
+        return {"wait_alive": alive, "wait_log_at": log_at, "wait_kind": "user", "wait_detail": user_request["text"]}
     progress = t.get("progress") or {}
     detail = progress.get("text") or t.get("wait_reason") or "다음 차례를 기다려요."
     if alive is False:
@@ -927,6 +952,55 @@ def cmd_wait(a):
     print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else ""))
 
 
+def pending_user_request(t, now=None):
+    request = t.get("user_request") or {}
+    if t.get("status") == "done" or request.get("status") not in ("pending", "expired"):
+        return None
+    request = dict(request)
+    if request.get("expires_at") and request["expires_at"] <= (time.time() if now is None else now):
+        request["status"] = "expired"
+    return request
+
+
+def cmd_need_user(a):
+    text = a.text.strip()
+    if not text or len(text) > 2000:
+        raise UserError("필요한 행동 확인 — 필요한 자료나 행동과 제출 방법을 2,000자 안으로 적으세요.")
+    expires = parse_resume_at(getattr(a, "expires_at", None))
+    with state(True) as record:
+        task = find(record, a.id)
+        if task["status"] == "done" or task.get("owner") not in (None, me()):
+            raise UserError("담당 작업 확인 — 끝나지 않은 본인 작업에만 요청을 남길 수 있어요.")
+        old = pending_user_request(task)
+        request = {"status": "pending", "text": text, "created_at": old.get("created_at") if old else time.time(),
+                   "expires_at": expires, "resolved_at": None, "resolution": None, "reply_to": None}
+        task["user_request"] = request
+        task.update(owner=me(), status="waiting", waiting_at=time.time(), wait_reason=text[:200])
+        task.pop("wait_deadline", None)
+        task.pop("user_expired_notified", None)
+        if not old or old.get("text") != text or old.get("expires_at") != expires:
+            post(record, me(), "user", "사용자 확인 필요 — " + text, "progress", job=task.get("job"))
+    print(f"#{a.id} 사용자 확인 대기")
+
+
+def cmd_resolve_user(a):
+    if not a.text.strip():
+        raise UserError("확인 결과 필요 — 자료나 답을 확인한 결과를 적으세요.")
+    with state(True) as record:
+        task = find(record, a.id)
+        if task.get("owner") != me() or not pending_user_request(task):
+            raise UserError("사용자 요청 확인 — 본인 작업의 미해결 요청을 선택하세요.")
+        reply = getattr(a, "re", None)
+        if reply is not None and not any(m["id"] == reply and m["from"] == "user" for m in record["msgs"]):
+            raise UserError("받은 메시지 확인 — 자료나 답을 보낸 사용자 메시지 번호를 적으세요.")
+        task["user_request"].update(status="resolved", resolved_at=time.time(), resolution=a.text.strip(), reply_to=reply)
+        task.update(status="doing", claimed_at=time.time())
+        for key in ("wait_reason", "wait_deadline", "wait_overdue", "wait_stale"):
+            task.pop(key, None)
+        post(record, me(), "user", "사용자 확인 해결 — " + a.text.strip(), "progress", job=task.get("job"))
+    print(f"#{a.id} 사용자 요청 해결·작업 재개")
+
+
 def progress_remaining(p):
     """남은 시간(초). 측정 시작(since) 뒤 처리 속도로 계산하고, 1분 넘게 쌓이고 개수가 늘었을 때만 낸다. 못 내면 None"""
     done, total, since, base, at = p.get("done"), p.get("total"), p.get("since"), p.get("since_done"), p.get("at")
@@ -1010,6 +1084,9 @@ def cmd_progress(a):
                 and p["total"] == old.get("total") and p["done"] >= old["since_done"])
         p["since"], p["since_done"] = (old["since"], old["since_done"]) if keep else (now if p["done"] is not None else None, p["done"])
         t["progress"] = p
+        for message in s["msgs"]:
+            if message.get("from") == "system" and message.get("job") == t.get("job") and not message.get("resolved_at") and re.search(r"로그 멈춤|진행 멈춤|무설명|진행 설명.*없", message.get("text", "")):
+                message["resolved_at"], message["resolution"] = now, "진행 갱신을 확인했어요."
         if a.notify:   # 상태가 바뀌는 순간(쉬기 시작·다시 시작·끝)만 사용자에게 한 줄 알린다
             post(s, "system", "user", f"[진행] 작업 #{task_id} · {progress_text(p, False)}", "progress", job=t.get("job"))
     print(f"#{task_id} 진행 기록 · {progress_text(p)}")
@@ -1036,7 +1113,7 @@ def cmd_bg(a):
     # 새 세션으로 띄워 에이전트 실행 도구·차례 종료가 프로세스 그룹을 정리해도 같이 죽지 않게 한다
     # 명령 안에서 office progress 를 ID 없이 쓰고, 띄운 차례의 요청이 먼저 끝나도 작업이 속한 요청으로 파일을 저장하게
     env = {**os.environ, "OFFICE_TASK": str(a.id), **({"OFFICE_JOB": str(task_job)} if task_job else {})}
-    proc = subprocess.Popen(["bash", "-c", script], cwd=os.getcwd(), env=env, start_new_session=True, close_fds=True,
+    proc = subprocess.Popen(limited_command(["bash", "-c", script]), cwd=os.getcwd(), env=env, start_new_session=True, close_fds=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ident = process_identity(proc.pid)
     mark_waiting(a, reason, wait_pid=proc.pid, wait_start=ident and ident["start"], wait_log=str(log), wait_rc=str(rc_file), wait_cmd=command[:500])
@@ -1046,6 +1123,8 @@ def cmd_bg(a):
 def cmd_done(a):
     with state(True) as s:
         t = find(s, a.id)
+        if pending_user_request(t):
+            raise UserError("사용자 확인 대기 — 필요한 자료나 답을 확인한 뒤 resolve-user로 해결하세요.")
         t.update(status="done", note=a.text, done_at=time.time())
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} 완료")
@@ -1080,6 +1159,11 @@ def cmd_say(a):
         job = message_job(s)
         kind = ("progress" if a.to == "user" else "note") if getattr(a, "info", False) else "msg"   # --to user --info: 사용자 진행 알림(차례·결과 카드 아님)
         explicit = getattr(a, "re", None)
+        if explicit is not None:
+            source = next((m for m in s["msgs"] if m["id"] == explicit and m["from"] == "user"), None)
+            if source is None:
+                raise UserError("답장 대상 확인 — 받은 사용자 메시지를 선택하세요.")
+            job = source.get("job")
         if explicit is not None and (me() not in AGENTS or a.to != "user" or kind != "msg"):
             raise UserError("답장 대상 확인 — --re는 담당자의 사용자 답장에만 사용할 수 있습니다.")
         reply_to = reply_target(s, me(), explicit) if me() in AGENTS and a.to == "user" and kind == "msg" and (job is None or explicit is not None) else None
@@ -1463,6 +1547,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 몇 분 넘게 걸리는 수집·다운로드·빌드는 `office bg ID "설명" "명령"`으로 띄우고 차례를 끝내라. nohup·&·실행 도구의 백그라운드 기능은 차례가 끝날 때 같이 죽는다. 끝나면 서버가 깨우니 `office claim ID`로 다시 시작한다. 이미 따로 띄운 프로세스는 `office wait ID "사유" --pid N --log 파일`로 감시를 건다.
 - 수십 분 넘게 도는 수집·반복 작업은 사용자가 묻지 않아도 '몇 개 중 몇 개 했고, 쉬는 중이면 언제 다시 시작하는지' 화면에서 보이게 해라. 스크립트가 진행이 바뀔 때마다 `office progress --done N --total M "상태"`(쉬는 중이면 `--resume-at`)를 부르게 만들고, 쉬기 시작·다시 시작·끝처럼 상태가 바뀔 때만 `--notify` 를 붙인다.
 - 실제 처리와 입력·선행 작업 대기를 구분해 `office progress --state working|waiting "상태"`로 기록한다. 감시 프로세스가 살아 있어도 선행 다운로드·사용자 입력을 기다리면 waiting, 처리가 시작되면 working으로 바꾼다.
+- 파일 제공·로그인·선택·승인처럼 사용자가 해야 할 일이 생기면 `office need-user ID "필요한 것과 제출 방법"`으로 남기고 차례를 끝내라. 인증 코드는 `--expires-at`으로 만료 시각을 붙여라. 자료나 답을 확인한 뒤 `office resolve-user ID "확인 결과" --re 메시지번호`로 해결하고 이어가라. 새 메시지만으로 해결 처리하지 마라. 외부 처리·동료 답 대기는 기존 wait를 써라.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
@@ -1716,6 +1801,7 @@ class Worker:
         self.retry_counts = dict(saved.get("retry_counts", {}))
         if self.auto_retries:
             self.retry_counts.setdefault("direct" if self.retry_job is None else str(self.retry_job), self.auto_retries)
+        self.recovery = saved.get("recovery")
         self.retry_at = saved.get("retry_at", 0)
         self.retry_due = dict(self.resume_turn) if self.resume_turn and not self.paused and not self.retry_at else None
         self.fail_count = saved.get("fail_count", 0)
@@ -1763,7 +1849,7 @@ class Worker:
             atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
                          "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
                          "retry_counts": dict(getattr(self, "retry_counts", {})),
-                         "retry_at": getattr(self, "retry_at", 0)}, checkpoint_valid)
+                         "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None)}, checkpoint_valid)
 
     def add_tokens(self, n, cached=0):
         # 두 Worker가 동시에 쓰므로 usage.json 읽기·수정·저장을 잠금으로 보호.
@@ -1946,6 +2032,9 @@ class Worker:
         env = dict(os.environ, OFFICE_AS=self.name, OFFICE_DIR=str(ROOT), OFFICE_SESSION=self.sid)
         env.pop("OFFICE_JOB", None)
         env.pop("OFFICE_DIRECT", None)
+        env.pop("OFFICE_REPLY_TO", None)
+        if getattr(self, "reply_message_id", None):
+            env["OFFICE_REPLY_TO"] = str(self.reply_message_id)
         if job is None:
             env["OFFICE_DIRECT"] = "1"
         self.sid_file = sdir(self.sid) / f"{self.name}.sid"
@@ -1997,7 +2086,7 @@ class Worker:
             if self.stop.is_set() or self.interrupted_job is not None or self.immediate_pause:
                 self.usage_tracking = False
                 return ""
-            proc = subprocess.Popen(cmd, cwd=wdir(self.sid), env=env, stdout=subprocess.PIPE, stderr=lg,
+            proc = subprocess.Popen(limited_command(cmd), cwd=wdir(self.sid), env=env, stdout=subprocess.PIPE, stderr=lg,
                                     stdin=subprocess.DEVNULL, start_new_session=True, bufsize=0)
             proc._office_group = True
             try:
@@ -2072,6 +2161,7 @@ class Worker:
                 lg.seek(0, os.SEEK_END)
                 lg.seek(max(0, lg.tell()-65536))
                 diagnostic = safe_agent_diagnostic(lg.read().decode(errors="replace"))
+                self.last_diagnostic = {"at": time.time(), "exit_code": self.rc, "stderr": diagnostic[-1200:], "job": job}
                 if diagnostic and not ended_after_result:
                     with open(sdir(self.sid) / f"{self.name}.log", "a") as log:
                         log.write(diagnostic)
@@ -2347,7 +2437,8 @@ class Worker:
             held = "".join(f"\n- #{t['id']} (요청 {t.get('job')}): {t.get('wait_reason') or '기다리는 중'}" for t in waiting)
             if held:
                 held = "\n\n기다리는 중인 네 작업:" + held + "\n기다리던 결과가 왔으면 `office claim ID`로 다시 시작하거나 끝냈으면 `office done ID`. 아직이면 그대로 두고 차례를 끝내라."
-            return f"새로 온 메시지:\n{body}{held}", job, ("reply" if not mine and not free and not waiting else "work"), new
+            source = next((m for m in reversed(new) if m["from"] == "user"), new[-1])
+            return f"새로 온 메시지:\n{body}{held}", source.get("job"), ("reply" if not mine and not free and not waiting else "work"), new
         if not (free or mine):
             return None
         # 새 메시지 없이 남은 작업만 있으면 요청별로 재촉한다. 재촉은 그 요청에 진척(작업 상태 변화·동료 활동)이
@@ -2393,6 +2484,33 @@ class Worker:
         if self.status != status:
             self.status, self.since, self.doing = status, time.time(), None
 
+    def progress_signature(self, record):
+        tasks = [{k: v for k, v in task.items() if k not in ("wait_stale", "wait_overdue")}
+                 for task in record["tasks"]]
+        visible = [(m["id"], m.get("text")) for m in record["msgs"] if m.get("from") == self.name
+                   and m.get("kind") in ("progress", "report")]
+        try:
+            root = wdir(self.sid)
+            result = subprocess.run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root,
+                                    capture_output=True, text=True, timeout=2)
+            files = []
+            for line in result.stdout.splitlines()[:300]:
+                path = root / line[3:].split(" -> ")[-1].strip('"')
+                try:
+                    stat = path.stat()
+                    files.append((str(path), stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    files.append((str(path), None, None))
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            files, head = [], None
+        return hashlib.sha256(json.dumps([tasks, visible[-20:], files, head, record.get("work_revision", 0)], sort_keys=True).encode()).hexdigest()
+
+    def set_recovery(self, phase, reason, attempt=0, retry_at=None):
+        self.recovery = {"phase": phase, "reason": safe_agent_diagnostic(reason)[:400],
+                         "attempt": attempt, "limit": len(AUTO_RETRY_DELAYS), "at": time.time(), "retry_at": retry_at}
+
+
     def pause_with_error(self, reason, job):
         self.error_kind = classify_agent_error(reason, self.rc)
         self.resume_turn = self.doing if isinstance(self.doing, dict) else getattr(self, "resume_turn", None)
@@ -2401,7 +2519,28 @@ class Worker:
         key = hashlib.sha256((self.error_kind + ":" + reason).encode()).hexdigest()
         self.fail_count = self.fail_count + 1 if self.failure_key == key else 1
         self.failure_key = key
+        self.set_recovery("diagnosing", reason)
+        retry_key = "direct" if job is None else str(job)
+        retries = self.retry_counts.get(retry_key, 0)
+        # The previous process is already reaped by run_agent. Keep the same cursor and resume turn.
+        if self.error_kind in ("crash", "unknown", "network", "timeout", "capacity") and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not self.immediate_pause:
+            delay = AUTO_RETRY_DELAYS[retries]
+            self.retry_counts[retry_key] = retries + 1
+            self.auto_retries, self.retry_job = retries + 1, job
+            self.retry_at = time.time() + delay
+            self.retry_due = None
+            self.read_upto = getattr(self, "turn_read_start", self.read_upto)
+            self.paused = False
+            self.set_recovery("recovering", reason, retries + 1, self.retry_at)
+            self.notice = f"자동 복구 중 — {delay}초 뒤 중단된 차례를 확인하고 이어가요."
+            self.error, self.error_kind = None, None
+            self.idle()
+            self.save_checkpoint()
+            with state(True, self.sid) as s:
+                event(s, f"{disp(self.name)} 자동 복구 · {retries + 1}/{len(AUTO_RETRY_DELAYS)}회 · {delay}초 뒤 재개를 확인해요. 원인: {reason[:200]}", job=job)
+            return
         self.paused = True
+        self.set_recovery("needs_user" if self.error_kind in ("auth", "limit") else "failed", reason, retries)
         self.idle("paused")
         self.save_checkpoint()
         if self.error_kind == "auth" and LOGIN_HOOK:
@@ -2435,19 +2574,15 @@ class Worker:
                 self.terminate_agent()
                 self.read_upto = getattr(self, "turn_read_start", self.read_upto)
                 self.resume_turn = self.doing if isinstance(self.doing, dict) else self.resume_turn
-                self.paused, self.error = True, (str(error) if isinstance(error, UserError) else
-                    "작업 처리 오류 — 작업 처리 중 오류가 발생했습니다. 디스크 용량과 폴더 권한을 확인한 뒤 재개하세요.")
-                self.error_kind = classify_agent_error(self.error, self.rc)
-                key = hashlib.sha256((self.error_kind + ":" + self.error).encode()).hexdigest()
-                self.fail_count = self.fail_count + 1 if self.failure_key == key else 1
-                self.failure_key = key
-                self.idle("paused")
                 server_log("worker.loop", error)
+                reason = str(error) if isinstance(error, UserError) else f"현재 차례 처리 중 {type(error).__name__} 오류가 생겼어요."
                 try:
-                    self.save_checkpoint()
-                    with state(True, sid=self.sid) as s:
-                        post(s, "system", "user", self.error, "event", job=(self.resume_turn or {}).get("job"))
+                    self.pause_with_error(reason, (self.resume_turn or {}).get("job"))
                 except (OSError, StorageError) as storage_error:
+                    self.paused, self.error = True, "기록 저장을 확인하지 못해 자동 복구를 멈췄어요. 디스크와 폴더 권한을 확인하세요."
+                    self.error_kind = "unknown"
+                    self.set_recovery("failed", self.error)
+                    self.idle("paused")
                     server_log("worker.error.persist", storage_error)
                 self.stop.wait(POLL)
 
@@ -2505,6 +2640,8 @@ class Worker:
                 missed = missed_text(s["msgs"][self.read_upto:], self.name)
                 title_history = request_history(s["jobs"])
                 carry = recent_results(s["jobs"])
+                selected_job = next((j for j in s["jobs"] if nt and j["id"] == nt[1]), {})
+                verification = selected_job.get("verification", "standard")
             if not nt:
                 self.idle(); self.wait_change(POLL)
                 continue
@@ -2514,7 +2651,11 @@ class Worker:
                     event(restored, "중단된 차례를 다시 실행합니다. 이미 변경한 파일과 완료 작업을 확인하고 이어갑니다.", job=job)
                 self.restart_reported = True
             only_chat = desc == "reply" and not any(m["from"] == "user" for m in new)
-            self.chatter = self.chatter + 1 if only_chat else 0
+            with state(sid=sid) as record:
+                signature = self.progress_signature(record)
+            changed = signature != getattr(self, "chatter_signature", None)
+            self.chatter_signature = signature
+            self.chatter = self.chatter + 1 if only_chat and not changed else 0
             if self.chatter > MAX_CHATTER:
                 self.pause_with_error("자동 진행 일시정지 — 작업 진척 없이 에이전트끼리 대화가 반복되어 자동 진행을 멈췄습니다.", job)
                 self.chatter = 0
@@ -2526,6 +2667,13 @@ class Worker:
                             j["status"] = "review"
             previous_read = self.turn_read_start = self.read_upto
             self.read_upto = total
+            self.reply_message_id = next((m["id"] for m in reversed(new) if m["from"] == "user"), new[-1]["id"] if new else None)
+            if getattr(self, "recovery", None):
+                if self.recovery["phase"] == "recovered":
+                    self.recovery = None
+                elif self.recovery["phase"] in ("recovering", "verifying"):
+                    self.set_recovery("verifying", self.recovery["reason"], self.recovery["attempt"])
+            self.turn_progress_signature = signature
             self.rc, self.error, self.error_kind = 0, None, None
             self.model_notice = None
             self.primary_model = configured_model(self.name)
@@ -2538,6 +2686,8 @@ class Worker:
             self.act("start", f"{desc}|{job or ''}")
             rotated = self.rotate_session(job, desc)
             prompt = PROTOCOL.format(me=self.name, other=self.other) + f"\n현재 상황:\n{snap}\n\n"
+            verification_scope = {"quick": "빠르게: 요청한 결과와 핵심 동작만 확인", "standard": "기본: 핵심 동작과 영향 받는 부분까지 확인", "thorough": "꼼꼼하게: 추가 사례·예외·독립 검수까지 확인"}.get(verification, "기본")
+            prompt += f"이 요청의 검증 수준은 {verification_scope}이다. 통과한 같은 검증은 새 변경·실패 없이 반복하지 마라. 재시도는 입력·코드·설정이 그대로인 완료 결과를 확인해 재사용하고 실패한 부분부터 이어가라. 더 깊은 검증이 필요하면 이유와 추가 예상 시간을 먼저 알려라. 최종 보고에 선택 수준·실제 확인한 범위·확인 못 한 부분을 짧게 남겨라.\n"
             if rotated:
                 prompt += ("이번 차례부터 새 세션이다(이전 세션이 너무 길어져 속도를 위해 바꿨다). 이전 대화 내용은 기억나지 않으니 "
                            "위 현재 상황·최근 대화와 아래 요청 이력, 저장소 파일로 맥락을 파악해라.\n\n")
@@ -2546,6 +2696,8 @@ class Worker:
             if missed:
                 prompt += f"네 지난 차례 이후 네가 직접 받지 못한 대화 (사용자·동료끼리 나눈 내용, 맥락 파악용):\n{missed}\n\n"
             if self.resume_turn and self.resume_turn.get("job") == job:
+                if getattr(self, "recovery", None):
+                    prompt += "자동 복구 진단: " + self.recovery.get("reason", "") + "\n중단된 실행은 정리됐다. 저장된 결과와 현재 프로세스를 확인하고 실패한 부분만 이어가라. 실행 중인 외부 작업을 중복 시작하지 마라.\n"
                 prompt += "이전 차례가 중단되어 이어서 시작한다. 이미 수정한 파일과 완료 작업을 먼저 확인하고, 반쯤 진행한 작업은 검증해서 이어가라. 같은 변경을 반복하거나 덮어쓰지 마라.\n"
                 prompt += "이전 실행의 파일 예약은 풀렸다. 파일을 고치기 전에 office reserve 를 다시 하고, office write 결과를 확인한 뒤에만 완료 처리해라.\n"
             prompt += "메시지에 이미지·파일 경로가 있으면 해당 파일을 직접 열어서 확인해라. Claude는 Read, Codex는 이미지 보기 도구를 사용한다.\n"
@@ -2597,7 +2749,13 @@ class Worker:
                     metrics = measured_job.setdefault("execution_metrics", {}).setdefault(self.name, {"turns":0,"waiting_replies":0,"seconds":0,"tokens":0})
                     metrics["turns"] += 1
                     metrics["waiting_replies"] += int(out.strip() == "대기")
-                    metrics["seconds"] += round(max(0, time.monotonic()-turn_started), 3)
+                    elapsed = round(max(0, time.monotonic()-turn_started), 3)
+                    metrics["seconds"] += elapsed
+                    phases = metrics.setdefault("phase_seconds", {})
+                    phase = "verification" if desc == "review" else "planning" if desc == "plan" else "reply" if desc == "reply" else "execution"
+                    phases[phase] = round(phases.get(phase, 0) + elapsed, 3)
+                    if measured_job.get("started_at"):
+                        metrics.setdefault("first_turn_wait_seconds", round(max(0, self.since - measured_job["started_at"]), 3))
                     metrics["tokens"] += max(0, self.tokens-tokens_before)
             with state(sid=sid) as current:
                 cancelled_turn = any(j["id"] == job and j.get("cancelled") for j in current["jobs"])
@@ -2612,10 +2770,7 @@ class Worker:
             if self.error or self.rc or not out:
                 why = self.error
                 if not why and self.rc:
-                    try:
-                        why = (sdir(sid) / f"{self.name}.log").read_text(errors="ignore").strip().splitlines()[-1][:200]
-                    except (OSError, IndexError):
-                        why = f"종료 코드 {self.rc}"
+                    why = f"현재 차례가 종료 코드 {self.rc}로 끝났어요. 현재 오류 출력이 없어 원인을 확인하지 못했어요."
                 self.read_upto = previous_read
                 retry_key = "direct" if job is None else str(job)
                 retries = self.retry_counts.get(retry_key, 0)
@@ -2625,6 +2780,7 @@ class Worker:
                     self.retry_counts[retry_key] = retries + 1
                     self.retry_job = job
                     self.retry_at = time.time() + delay
+                    self.set_recovery("recovering", why or "응답 없이 실행이 끝났어요.", retries + 1, self.retry_at)
                     self.resume_turn = self.doing if isinstance(self.doing, dict) else self.resume_turn
                     self.restart_reported = True
                     self.error, self.error_kind = None, None
@@ -2676,9 +2832,16 @@ class Worker:
                     event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
                     if report:
                         post(s, self.name, "user", report, "report", job=job)
+            if getattr(self, "recovery", None) and self.recovery["phase"] == "verifying":
+                self.set_recovery("recovered", "정상 응답과 차례 완료를 확인했어요.", self.recovery["attempt"])
+                with state(True, sid) as recovered:
+                    event(recovered, f"{disp(self.name)} 자동 복구 완료 · 중단된 차례가 정상으로 끝났어요.", job=job)
             self.resume_turn = None
             self.fail_count, self.failure_key = 0, None
-            self.retry_counts.pop("direct" if job is None else str(job), None)
+            with state(sid=sid) as record:
+                made_progress = self.progress_signature(record) != self.turn_progress_signature
+            if made_progress or any(m["from"] == "user" for m in new) or not only_chat:
+                self.retry_counts.pop("direct" if job is None else str(job), None)
             if job == getattr(self, "retry_job", None) or not getattr(self, "auto_retries", 0):
                 self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
             if (self.notice or "").startswith("자동 재시도 대기"):
@@ -3202,6 +3365,109 @@ def ident():
 
 
 # ── GUI 서버 ────────────────────────────────────────────────
+RESOURCE_LOCK = threading.RLock()
+RESOURCE_CACHE = {}
+RESOURCE_SAMPLE = None
+
+
+def resource_unit():
+    return "office-work-" + hashlib.sha256(str(ROOT).encode()).hexdigest()[:12] + ".slice"
+
+
+def physical_memory():
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        return 0
+
+
+def resource_limits():
+    saved = read_json_file(D / "resource-limits.json", {})
+    return {"cpu_percent": saved.get("cpu_percent", 70), "memory_high_gb": saved.get("memory_high_gb", 0)}
+
+
+def apply_resource_limits(cpu_percent, memory_high_gb):
+    quota = cpu_percent * (os.cpu_count() or 1)
+    memory = str(int(memory_high_gb * 1024**3)) if memory_high_gb else "infinity"
+    unit = resource_unit()
+    # Start a harmless command once so the shared slice exists before setting its budget.
+    command = ["systemd-run", "--user", "--quiet", "--wait", "--pipe", "--slice=" + unit, "/usr/bin/true"]
+    subprocess.run(command, capture_output=True, timeout=8, check=True)
+    subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
+                    f"CPUQuota={quota}%", "CPUAccounting=yes", "MemoryAccounting=yes", "MemoryHigh=" + memory],
+                   capture_output=True, timeout=5, check=True)
+
+
+def resource_status(refresh=False):
+    global RESOURCE_SAMPLE
+    with RESOURCE_LOCK:
+        now = time.time()
+        if not refresh and RESOURCE_CACHE.get("root") == str(ROOT) and now - RESOURCE_CACHE.get("at", 0) < 3:
+            return dict(RESOURCE_CACHE["value"])
+        limits = resource_limits()
+        data = {**limits, "supported": False, "reason": "이 PC에서는 작업 리소스 제한을 적용하지 못했어요.",
+                "cpu_quota_percent": limits["cpu_percent"] * (os.cpu_count() or 1),
+                "logical_cpus": os.cpu_count() or 1, "physical_memory_bytes": physical_memory(),
+                "memory_current_bytes": None, "cpu_usage_percent": None,
+                "applies_to": "새로 시작하는 Linux 에이전트·백그라운드 작업",
+                "uncontrolled": "기존 실행·Windows·GPU·원격 API·브라우저"}
+        try:
+            if RESOURCE_CACHE.get("configured") != (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"]):
+                apply_resource_limits(**limits)
+                RESOURCE_CACHE["configured"] = (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"])
+            result = subprocess.run(["systemctl", "--user", "show", resource_unit(), "--property=ControlGroup"],
+                                    capture_output=True, text=True, timeout=3, check=True)
+            group = result.stdout.strip().removeprefix("ControlGroup=")
+            if not group.startswith("/") or ".." in group.split("/"):
+                raise ValueError("cgroup path")
+            folder = Path("/sys/fs/cgroup") / group.lstrip("/")
+            usage = int(dict(line.split() for line in (folder / "cpu.stat").read_text().splitlines())["usage_usec"])
+            data["memory_current_bytes"] = int((folder / "memory.current").read_text())
+            previous = RESOURCE_SAMPLE
+            if previous and previous[0] == str(ROOT) and now > previous[1]:
+                data["cpu_usage_percent"] = round(max(0, (usage - previous[2]) / ((now-previous[1])*1_000_000*(os.cpu_count() or 1))*100), 1)
+            RESOURCE_SAMPLE = (str(ROOT), now, usage)
+            data.update(supported=True, reason="CPU는 전체 논리 CPU 기준 평균 상한이에요. 메모리는 느리게 처리하는 소프트 한도예요.")
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            RESOURCE_CACHE.pop("configured", None)
+        RESOURCE_CACHE.update(root=str(ROOT), at=now, value=data)
+        return dict(data)
+
+
+def limited_command(command):
+    info = resource_status()
+    if not info["supported"]:
+        return command
+    # Every agent and detached bg command shares the same slice, not one quota per process.
+    return ["systemd-run", "--user", "--scope", "--quiet", "--slice=" + resource_unit(),
+            "--unit=office-task-" + uuid.uuid4().hex + ".scope", "--", *command]
+
+
+def open_report_path(raw, sid):
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
+        raise UserError("경로 확인 — 열 파일이나 폴더 경로를 확인하세요.")
+    value = re.sub(r":\d+(?::\d+)?$", "", raw.strip())
+    try:
+        if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith("\\\\"):
+            result = subprocess.run(["wslpath", "-u", value], capture_output=True, text=True, timeout=5, check=True)
+            path = Path(result.stdout.strip())
+        else:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = wdir(sid) / path
+        path = path.resolve(strict=True)
+        result = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, timeout=5, check=True)
+        windows = result.stdout.strip()
+        if not windows:
+            raise ValueError("empty path")
+        args = ["explorer.exe", windows] if path.is_dir() else ["explorer.exe", "/select," + windows]
+        # Explorer may return 1 after handing the request to an existing window.
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise UserError("경로를 열지 못했어요. 경로와 WSL 연결을 확인하거나 경로를 복사하세요.") from None
+    return {"ok": "탐색기에서 경로를 열었어요."}
+
+
 class Office:
     def __init__(self):
         self.stop = threading.Event()
@@ -3317,6 +3583,11 @@ class Office:
             waits = [dict(t) for t in s["tasks"] if t["status"] == "waiting" and t.get("owner") in AGENTS]
         notes = []
         for t in waits:
+            user_request = pending_user_request(t, now)
+            if user_request:
+                if user_request["status"] == "expired" and not t.get("user_expired_notified"):
+                    notes.append((t, "user_expired_notified", f"[사용자 확인 기한 지남] 작업 #{t['id']} · {user_request['text']}", ""))
+                continue
             alive, log_at = wait_probe(t)
             label = f"작업 #{t['id']} · {t.get('wait_reason') or '기다림'}"
             if alive is False and not t.get("wait_notified"):
@@ -3450,7 +3721,7 @@ class Office:
                 else:
                     post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 필요", f"쓰려면 로그인이 필요해요. {how}\n{url}"), "event")
 
-    LOGIN_TRIES = 3          # 실패·만료 때 새 링크를 받아 다시 시도하는 최대 횟수(처음 포함)
+    LOGIN_TRIES = 1          # 만료 뒤에는 자동 재발급하지 않고 사용자 복귀 때 새 링크를 받아요.
     LOGIN_WAIT = 620         # 링크 하나를 기다리는 시간(로그인 과정은 600초 뒤 스스로 끝남)
 
     def watch_login(self, sid):
@@ -3541,7 +3812,7 @@ class Office:
         workers = team["w"]
         with state(sid=sid) as s:
             jobs = [j for j in s["jobs"] if j["status"] != "done"]
-            tasks_sig = tuple((t["id"], t["status"], t["owner"]) for t in s["tasks"])
+            tasks_sig = tuple((t["id"], t["status"], t["owner"], (t.get("progress") or {}).get("at")) for t in s["tasks"])
             activity = (len(s["msgs"]), tasks_sig)
             tasks = [t for t in s["tasks"] if t["status"] != "done"]
             # 열린 작업이 모두 기다림인 요청은 멈춘 게 아니라 결과를 기다리는 중이다
@@ -3675,15 +3946,20 @@ class Office:
                 t.update(task_wait_status(t, display_now))
         data["jobs"] = [dict(j) for j in data.get("jobs", [])]
         for j in data["jobs"]:
+            j["needs_user"] = [{"task_id": t["id"], **request} for t in data["tasks"] if t.get("job") == j["id"] and (request := pending_user_request(t, display_now))]
+            j["verification"] = j.get("verification", "standard")
             j["display_status"], j["display_reason"] = job_display_status(j, data["tasks"], worker_status(cur), display_now)
         with meta() as m:
             sessions = [dict(x) for x in m["sessions"]]
-        notice = {}
+        notice, display_busy = {}, {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
             try:
                 st = read_json_file(sdir(x["id"]) / "state.json", {}, state_valid)
                 x.update(session_display_status(st, worker_status(x["id"]), display_now))
+                x["needs_user"] = sum(bool(pending_user_request(t, display_now)) for t in st.get("tasks", []))
                 notice[x["id"]] = last_notice(st.get("msgs", []))
+                completed = {j["id"] for j in st.get("jobs", []) if j["status"] == "done"}
+                display_busy[x["id"]] = any(w.status == "working" and (w.doing or {}).get("job") not in completed for w in self.teams.get(x["id"], {}).get("w", {}).values())
             except (OSError, ValueError, StorageError) as error:
                 server_log("snapshot.session", error)
                 x.update(open=0, status_counts={}, status_kind="done", status_reason="")
@@ -3700,17 +3976,17 @@ class Office:
         for x in sessions:
             # 진행 중인 요청이 남아 있으면 중간 보고라도 반짝이지 않는다. 다 끝난 뒤(또는 요청 없이 온 결과)에만 알린다
             x["unread"] = x["id"] != cur and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
-            x["busy"] = self.busy(x["id"])
+            x["busy"] = display_busy.get(x["id"], self.busy(x["id"]))
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
-                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info())
+                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_status())
         team = self.teams[cur]["w"]
         for w in team.values():
             if w.status == "working":
                 w.update_codex_usage()
         with reservation_store() as reservations:
             data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
-        data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "notice": w.notice or getattr(w, "model_notice", None),
+        data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "recovery": getattr(w, "recovery", None), "notice": w.notice or getattr(w, "model_notice", None),
                               "model": getattr(w, "primary_model", None) or configured_model(n),
                               "effort": getattr(w, "turn_effort", None) if w.status == "working" else None,
                               "level": getattr(w, "turn_level", None) if w.status == "working" else None,
@@ -3786,7 +4062,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -3806,7 +4082,7 @@ class Office:
         if act == "cancel_job" and (type(p.get("id")) is not int or p["id"] < 1):
             raise UserError("요청 선택 확인 — 올바른 요청을 선택하세요.")
         sid = None
-        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "merge"):
+        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "merge", "open_path"):
             sid = (p.get("id") or p.get("session") or current_sid()) if act == "merge" else (p.get("session") or current_sid())
             if not valid_sid(sid):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -3818,6 +4094,8 @@ class Office:
                 raise UserError("보낼 내용 필요 — 보낼 내용을 입력하세요.")
             if len(p["text"]) > MAX_TEXT:
                 raise UserError(f"입력 길이 초과 — 한 번에 {MAX_TEXT:,}자까지 보낼 수 있습니다. 내용을 나눠 보내세요.")
+            if act == "job" and p.get("verification", "standard") not in ("quick", "standard", "thorough"):
+                raise UserError("검증 수준 확인 — 빠르게, 기본, 꼼꼼하게 중에서 선택하세요.")
             if act == "job" and p.get("lead", "claude") not in AGENTS:
                 raise UserError("리더 선택 확인 — 리더는 Claude 또는 Codex를 선택하세요.")
             if act == "msg" and p.get("to", "all") not in (*AGENTS, "all"):
@@ -3878,6 +4156,24 @@ class Office:
             with meta(True) as m:
                 for x in [x for x in m["sessions"] if x["deleted"]]:
                     self.purge(m, x)
+        elif act == "resource_limits":
+            cpu, memory = p.get("cpu_percent"), p.get("memory_high_gb")
+            if type(cpu) is not int or not 1 <= cpu <= 100 or type(memory) not in (int, float) or not math.isfinite(memory) or not 0 <= memory <= physical_memory() / 1024**3:
+                raise UserError("리소스 한도 확인 — CPU는 1~100%, 메모리는 이 PC 용량 안에서 설정하세요. 메모리 0은 한도를 끄는 값이에요.")
+            try:
+                with RESOURCE_LOCK:
+                    apply_resource_limits(cpu, memory)
+                    atomic_json(D / "resource-limits.json", {"cpu_percent": cpu, "memory_high_gb": memory})
+                    RESOURCE_CACHE.clear()
+            except (OSError, subprocess.SubprocessError):
+                raise UserError("리소스 제한을 적용하지 못했어요. 이 PC의 사용자 systemd·cgroup 지원을 확인하세요.") from None
+            return {"ok": "새로 시작하는 Linux 작업부터 한도를 적용해요.", "resources": resource_status(refresh=True)}
+        elif act == "open_window":
+            if not hasattr(self, "http_server") or not open_window(self.http_server.server_address[1], app_only=True):
+                raise UserError("앱 창을 열지 못했어요. Chrome이나 Edge 설치를 확인하세요.")
+            return {"ok": "앱 창으로 열었어요."}
+        elif act == "open_path":
+            return open_report_path(p.get("path"), sid)
         elif act == "merge":
             msg = self.merge(sid)
         elif act in ("job", "msg") and self.take_login_code(sid, p["text"]):
@@ -3887,7 +4183,8 @@ class Office:
             with state(True, sid=sid) as s:
                 jid = len(s["jobs"]) + 1
                 s["jobs"].append({"id": jid, "text": p["text"], "lead": p.get("lead", "claude"),
-                                  "status": "planning", "summary": "", "started_at": time.time()})
+                                  "status": "planning", "summary": "", "started_at": time.time(),
+                                  "verification": p.get("verification", "standard")})
                 post(s, "user", "all", p["text"], "request", job=jid)   # 리더만 PLAN으로 깨움, 다른 쪽은 안 깨움
                 event(s, f"요청 {jid} 접수 · 리더 {disp(p.get('lead', 'claude'))}", job=jid)
         elif act == "msg":
@@ -3902,6 +4199,8 @@ class Office:
             self.ensure_team(sid)
             worker = self.teams[sid]["w"][p["agent"]]
             worker.paused = True
+            worker.recovery = None
+            worker.retry_at, worker.retry_due = 0, None
             if worker.status == "working":
                 worker.immediate_pause = True
                 worker.terminate_agent()
@@ -3921,6 +4220,9 @@ class Office:
             if not p.get("paused", not w.paused) and getattr(w, "immediate_pause", False):
                 raise UserError("중단한 프로세스 정리 중 — 중단한 프로세스를 정리 중입니다. 잠시 후 다시 시작하세요.")
             w.paused = p.get("paused", not w.paused)
+            w.recovery = None
+            if w.paused:
+                w.retry_at, w.retry_due = 0, None
             msg = "일시정지함" if w.paused else "재개함"
             if not w.paused:
                 w.error = None
@@ -4304,7 +4606,7 @@ def status_line(office, port, opened=True):
 def status_loop(office, port, opened, interactive):
     print(f"{paint(' Office ', 1, 30, 46)}  {paint(f'http://localhost:{port}/', 4, 36)}")
     print(f"{paint('폴더', 2)}    {ROOT}")
-    print(paint("이 콘솔은 켜 두세요 · 종료 Ctrl+C", 2))
+    print(paint("이 콘솔은 켜 두세요 · 앱 창 다시 열기 R + Enter · 종료 Ctrl+C", 2))
     if not opened:
         print(paint("창을 자동으로 열지 못했어요. 위 주소를 브라우저에서 열어 보세요.", 33))
     print()
@@ -4321,6 +4623,10 @@ def status_loop(office, port, opened, interactive):
                 print("\n".join(lines), flush=True)
             last = key
             i += 1
+            if interactive and sys.stdin.isatty():
+                import select
+                if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower() == "r":
+                    open_window(port, app_only=True)
             office.stop.wait(0.2)
     except KeyboardInterrupt:
         office.shutdown()
@@ -4352,7 +4658,7 @@ def running():
     return info
 
 
-def open_window(port):
+def open_window(port, app_only=False):
     url = f"http://localhost:{port}/"
     for exe in (CHROME, EDGE):
         if Path(exe).exists():
@@ -4362,6 +4668,8 @@ def open_window(port):
                 return True
             except OSError:
                 continue
+    if app_only:
+        return False
     try:
         subprocess.Popen(["explorer.exe", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
@@ -4506,7 +4814,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "bg", "progress", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -4533,6 +4841,10 @@ def main():
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
     x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움. 기본 15분, --pid 를 주면 기한 없음"); x.set_defaults(f=cmd_wait)
+    x = sp.add_parser("need-user", help="사용자에게 필요한 자료·행동을 남기기"); x.add_argument("id", type=int); x.add_argument("text")
+    x.add_argument("--expires-at"); x.set_defaults(f=cmd_need_user)
+    x = sp.add_parser("resolve-user", help="사용자 자료·답 확인 후 작업 재개"); x.add_argument("id", type=int); x.add_argument("text")
+    x.add_argument("--re", type=int); x.set_defaults(f=cmd_resolve_user)
     x = sp.add_parser("bg", help="오래 걸리는 명령을 Office가 관리하는 백그라운드로 실행"); x.add_argument("id", type=int)
     x.add_argument("text", help="무엇을 하는지 짧게"); x.add_argument("command", help="실행할 셸 명령"); x.add_argument("--log", help="로그 파일 (기본: 대화 폴더 bg/)")
     x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움"); x.set_defaults(f=cmd_bg)
