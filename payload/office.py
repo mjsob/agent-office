@@ -3626,6 +3626,56 @@ def limited_command(command):
             "--unit=office-task-" + uuid.uuid4().hex + ".scope", "--", *command]
 
 
+def focus_explorer_path(windows, is_folder):
+    """눌러서 연 경로의 탐색기만 복원하고 앞으로 가져와요."""
+    import base64
+    target = base64.b64encode(windows.encode("utf-8")).decode("ascii")
+    script = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class OfficeFocus {
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);
+ [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);
+ [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+}
+'@
+$target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TARGET__'))
+$folder = __FOLDER__
+function Normalize($p) { ($p -replace '\\+', '\').TrimEnd('\') }
+$shell = New-Object -ComObject Shell.Application
+for ($i=0; $i -lt 25; $i++) {
+ foreach ($w in @($shell.Windows())) {
+  try {
+   $match = if ($folder) { (Normalize $w.Document.Folder.Self.Path) -eq (Normalize $target) }
+            else { @($w.Document.SelectedItems() | ForEach-Object { Normalize $_.Path }) -contains (Normalize $target) }
+   if (!$match) { continue }
+   $h = [IntPtr]([long]$w.HWND)
+   if ([OfficeFocus]::IsIconic($h)) { [void][OfficeFocus]::ShowWindowAsync($h,9) }
+   [OfficeFocus]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
+   [OfficeFocus]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
+   [void][OfficeFocus]::SetForegroundWindow($h)
+   Start-Sleep -Milliseconds 60
+   if ([OfficeFocus]::GetForegroundWindow() -eq $h) { Write-Output 'focused'; exit 0 }
+  } catch { }
+ }
+ Start-Sleep -Milliseconds 100
+}
+exit 1
+'''.replace("__TARGET__", target).replace("__FOLDER__", "$true" if is_folder else "$false")
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    try:
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=10, cwd="/mnt/c")
+        return result.returncode == 0 and b"focused" in result.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def open_report_path(raw, sid):
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
         raise UserError("경로 확인 — 열 파일이나 폴더 경로를 확인하세요.")
@@ -3648,6 +3698,8 @@ def open_report_path(raw, sid):
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")
     except (OSError, ValueError, subprocess.SubprocessError):
         raise UserError("경로를 열지 못했어요. 경로와 WSL 연결을 확인하거나 경로를 복사하세요.") from None
+    if not focus_explorer_path(windows, path.is_dir()):
+        raise UserError("탐색기는 열렸지만 창을 앞으로 가져오지 못했어요. 작업 표시줄에서 탐색기를 선택하세요.")
     return {"ok": "탐색기에서 경로를 열었어요."}
 
 
