@@ -427,19 +427,27 @@ body > footer { grid-row: 3; }
   .update-notice { left: 12px; right: 12px; width: auto; top: calc(var(--office-header-height, 52px) + 8px); max-height: calc(100dvh - var(--office-header-height, 52px) - 20px); padding: 16px; }
 }
 /* 입력 */
-footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 8px; }
-.bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px 12px; display: grid; gap: 6px; }
+/* 입력 상자 하나 안에 글 쓰는 칸 + 아래 도구 줄(보낼 대상 · 요청 옵션 · 보내기) */
+.composer { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); display: grid; }
+.composer:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ctools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 0 8px 8px; }
+.jobopts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.jobopts[hidden] { display: none; }
+#modes button { gap: 0; }   /* '모두'+'에게' 사이 버튼 기본 간격 없애기 */
+.ctools .sep { width: 1px; align-self: stretch; margin: 4px 0; background: var(--line); }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; gap: 2px; }
 .seg button { border: 0; border-radius: 7px; padding: 4px 10px; color: var(--muted); }
 .seg button.on { background: var(--accent); color: var(--on-accent); }
 #verify button { padding: 4px 8px; }
-.lead { margin-left: 4px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.lead { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 select { font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
-.inrow { display: flex; gap: 8px; align-items: stretch; }
-#tlsec, .inrow textarea { min-width: 0; }
+#tlsec, .composer textarea { min-width: 0; }
 textarea { flex: 1; resize: none; height: 56px; font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.send { background: var(--accent); color: var(--on-accent); border-color: var(--accent); padding: 0 16px; }
+.composer textarea { border: 0; background: transparent; padding: 10px 12px 6px; }
+.composer textarea:focus { outline: 0; }
+.send { background: var(--accent); color: var(--on-accent); border-color: var(--accent); padding: 6px 14px; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .send:hover { background: var(--accent); opacity: .88; }
 .hint { font-size: 11.5px; color: var(--faint); }
 @media (max-width: 1300px) { main { grid-template-columns: 190px 1fr 300px; } }
@@ -454,15 +462,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   main > .side { right: 0; }
   body.show-sessions main > .sessions, body.show-side main > .side { display: flex; flex-direction: column; }
   body.show-side main > .side { display: block; }
-  .lead { margin-left: 0; }
 }
 /* 아주 좁은 화면(폰 폭): 헤더는 꼭 필요한 버튼만, 글자 버튼은 아이콘으로 */
 @media (max-width: 600px) {
   header { gap: 8px; padding: 8px 10px; }
   header .root, #quit .lbl { display: none; }
   footer { padding: 8px 10px 10px; }
-  .send { padding: 0 12px; }
-  .send .lbl { display: none; }
+  .send { padding: 6px 10px; }
+  .send .lbl, #modes .to, .ctools .sep { display: none; }
+  .seg button { padding: 4px 8px; }
   .msg { max-width: 92%; }
 }
 /* ── 길이가 바뀌는 문구는 길어질 걸 전제로: '제목 — 상세'는 제목 굵게 한 줄 + 상세 아랫줄, 짧은 메타는 한 줄 고정 ── */
@@ -560,25 +568,28 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 </main>
 
 <footer>
-  <div class="bar">
-    <div class="seg" id="modes" role="group" aria-label="보낼 대상">
-      <button class="on" data-m="job">모두에게</button>
-      <button data-m="claude">Claude에게</button>
-      <button data-m="codex">Codex에게</button>
-    </div>
-    <label class="lead" id="leadBox">리더
-      <select id="lead"><option value="claude">Claude</option><option value="codex">Codex</option></select>
-    </label>
-    <div class="lead" id="verifyBox">검증
-    <div class="seg" id="verify" role="group" aria-label="검증">
-      <button data-v="quick" title="빠르게 · 요청한 결과와 핵심 동작만 확인">빠르게</button>
-      <button data-v="standard" title="기본 · 핵심 동작과 영향 받는 부분까지 확인">기본</button>
-      <button data-v="thorough" title="꼼꼼하게 · 예외 사례와 독립 검수까지 확인 · 시간이 더 걸려요">꼼꼼하게</button>
-    </div></div>
-  </div>
-  <div class="inrow">
+  <div class="composer">
     <textarea id="input" aria-label="메시지 입력"></textarea>
-    <button class="send" id="send" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
+    <div class="ctools">
+      <div class="seg" id="modes" role="group" aria-label="보낼 대상">
+        <button class="on" data-m="job" title="Claude·Codex 둘 다에게">모두<span class="to">에게</span></button>
+        <button data-m="claude">Claude<span class="to">에게</span></button>
+        <button data-m="codex">Codex<span class="to">에게</span></button>
+      </div>
+      <div class="jobopts" id="jobOpts">
+        <span class="sep" aria-hidden="true"></span>
+        <label class="lead" id="leadBox">리더
+          <select id="lead"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+        </label>
+        <div class="lead" id="verifyBox">검증
+        <div class="seg" id="verify" role="group" aria-label="검증">
+          <button data-v="quick" title="빠르게 · 요청한 결과와 핵심 동작만 확인">빠르게</button>
+          <button data-v="standard" title="기본 · 핵심 동작과 영향 받는 부분까지 확인">기본</button>
+          <button data-v="thorough" title="꼼꼼하게 · 예외 사례와 독립 검수까지 확인 · 시간이 더 걸려요">꼼꼼하게</button>
+        </div></div>
+      </div>
+      <button class="send" id="send" aria-label="보내기"><svg class="i"><use href="#i-send"/></svg><span class="lbl">보내기</span></button>
+    </div>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
@@ -634,7 +645,7 @@ function setMode(m) {
   localStorage.officeMode = m;
   document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-pressed", b.dataset.m === m); });
   $("#input").placeholder = PH[m];
-  $("#leadBox").style.visibility = $("#verifyBox").style.visibility = m === "job" ? "visible" : "hidden";
+  $("#jobOpts").hidden = m !== "job";   // 리더·검증은 새 요청에만 쓰니 개인 메시지 땐 자리째 숨김
   $("#hint").textContent = HINT[m];
   $("#input").focus();
 }
