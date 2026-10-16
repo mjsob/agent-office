@@ -78,7 +78,9 @@ main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
 .sitem.on .stitle { font-weight: 600; }
 .sitem .ssub { font-size: 11px; color: var(--faint); display: flex; gap: 6px; align-items: center; }
 .sitem .ssub .live { color: var(--ok); }
-.sitem .ssub .live.waiting { color: var(--muted); }
+.sitem .ssub .live.waiting, .sitem .ssub .live.ask { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px 1px 5px; border-radius: 99px; font-weight: 600; }
+.sitem .ssub .live.waiting { background: var(--wait-soft); color: var(--wait); }
+.sitem .ssub .live.ask { background: var(--warn-soft); color: var(--warn); }
 .sitem .acts { display: none; }
 .sitem:hover .acts, .sitem.on .acts { display: flex; }
 .sitem .acts button { padding: 3px; }
@@ -981,14 +983,16 @@ function ago(t) {
 
 // 대화 목록의 요청 상태: 서버가 status_counts/status_kind 를 주면 실제 상태별로, 없으면(구서버) 기존 '진행 중'
 function sessionStatusHtml(x) {
-  if (!x.open) return x.needs_user > 0 ? `<span class="live waiting">확인 필요 ${x.needs_user}</span>` : "";
+  const ask = x.needs_user > 0 ? `<span class="live ask" title="사용자 확인을 기다리는 요청이 있어요">확인 필요 ${x.needs_user}</span>` : "";
+  if (!x.open) return ask;
   const c = x.status_counts;
   if (!c) return ask + `<span class="live">진행 중 ${x.open}</span>`;
   const names = {working: "작업 중", waiting: "기다리는 중", planning: "계획 중", review: "확인 중"};
-  const ask = x.needs_user > 0 ? `<span class="live waiting" title="사용자 확인을 기다리는 요청이 있어요">확인 필요 ${x.needs_user}</span>` : "";
   const parts = ["working", "waiting", "planning", "review"].filter(k => c[k] > 0).map(k => `${names[k]} ${c[k]}`);
   const why = x.status_reason ? ` title="${esc(x.status_reason)}"` : "";
-  return ask + `<span class="live ${x.status_kind === "waiting" ? "waiting" : ""}"${why}>${esc(parts.join(" · ") || `진행 중 ${x.open}`)}</span>`;
+  // 기다리기만 하는 대화는 쉬는 대화(시각만 보임)와 한눈에 구분되게 보라색 칩 + 시계 아이콘
+  const waiting = x.status_kind === "waiting";
+  return ask + `<span class="live ${waiting ? "waiting" : ""}"${why}>${waiting ? icon("waiting", "sm") : ""}${esc(parts.join(" · ") || `진행 중 ${x.open}`)}</span>`;
 }
 function renderSessions(list, cur) {
   window._sessions = list;
