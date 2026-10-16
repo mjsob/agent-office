@@ -175,7 +175,7 @@ def atomic_json(path, value, validator=None):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                          prefix=path.name + ".", suffix=".tmp", delete=False) as f:
             temporary = Path(f.name)
-            f.write(payload); f.flush(); os.fsync(f.fileno())
+            f.write(payload); f.flush()   # fsync 는 하지 않음: 디스크가 바쁠 때 잠금을 쥔 채 수 초씩 멈추던 원인. 직전 정상본(.bak)으로 복구함
         temporary.replace(path)
         temporary = None
     except (OSError, ValueError) as error:
@@ -1090,6 +1090,14 @@ def cmd_progress(a):
     if a.done is not None and a.done < 0 or a.total is not None and a.total < 0:
         raise UserError("입력 내용 확인 — 개수는 0 이상으로 적어 주세요.")
     resume_at = parse_resume_at(a.resume_at)
+    # 설명 글자만 바뀐 잦은 갱신(몇 초마다)은 저장하지 않음: 저장마다 상태 파일 잠금을 쥐어 화면 조회와 대화 전환이 늦어짐
+    try:
+        previous = next((x.get("progress") for x in state_view(current_sid())["tasks"] if x["id"] == task_id), None) or {}
+    except (StorageError, OSError, KeyError, TypeError):
+        previous = {}
+    if (previous and not a.notify and getattr(a, "state", None) is None and time.time() - previous.get("at", 0) < 5
+            and previous.get("done") == a.done and previous.get("total") == a.total and previous.get("resume_at") == resume_at):
+        return print(f"#{task_id} 진행 기록 생략 · 5초 안에 이미 기록함")
     with state(True) as s:
         t = find(s, task_id)
         if t["status"] == "done":
