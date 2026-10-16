@@ -1352,8 +1352,10 @@ function threadHtml(t) {
   const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
   const live = status && status !== "done";
   const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div>${readNote(t.req)}</div>` : "";
-  const progress = t.steps.filter(m => m.kind === "progress");
-  const steps = t.steps.filter(m => m.kind !== "progress" && !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
+  // 진행 알림은 가장 최근 한 줄만 밖에 두고, 지난 것은 진행 과정 안에 접어 둠
+  const allProgress = t.steps.filter(m => m.kind === "progress");
+  const progress = allProgress.slice(-1);
+  const steps = t.steps.filter(m => !progress.includes(m) && !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
   const sum = `<span class="pill ${status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (${j.acting_reason === "busy" ? "바빠서" : "멈춰서"} ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
   // 진행 중이면 가운데에서 바로: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
