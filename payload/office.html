@@ -290,6 +290,8 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 #resbox { font-size: 12px; color: var(--muted); margin: 10px 0; }
 #resbox .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 #resbox input[type=range] { flex: 1; }
+#resbox details { margin-top: 6px; }
+#resbox summary { cursor: pointer; }
 #resbox input[type=number] { width: 64px; }
 .job .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 .pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
@@ -1756,17 +1758,28 @@ function renderResources(r) {
   if (box.contains(document.activeElement)) return;
   const sig = JSON.stringify(r);
   if (sig === lastResSig) return;
+  const wasOpen = box.querySelector("details")?.open;
   lastResSig = sig; box.hidden = false;
-  if (!r.supported) { box.innerHTML = `<b>리소스 한도</b><div>이 PC에서는 쓸 수 없어요${r.reason ? ` · ${esc(r.reason)}` : ""}</div>`; return; }
+  if (!r.supported) { box.innerHTML = `<b>컴퓨터 사용량 제한</b><div>이 PC에서는 쓸 수 없어요</div><details><summary>이유 보기</summary><div>${esc(r.reason || "")}</div></details>`; return; }
   const gb = x => x == null ? "-" : (x / 1024 ** 3).toFixed(1) + "GB";
   const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
-  box.innerHTML = `<b>리소스 한도</b>
-    <div class="row">CPU <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
-    <div class="row">메모리 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB <span>0은 제한 없음</span></div>
-    <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>지금 ${r.cpu_usage_percent == null ? "-" : Math.round(r.cpu_usage_percent) + "%"} · ${gb(r.memory_current_bytes)}</span></div>
-    <div>CPU ${r.cpu_percent}% = 논리 코어 ${r.logical_cpus ?? "-"}개 기준 ${r.cpu_quota_percent ?? "-"}%${r.reason ? ` · ${esc(r.reason)}` : ""}</div>
-    <div>${esc(r.applies_to || "")} 부터 적용해요. 다음은 제어하지 못해요: ${esc(r.uncontrolled || "")}</div>`;
+  const now = r.cpu_usage_percent == null ? "" : `지금 CPU ${Math.round(r.cpu_usage_percent)}% · 메모리 ${gb(r.memory_current_bytes)} 쓰는 중`;
+  box.innerHTML = `<b>컴퓨터 사용량 제한</b>
+    <div>에이전트가 컴퓨터를 너무 많이 쓰지 않게 해요.</div>
+    <div class="row">CPU 최대 <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
+    <div class="row"><button onclick="setResCpu(30)">여유롭게</button><button onclick="setResCpu(60)">균형</button><button onclick="setResCpu(100)">빠르게</button></div>
+    <div class="row">메모리 최대 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB</div>
+    <div>0이면 제한하지 않아요. 넘으면 일을 천천히 해요.</div>
+    <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>${now}</span></div>
+    <div>지금 시작하는 작업부터 적용돼요.</div>
+    <details><summary>자세히 보기</summary>
+      <div>CPU ${r.cpu_percent}%는 컴퓨터 전체(코어 ${r.logical_cpus ?? "-"}개) 기준이에요.</div>
+      <div>적용 대상: ${esc(r.applies_to || "")}</div>
+      <div>제한하지 못하는 것: ${esc(r.uncontrolled || "")}</div>
+    </details>`;
+  if (wasOpen) box.querySelector("details").open = true;
 }
+function setResCpu(v) { $("#resCpu").value = v; $("#resCpuV").textContent = v + "%"; }
 async function applyResources() {
   lastResSig = "";
   await api({action: "resource_limits", cpu_percent: +$("#resCpu").value, memory_high_gb: +$("#resMem").value});
