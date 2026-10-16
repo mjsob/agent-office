@@ -1879,7 +1879,7 @@ function refresh() {
 const safe = (name, f) => { try { f(); return true; } catch (e) { console.error(name, e); return false; } };
 const headlessClient = /HeadlessChrome/i.test(navigator.userAgent);
 const clientId = headlessClient ? "" : crypto.randomUUID();
-let officeClosed = false, clientReady = headlessClient;
+let officeClosed = false, clientReady = headlessClient, serverInstance = null;
 function closeOfficeWindow(updating = updateState.state === "restarting") {
   if (officeClosed) return;
   officeClosed = true;
@@ -1931,6 +1931,11 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
+  // 처음 연결한 서버와 다른 서버가 응답하면 다시 시작된 것: 새 서버가 연 창만 남기고 이 창은 닫음 (식별자를 안 주는 옛 서버는 그대로)
+  if (!headlessClient && typeof s.server_instance === "string" && s.server_instance) {
+    serverInstance ??= s.server_instance;
+    if (s.server_instance !== serverInstance) { closeOfficeWindow(true); return; }
+  }
   if (seq >= appliedSeq) safe("update", () => renderUpdate(s.update));
   if (s.closing === true || (!headlessClient && s.owner === false)) { closeOfficeWindow(); return; }
   if (s.unchanged && new Date().toDateString() !== lastDay) { lastRev = null; return; }   // 자정 지남: 다음 조회에서 전체를 받아 날짜 표시를 다시 그림
