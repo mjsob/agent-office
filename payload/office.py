@@ -3643,7 +3643,7 @@ def open_report_path(raw, sid):
         windows = result.stdout.strip()
         if not windows:
             raise ValueError("empty path")
-        args = ["explorer.exe", windows] if path.is_dir() else ["explorer.exe", "/select," + windows]
+        args = ["explorer.exe", windows] if path.is_dir() else ["explorer.exe", "/select,", windows]
         # Explorer may return 1 after handing the request to an existing window.
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")
     except (OSError, ValueError, subprocess.SubprocessError):
