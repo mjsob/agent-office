@@ -577,7 +577,7 @@ function doingText(doing) {
 const JOBST = {planning: "계획 세우는 중", working: "작업 중", review: "결과 확인 중", waiting: "기다리는 중", done: "완료"};
 // 남은 작업이 기다리는 상태라면 요청도 완료로 보이지 않게 표시해요.
 function jobStatus(j, tasks = lastTasks) {
-  if (j.display_status && j.display_status !== "done") return j.display_status;   // 서버가 실제 실행 상태로 계산한 값
+  if (j.display_status) return j.display_status;   // 서버가 실제 실행 상태로 계산한 값
   const open = tasks.filter(t => t.job === j.id && t.status !== "done");
   if (!j.cancelled && open.length && open.every(t => t.status === "waiting")) return "waiting";
   return j.status === "done" && open.length && !j.cancelled ? "working" : j.status;
@@ -1382,7 +1382,7 @@ function taskProgressText(t) {
     resume = left > 0 ? `${at} 다시 시작 · ${left < 60 ? "1분 이내" : Math.ceil(left / 60) + "분 뒤"}` : p.at > p.resume_at ? "" : `${at} 다시 시작할 시각이 지났어요 · 새 기록을 기다려요`;
   }
   let remaining = "";
-  if (finite(p.total) && p.total > 0 && finite(p.done) && p.done < p.total && t.status !== "done" && !(p.resume_at > Date.now() / 1000)) {
+  if (finite(p.total) && p.total > 0 && finite(p.done) && p.done < p.total && t.status !== "done" && p.state !== "waiting" && t.wait_kind !== "waiting" && !(p.resume_at > Date.now() / 1000)) {
     const seconds = finite(p.since) && finite(p.since_done) && finite(p.at) && p.done > p.since_done && p.at - p.since >= 60
       ? (p.total - p.done) * (p.at - p.since) / (p.done - p.since_done) : NaN;
     const minutes = Math.max(1, Math.ceil(seconds / 60));
@@ -1399,7 +1399,7 @@ function taskProgressHtml(t) {
 function renderBoard(jobs, tasks, resv = [], cur = "") {
   // 작업 번호는 '요청번호-순번'(3-1)으로: '요청 3'과 '작업 #3'이 헷갈리던 문제. 원래 번호는 툴팁에
   const taskRow = (t, i) => `<div class="task ${t.status} ${t.wait_alive === false ? "wait-stopped" : ""}">${icon(t.status)}
-    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}${t.level ? `<small class="task-level">${esc({light:"가벼움",normal:"보통",heavy:"집중"}[t.level] || t.level)}</small>` : ""}</span>${t.status === "waiting" ? `<span class="note">${t.wait_alive === false ? "백그라운드 작업이 멈췄어요" : t.wait_kind === "waiting" ? "기다리는 중" : t.wait_kind === "working" || t.wait_alive === true ? "백그라운드 실행 중" : "기다리는 중"}${t.wait_detail ? ` · ${esc(t.wait_detail)}` : ""}${t.wait_log_at ? ` · 마지막 기록 ${ago(t.wait_log_at)}` : ""}${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}${taskProgressHtml(t)}</span>
+    <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}${t.level ? `<small class="task-level">${esc({light:"가벼움",normal:"보통",heavy:"집중"}[t.level] || t.level)}</small>` : ""}</span>${t.status === "waiting" ? `<span class="note">${t.wait_alive === false && !t.wait_detail ? "백그라운드 작업이 멈췄어요" : t.wait_kind === "waiting" ? "기다리는 중" : t.wait_kind === "working" || t.wait_alive === true ? "백그라운드 실행 중" : "기다리는 중"}${t.wait_detail ? ` · ${esc(t.wait_detail)}` : ""}${t.wait_log_at ? ` · 마지막 기록 ${ago(t.wait_log_at)}` : ""}${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}${taskProgressHtml(t)}</span>
     <span class="pill ${t.owner || ""}">${t.owner ? nm(t.owner) : "미배정"}</span></div>`;
   const orphan = tasks.filter(t => !t.job);
   // 진행 중인 요청만 카드로. 끝난 건 접어둔 한 줄 목록 (결과 보고는 대화창에 이미 있음)
@@ -1535,6 +1535,9 @@ function updateLiveBars(agents) {
     if (job && jobStatus(job) === "waiting") {
       const reasons = [...new Set((job.display_reason ? [job.display_reason] : jt.filter(t => t.status === "waiting").map(t => t.wait_detail || t.wait_reason).filter(Boolean)))];
       parts.unshift((jt.some(t => t.status === "waiting" && t.wait_alive !== false && (t.wait_kind ? t.wait_kind === "working" : t.wait_alive === true)) ? "백그라운드 실행 중" : "기다리는 중") + (reasons.length ? " · " + reasons.join(" · ") : ""));
+    }
+    if (job && jobStatus(job) === "working" && job.display_reason && !parts.length) {
+      parts.push("백그라운드 실행 중 · " + job.display_reason);
     }
     const progressing = jt.filter(t => t.status !== "done" && taskProgressText(t));
     const since = +el.dataset.since;   // 요청 시각(날짜 포함): 자정을 넘겨도 경과 시간이 맞게

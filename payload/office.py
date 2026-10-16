@@ -824,6 +824,65 @@ def wait_probe(t):
     return alive, log_at
 
 
+def task_wait_status(t, now=None):
+    """차례 대기와 실제 백그라운드 실행을 나눠요. PID 생존보다 명시한 대기 상태를 우선해요."""
+    now = time.time() if now is None else now
+    alive, log_at = wait_probe(t)
+    progress = t.get("progress") or {}
+    detail = progress.get("text") or t.get("wait_reason") or "다음 차례를 기다려요."
+    if alive is False:
+        try:
+            rc = int(Path(t["wait_rc"]).read_text().strip()) if t.get("wait_rc") else None
+        except (OSError, ValueError):
+            rc = None
+        detail = ("백그라운드 작업이 끝나 결과 확인을 기다려요." if rc == 0 else
+                  f"백그라운드 작업이 실패했어요. 종료 코드는 {rc}예요." if rc is not None else
+                  "백그라운드 작업이 멈춰 확인을 기다려요.")
+        kind = "waiting"
+    elif progress.get("resume_at") and progress["resume_at"] > now:
+        kind = "waiting"
+    elif progress.get("state") == "waiting":
+        kind = "waiting"
+    else:
+        kind = "working" if alive else "waiting"
+    return {"wait_alive": alive, "wait_log_at": log_at, "wait_kind": kind, "wait_detail": detail}
+
+
+def job_display_status(job, tasks, workers=None, now=None):
+    """저장한 업무 단계와 현재 실행 상태를 구분해요. 작업 이력은 바꾸지 않아요."""
+    pending = [t for t in tasks if t.get("job") == job["id"] and t.get("status") != "done"]
+    if job.get("cancelled") or job["status"] == "done" and not pending:
+        return "done", ""
+    active = [w for w in (workers or {}).values() if w.get("status") == "working"
+              and not w.get("error")
+              and (w.get("doing") or {}).get("job") == job["id"]]
+    if active:
+        return job["status"] if job["status"] in ("planning", "review") else "working", ""
+    waits = [t for t in pending if t.get("status") == "waiting"]
+    states = [task_wait_status(t, now) for t in waits]
+    if any(t["wait_kind"] == "working" for t in states):
+        return "working", next(t["wait_detail"] for t in states if t["wait_kind"] == "working")
+    reasons = list(dict.fromkeys(t["wait_detail"] for t in states if t["wait_detail"]))
+    if pending and len(waits) == len(pending):
+        return "waiting", " · ".join(reasons)
+    # 아직 담당 차례가 오지 않았거나, 다른 작업을 처리하고 있어요.
+    return "waiting", " · ".join(reasons) or "담당자가 시작할 차례를 기다려요."
+
+
+def session_display_status(record, workers=None, now=None):
+    counts = dict.fromkeys(("working", "waiting", "planning", "review"), 0)
+    reasons = []
+    for job in record.get("jobs", []):
+        kind, detail = job_display_status(job, record.get("tasks", []), workers, now)
+        if kind in counts:
+            counts[kind] += 1
+        if detail and detail not in reasons:
+            reasons.append(detail)
+    kind = next((k for k in ("working", "review", "planning", "waiting") if counts[k]), "done")
+    return {"open": sum(counts.values()), "status_counts": counts, "status_kind": kind,
+            "status_reason": " · ".join(reasons)}
+
+
 def live_bg_watch(t):
     """작업에 걸린 백그라운드 프로세스가 아직 살아 있으면 그 감시 필드를 돌려준다(다시 wait·claim 해도 감시가 안 풀리게)"""
     if not t.get("wait_pid") or not wait_probe(t)[0]:
@@ -888,7 +947,7 @@ def progress_text(p, with_age=True):
     now, bits = time.time(), []
     if p.get("total"):
         bits.append(f"{p.get('done') or 0}/{p['total']} ({int(100 * (p.get('done') or 0) / p['total'])}%)")
-        if (p.get("done") or 0) < p["total"] and not (p.get("resume_at") and p["resume_at"] > now):   # 쉬는 중엔 남은 시간을 안 냄
+        if (p.get("done") or 0) < p["total"] and p.get("state") != "waiting" and not (p.get("resume_at") and p["resume_at"] > now):   # 쉬는 중엔 남은 시간을 안 냄
             left = progress_remaining(p)
             bits.append(remaining_text(left) if left is not None else "남은 시간 산정 중")
     elif p.get("done") is not None:
@@ -944,7 +1003,8 @@ def cmd_progress(a):
         old = t.get("progress") or {}
         now = time.time()
         p = {"text": text or old.get("text") or "", "done": a.done if a.done is not None else old.get("done"),
-             "total": a.total if a.total is not None else old.get("total"), "resume_at": resume_at, "at": now}
+             "total": a.total if a.total is not None else old.get("total"), "resume_at": resume_at, "at": now,
+             "state": getattr(a, "state", None) or old.get("state")}
         # 남은 시간 계산용 측정 시작점. 전체 개수가 바뀌거나 개수가 줄면(새로 시작) 다시 잰다
         keep = (old.get("since") and old.get("since_done") is not None and p["done"] is not None
                 and p["total"] == old.get("total") and p["done"] >= old["since_done"])
@@ -1398,6 +1458,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
 - 몇 분 넘게 걸리는 수집·다운로드·빌드는 `office bg ID "설명" "명령"`으로 띄우고 차례를 끝내라. nohup·&·실행 도구의 백그라운드 기능은 차례가 끝날 때 같이 죽는다. 끝나면 서버가 깨우니 `office claim ID`로 다시 시작한다. 이미 따로 띄운 프로세스는 `office wait ID "사유" --pid N --log 파일`로 감시를 건다.
 - 수십 분 넘게 도는 수집·반복 작업은 사용자가 묻지 않아도 '몇 개 중 몇 개 했고, 쉬는 중이면 언제 다시 시작하는지' 화면에서 보이게 해라. 스크립트가 진행이 바뀔 때마다 `office progress --done N --total M "상태"`(쉬는 중이면 `--resume-at`)를 부르게 만들고, 쉬기 시작·다시 시작·끝처럼 상태가 바뀔 때만 `--notify` 를 붙인다.
+- 실제 처리와 입력·선행 작업 대기를 구분해 `office progress --state working|waiting "상태"`로 기록한다. 감시 프로세스가 살아 있어도 선행 다운로드·사용자 입력을 기다리면 waiting, 처리가 시작되면 working으로 바꾼다.
 - 사용자한테는 꼭 필요한 결정만 물어라. 웬만한 건 둘이 정해서 끝내라.
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
@@ -3601,20 +3662,27 @@ class Office:
         with state(sid=cur) as s:
             data = dict(s)
         data["tasks"] = [dict(t) for t in data.get("tasks", [])]
+        display_now = time.time()
+        def worker_status(session):
+            return {n: {"status": w.status, "doing": w.doing, "paused": w.paused, "error": w.error}
+                    for n, w in self.teams.get(session, {}).get("w", {}).items()}
         for t in data["tasks"]:
             if t["status"] == "waiting":
-                t["wait_alive"], t["wait_log_at"] = wait_probe(t)
+                t.update(task_wait_status(t, display_now))
+        data["jobs"] = [dict(j) for j in data.get("jobs", [])]
+        for j in data["jobs"]:
+            j["display_status"], j["display_reason"] = job_display_status(j, data["tasks"], worker_status(cur), display_now)
         with meta() as m:
             sessions = [dict(x) for x in m["sessions"]]
         notice = {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
             try:
                 st = read_json_file(sdir(x["id"]) / "state.json", {}, state_valid)
-                x["open"] = sum(j["status"] != "done" for j in st.get("jobs", []))
+                x.update(session_display_status(st, worker_status(x["id"]), display_now))
                 notice[x["id"]] = last_notice(st.get("msgs", []))
             except (OSError, ValueError, StorageError) as error:
                 server_log("snapshot.session", error)
-                x["open"] = 0
+                x.update(open=0, status_counts={}, status_kind="done", status_reason="")
                 notice[x["id"]] = 0
         # 알림 점: 사용자에게 온 보고·메시지·요청 완료가 있는데 아직 안 본 대화. 보고 있는 대화는 본 것으로 처리
         if any("seen" not in x or (x["id"] == cur and x["seen"] < notice[x["id"]]) for x in sessions):
@@ -4466,6 +4534,7 @@ def main():
     x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움"); x.set_defaults(f=cmd_bg)
     x = sp.add_parser("progress", help="오래 도는 작업의 진행 남기기 (화면에 늘 보임)")
     x.add_argument("words", nargs="*", help="[작업 ID] 지금 상태 한 줄"); x.add_argument("--done", type=int); x.add_argument("--total", type=int)
+    x.add_argument("--state", choices=("working", "waiting"), help="실제 실행 중인지, 입력·다른 작업을 기다리는지 지정")
     x.add_argument("--resume-at", help="쉬는 중이면 다시 시작할 시각 (20:10, +15m, ISO)")
     x.add_argument("--notify", action="store_true", help="사용자에게도 한 줄 알림 (상태가 바뀔 때만)"); x.set_defaults(f=cmd_progress)
     x = sp.add_parser("handoff"); x.add_argument("id", type=int); x.add_argument("--to", choices=AGENTS, required=True)
