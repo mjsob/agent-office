@@ -154,6 +154,7 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .pulse { margin: 0 12px 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .pulse::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
 /* 오래 조용한 건 오류가 아님(긴 생각·긴 명령 실행 중) — 경고색 없이 차분하게. 진짜 오류는 서버가 error/notice로 따로 알림 */
+.readnote { margin: 6px 0 0; font-size: 11.5px; color: var(--faint); word-break: keep-all; }
 .pulse.quiet { color: var(--muted); }
 .pulse.quiet::before { background: var(--faint); }
 .agent details.subs { margin: 0 12px 6px; }
@@ -1097,7 +1098,7 @@ function renderAgents(agents) {
           <div class="how">${esc(h.how(n, a))}</div>
           <details class="raw"><summary>원문 보기</summary><code>${esc(friendlyErr(a.error))}</code></details></div></div>`)(errHelp(n, a)) : ""}
       ${a.notice && !a.error ? (([h, d]) => `<div class="agnote"><b>${esc(h)}</b>${d ? `<div class="how">${esc(d)}</div>` : ""}</div>`)(splitMsg(a.notice)) : ""}
-      ${a.status === "working" ? `<div class="pulse" hidden data-output="${Number(a.last_output) || 0}" data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}"></div>` : ""}
+      ${a.status === "working" ? `<div class="pulse" hidden data-output="${Number(a.last_output) || 0}" data-last="${esc(a.activity?.at(-1)?.ts || "")}" data-since="${a.since}" data-live="${esc(JSON.stringify({tool: a.tool || null, gen: a.gen || null}))}"></div>` : ""}
       ${(a.subs || []).length ? `<details class="fold subs" data-a="sub-${n}" ${openAgent.has("sub-" + n) ? "open" : ""}>
         <summary>${icon("chevron", "sm")}<span class="subchip">보조 ${a.subs.length}개 돌리는 중</span></summary>
         ${a.subs.map(x => `<div class="subrow"><span class="dot working" style="background:var(--${n})"></span><span class="tx">${esc(x.desc || "보조 작업")}</span><span class="ts" data-since="${x.since}">${elapsed(x.since)}</span></div>`).join("")}</details>` : ""}
@@ -1191,6 +1192,8 @@ const fold = (key, summary, body, cls = "") => `<details class="fold ${cls}" dat
 const noticeLinks = s => esc(s).replace(/https:\/\/(?:(?!&(?:quot|#39|lt|gt);)[^\s<])+/g,
   url => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
 
+const readNote = m => m.from === "user" && Number.isFinite(m.id) && m.at
+  ? `<div class="readnote" hidden data-mid="${m.id}" data-at="${m.at}" data-to="${esc(m.to || "all")}"></div>` : "";
 function msgHtml(m, compact) {
   if (m.kind === "progress") return `<div class="user-progress">${esc(NAME[m.from] || "Office")} · ${esc(m.text)}</div>`;
   if (m.kind === "event") {
@@ -1212,7 +1215,7 @@ function msgHtml(m, compact) {
   // 결과 카드는 kind=report만. job 필드 없는 예전 기록은 에이전트→사용자 메시지를 보고로 추정
   const report = m.kind === "report" || (!("job" in m) && m.from !== "user" && m.to === "user");
   const ask = !report && m.from !== "user" && m.to === "user";
-  return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(when(m))}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div></div>`;
+  return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(when(m))}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div>${readNote(m)}</div>`;
 }
 
 // 대화창을 요청 단위로 묶음: 요청 → (진행 과정은 접어둠) → 결과 보고
@@ -1266,7 +1269,7 @@ function threadHtml(t) {
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
   const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
   const live = status && status !== "done";
-  const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div></div>` : "";
+  const req = t.req ? `<div class="msg user"><div class="who">나<span class="pill">요청 ${j.id}</span><span class="ts">${esc(when(t.req))}</span></div><div class="body">${md(t.req.text)}</div>${readNote(t.req)}</div>` : "";
   const progress = t.steps.filter(m => m.kind === "progress");
   const steps = t.steps.filter(m => m.kind !== "progress" && !(m.kind === "event" && /^요청 \d+ (접수|완료)/.test(m.text)));
   const sum = `<span class="pill ${status || ""}">${st}</span>${j.lead ? `리더 ${nm(j.lead)}${j.acting_lead ? ` (${j.acting_reason === "busy" ? "바빠서" : "멈춰서"} ${nm(j.acting_lead)} 대행 중)` : ""} · ` : ""}진행 과정 ${steps.length}건${live ? '<span class="dot working"></span>' : ""}`;
@@ -1427,8 +1430,20 @@ const quietSecs = (ts, since) => Math.min(secsAgo(ts) ?? Infinity, Math.max(0, D
 const dur = d => d < 60 ? `${Math.floor(d)}초` : d < 3600 ? `${Math.floor(d / 60)}분` : `${Math.floor(d / 3600)}시간`;
 // 평소엔 숨기고, 1분 넘게 조용할 때만 '멈췄나?'를 알 수 있게 띄움
 const pulseText = d => `마지막 활동 ${dur(d)} 전`;
+// 지금 하는 일 한 줄: 결과를 기다리는 명령, Claude가 쓰는 글·생각·도구 입력. 둘 다 없으면 ""
+function liveText(a) {
+  const now = Date.now() / 1000, t = a?.tool, g = a?.gen;
+  if (t) return `명령 실행 중 ${dur(Math.max(0, now - t.since))} · ${String(t.label || "").replace(/^(Bash|\$) ?:? ?/, "").slice(0, 60)}`;
+  if (g) return g.kind === "thinking" ? `생각 중 ${dur(Math.max(0, now - g.since))}`
+    : g.kind === "text" ? `답 쓰는 중 · ${g.chars.toLocaleString()}자`
+    : `${g.name || "도구"} 입력 쓰는 중 · ${g.chars.toLocaleString()}자`;
+  return "";
+}
 function updatePulses() {
   document.querySelectorAll("#agents .pulse[data-since]").forEach(el => {
+    let live = {}; try { live = JSON.parse(el.dataset.live || "{}"); } catch {}
+    const info = liveText(live);
+    if (info) { el.className = "pulse"; el.hidden = false; el.textContent = info; return; }
     const output = Number(el.dataset.output);
     const d = output > 0 ? Math.max(0, Date.now() / 1000 - output) : quietSecs(el.dataset.last, +el.dataset.since);
     el.className = "pulse" + (d >= 300 ? " quiet" : "");
@@ -1452,7 +1467,8 @@ function updateTyping(agents) {
       && (secsAgo(x.ts) ?? Infinity) <= turnSecs + 2 && !/^\s*대기\s*$/.test(x.text || "")).at(-1);
     const actText = !act ? "" : act.kind === "edit" ? "수정: " + act.text.replace(/^(Edit|Write|MultiEdit): /, "")
       : act.kind === "tool" ? act.text.replace(/^\$ /, "").replace(/^Bash: /, "") : act.text;
-    const last = actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";
+    const liveNow = liveText(a);
+    const last = liveNow ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
   el.innerHTML = rows; el.hidden = !rows;
@@ -1465,7 +1481,22 @@ function cancelJob(id) {
     api({action: "cancel_job", id});
 }
 // 진행 중 요청 묶음의 한 줄 상태: 이 요청을 맡아 일하는 에이전트·멈춘 에이전트·요청 후 경과 시간 (매초 갱신, 다시 그리기 없이 글자만 교체)
+// 내가 보낸 메시지가 아직 안 읽혔을 때: 받을 에이전트가 차례를 끝낼 때까지 읽지 못하니 무엇을 하는 중인지 말풍선 아래에 보여 줌
+function updateReadNotes(agents) {
+  document.querySelectorAll(".readnote[data-mid]").forEach(el => {
+    const id = +el.dataset.mid, at = +el.dataset.at, to = el.dataset.to;
+    const targets = Object.entries(agents || {}).filter(([n, a]) => (to === "all" || to === n) && a.status === "working"
+      && !a.paused && Number.isFinite(a.read_id) && a.read_id < id);
+    const waited = Date.now() / 1000 - at;
+    if (!targets.length || waited < 5) { el.hidden = true; el.textContent = ""; return; }
+    const what = targets.length === 1 ? liveText(targets[0][1]) || doingText(targets[0][1].doing) : "";
+    el.textContent = (targets.length > 1 ? "둘 다 일하는 중이라 차례가 끝나면 읽어요" : `${NAME[targets[0][0]]}가 이번 차례가 끝나면 읽어요`)
+      + ` · ${dur(waited)}째` + (what ? ` · 지금 ${what}` : "");
+    el.hidden = false;
+  });
+}
 function updateLiveBars(agents) {
+  updateReadNotes(agents);
   document.querySelectorAll("[data-progress-task]").forEach(el => {
     const t = lastTasks.find(t => t.id === +el.dataset.progressTask);
     if (!t) return;
@@ -1501,7 +1532,7 @@ function updateLiveBars(agents) {
     // 경고가 있으면 줄을 통째로 아랫줄에 두고 경고마다 '제목 굵게 + 상세 작게' (길어져도 단계 칩 옆에서 꼬이지 않게)
     el.querySelector(".lb-text").innerHTML = warn
       ? parts.map(p => { const [h, d] = splitMsg(p); return `<span class="w-head">${esc(h)}</span>${d ? `<span class="w-detail">${esc(d)}</span>` : ""}`; }).join("<br>") + (ago ? `<span class="w-detail">${esc(ago.replace(/^ · /, ""))}</span>` : "")
-      : esc((parts.join(" · ") || "다음 차례 대기 중") + ago);
+      : esc((parts.join(" · ") || job?.wait_why || "다음 차례 대기 중") + ago);
     el.querySelector(".lb-text").innerHTML += progressing.map(taskProgressHtml).join("");
   });
 }
