@@ -18,6 +18,7 @@ Office 설치기 (Linux/WSL)
   --no-launch            Office 실행 생략
   --device-auth          Codex 기기 코드 로그인
   --install-system-deps  누락된 Python/git/curl을 apt로 설치 허용
+  --no-shortcut          윈도우 바탕화면·시작 메뉴 바로가기 만들지 않음
   -h, --help             도움말
 
 기존 Office·셸 프로필·설정은 덮어쓰지 않음. ~/.local/bin/office가 없을 때만 만듦.
@@ -28,7 +29,7 @@ EOF
 }
 fail() { printf '설치 중단: %s\n' "$*" >&2; exit 1; }
 original_path=${PATH:-}
-apply=0; login=1; launch=1; device=0; system_deps=0
+apply=0; login=1; launch=1; device=0; system_deps=0; shortcut=1
 prefix="${HOME:?HOME이 필요합니다}/.local/share/office-app"
 workspace=$HOME/agent-office
 while (($#)); do
@@ -41,6 +42,7 @@ while (($#)); do
     --no-launch) launch=0;;
     --device-auth) device=1;;
     --install-system-deps) system_deps=1;;
+    --no-shortcut) shortcut=0;;
     -h|--help) usage; exit 0;;
     *) fail "알 수 없는 옵션: $1";;
   esac
@@ -282,6 +284,49 @@ case ":$original_path:" in
     printf '현재 터미널에서 바로 실행: %q\n' "$prefix/bin/office"
     ;;
 esac
+
+# WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
+# 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
+# 같은 이름의 바로가기가 wsl.exe를 가리키지 않으면(다른 프로그램) 건드리지 않는다.
+if (( shortcut )) && [[ -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
+  if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
+    cat > "$staging/office-shortcut.ps1" <<'PS1'
+param([string]$Distro, [string]$Launcher, [string]$Icon)
+$ErrorActionPreference = 'Stop'
+$dir = Join-Path $env:LOCALAPPDATA 'Office'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$ico = Join-Path $dir 'office.ico'
+Copy-Item -LiteralPath $Icon -Destination $ico -Force
+$wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
+$shell = New-Object -ComObject WScript.Shell
+$made = @()
+foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+  if (-not $folder) { continue }
+  $path = Join-Path $folder 'Office.lnk'
+  if (Test-Path -LiteralPath $path) {
+    $old = $shell.CreateShortcut($path)
+    if ($old.TargetPath -notlike '*\wsl.exe') { continue }
+  }
+  $lnk = $shell.CreateShortcut($path)
+  $lnk.TargetPath = $wsl
+  $lnk.Arguments = "-d $Distro --cd ~ -e bash -lc `"exec $Launcher`""
+  $lnk.IconLocation = $ico
+  $lnk.Description = 'Office'
+  $lnk.Save()
+  $made += $path
+}
+$made -join "`n"
+PS1
+    if made=$(timeout 30 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$staging/office-shortcut.ps1")" \
+        "$WSL_DISTRO_NAME" "$prefix/bin/office" "$(wslpath -w "$prefix/app/office.ico")" 2>/dev/null | tr -d '\r') && [[ -n $made ]]; then
+      printf '바로가기를 만들었어요. 바탕화면이나 시작 메뉴의 Office를 누르면 앱 창으로 열려요.\n'
+    else
+      printf '윈도우 바로가기는 만들지 못했어요. office 명령으로 실행하세요.\n'
+    fi
+  else
+    printf '설치 경로에 특수 문자가 있어 윈도우 바로가기는 만들지 않았어요.\n'
+  fi
+fi
 
 if (( login )); then
   [[ -t 0 ]] || fail '로그인은 대화형 터미널에서 진행하세요. 자동 설치만 하려면 --skip-login --no-launch 사용.'
