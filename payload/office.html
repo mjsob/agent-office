@@ -1183,7 +1183,7 @@ async function openAppWindow() {
 }
 function md(s, lead) {
   const pathAttr = c => c.replace(/"/g, "&quot;");
-  const inline = t => t.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (all, label, url) => isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const inline = t => t.replace(/\[([^\]\n]+)\]\((?:&lt;(.+?)&gt;((?::\d+){0,2})|([^)\s]+))\)/g, (all, label, angled, line, plain) => { const url = angled ? angled + line : plain; return isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all; }).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
   const item = line => {
     const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
@@ -1747,6 +1747,7 @@ function renderResources(r) {
     <div class="row">CPU <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
     <div class="row">메모리 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB <span>0은 제한 없음</span></div>
     <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>지금 ${r.cpu_usage_percent == null ? "-" : Math.round(r.cpu_usage_percent) + "%"} · ${gb(r.memory_current_bytes)}</span></div>
+    <div>CPU ${r.cpu_percent}% = 논리 코어 ${r.logical_cpus ?? "-"}개 기준 ${r.cpu_quota_percent ?? "-"}%${r.reason ? ` · ${esc(r.reason)}` : ""}</div>
     <div>${esc(r.applies_to || "")} 부터 적용해요. 다음은 제어하지 못해요: ${esc(r.uncontrolled || "")}</div>`;
 }
 async function applyResources() {
