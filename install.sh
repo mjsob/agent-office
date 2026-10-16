@@ -243,7 +243,10 @@ mv -f -- "$staging/.office-manifest.json" "$prefix/app/.office-manifest.json"
   printf '  unset OFFICE_DIR OFFICE_SESSION OFFICE_JOB OFFICE_AS\n'
   printf 'elif [[ -z ${OFFICE_DIR:-} ]]; then\n'
   printf '  cd -- "$work_dir"\n'
-  printf 'fi\nexec "$python_bin" "$install_root/app/office.py" "$@"\n'
+  # office.py 를 직접 실행하면 매번 컴파일해 명령마다 0.1초가 더 걸린다. 같은 파일을 __main__ 으로 불러와 바이트코드 캐시(__pycache__)를 쓴다.
+  # 캐시는 파일 수정 시각으로 무효화되고, 폴더에 쓸 수 없으면 파이썬이 조용히 매번 컴파일한다.
+  printf '%s\n' 'fi' "loader='import sys, importlib.util as u; p = sys.argv[1]; sys.argv = [p, *sys.argv[2:]]; sys.path.insert(0, p.rsplit(\"/\", 1)[0]); s = u.spec_from_file_location(\"__main__\", p); m = u.module_from_spec(s); sys.modules[\"__main__\"] = m; s.loader.exec_module(m)'"
+  printf 'exec "$python_bin" -c "$loader" "$install_root/app/office.py" "$@"\n'
 } > "$staging/office-launcher"
 chmod 700 "$staging/office-launcher"
 cp -- "$staging/office-launcher" "$staging/office-global"
