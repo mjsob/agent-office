@@ -1159,6 +1159,9 @@ def cmd_say(a):
         job = message_job(s)
         kind = ("progress" if a.to == "user" else "note") if getattr(a, "info", False) else "msg"   # --to user --info: 사용자 진행 알림(차례·결과 카드 아님)
         explicit = getattr(a, "re", None)
+        received = os.environ.get("OFFICE_REPLY_TO", "")
+        if explicit is None and a.to == "user" and kind == "msg" and received.isdecimal() and any(m["id"] == int(received) and m.get("from") == "user" and m.get("to") in (me(), "all") for m in s["msgs"]):
+            explicit = int(received)
         if explicit is not None:
             source = next((m for m in s["msgs"] if m["id"] == explicit and m["from"] == "user"), None)
             if source is None:
@@ -1791,6 +1794,7 @@ class Worker:
             saved = {"paused": True, "error": "진행 기록 읽기 실패 — 진행 기록을 읽지 못했습니다. 폴더 권한을 확인하세요."}
         self.read_upto = saved.get("read_upto")
         self.paused = saved.get("paused", False)
+        self.manual_pause = saved.get("manual_pause", self.paused and not saved.get("error"))
         self.error = saved.get("error")
         self.error_kind = saved.get("error_kind")
         if not self.error_kind or self.error_kind == "unknown":
@@ -1846,7 +1850,7 @@ class Worker:
         cursor = getattr(self, "turn_read_start", self.read_upto) if self.status == "working" and not processed else self.read_upto
         with self.checkpoint_lock:
             interrupted = self.doing if self.status == "working" and not processed else (getattr(self, "resume_turn", None) if not processed else None)
-            atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
+            atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
                          "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
                          "retry_counts": dict(getattr(self, "retry_counts", {})),
                          "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None)}, checkpoint_valid)
@@ -2523,7 +2527,7 @@ class Worker:
         retry_key = "direct" if job is None else str(job)
         retries = self.retry_counts.get(retry_key, 0)
         # The previous process is already reaped by run_agent. Keep the same cursor and resume turn.
-        if self.error_kind in ("crash", "unknown", "network", "timeout", "capacity") and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not self.immediate_pause:
+        if self.error_kind in ("crash", "unknown", "network", "timeout", "capacity") and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not self.immediate_pause and not getattr(self, "manual_pause", False):
             delay = AUTO_RETRY_DELAYS[retries]
             self.retry_counts[retry_key] = retries + 1
             self.auto_retries, self.retry_job = retries + 1, job
@@ -2546,6 +2550,17 @@ class Worker:
         if self.error_kind == "auth" and LOGIN_HOOK:
             threading.Thread(target=LOGIN_HOOK, args=(self.sid, [self.name], True), daemon=True).start()
         with state(True, self.sid) as s:
+            if self.error_kind == "auth":
+                task = next((t for t in s["tasks"] if t.get("job") == job and t.get("owner") == self.name and (t.get("user_request") or {}).get("source") == "agent_auth" and pending_user_request(t)), None)
+                task = task or next((t for t in s["tasks"] if t.get("job") == job and t.get("owner") == self.name and t["status"] != "done" and not pending_user_request(t)), None)
+                if task is None:
+                    s["seq"] += 1
+                    task = {"id": s["seq"], "job": job, "owner": self.name, "title": disp(self.name) + " 로그인 확인", "status": "todo", "created_at": time.time(), "auth_task": True}
+                    s["tasks"].append(task)
+                task["user_request"] = {"status": "pending", "text": auth_help(self.name), "created_at": time.time(), "expires_at": None,
+                                        "resolved_at": None, "resolution": None, "reply_to": None, "source": "agent_auth", "resume_status": (task.get("user_request") or {}).get("resume_status", task["status"])}
+                task.update(status="waiting", waiting_at=time.time(), wait_reason=auth_help(self.name))
+                task.pop("wait_deadline", None)
             guide = "" if re.search(r"(?:다시 시도|재개|시작)(?:하세요|을 누르세요)\.?$", reason.strip()) else " 확인 후 재개 버튼으로 다시 시도하세요."
             post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason}{guide}"),
                  "event", job=job)
@@ -2774,7 +2789,7 @@ class Worker:
                 self.read_upto = previous_read
                 retry_key = "direct" if job is None else str(job)
                 retries = self.retry_counts.get(retry_key, 0)
-                if self.transient_failure(why) and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set():
+                if self.transient_failure(why) and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not getattr(self, "manual_pause", False):
                     delay = AUTO_RETRY_DELAYS[retries]
                     self.auto_retries = retries + 1
                     self.retry_counts[retry_key] = retries + 1
@@ -3747,8 +3762,18 @@ class Office:
                         post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요."), "event")
                     for team in list(self.teams.values()):
                         w = team["w"].get(n)
-                        if w and w.paused and getattr(w, "error_kind", None) == "auth":
+                        if w and w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
                             # 재개 버튼과 같게: 멈춘 차례를 다시 실행
+                            with state(True, w.sid) as record:
+                                for task in record["tasks"]:
+                                    request = task.get("user_request") or {}
+                                    if task.get("owner") == n and request.get("source") == "agent_auth" and pending_user_request(task):
+                                        request.update(status="resolved", resolved_at=time.time(), resolution="로그인 성공을 확인했어요.")
+                                        task["status"] = "done" if task.get("auth_task") else request.get("resume_status", "doing")
+                                        if task["status"] == "done":
+                                            task["done_at"] = time.time()
+                                        task.pop("wait_reason", None)
+                            w.set_recovery("verifying", "로그인 성공을 확인했어요. 중단된 차례의 재개를 확인해요.")
                             w.paused, w.error, w.error_kind = False, None, None
                             w.cont = w.chatter = 0
                             w.nudge_state = {}
@@ -4199,6 +4224,7 @@ class Office:
             self.ensure_team(sid)
             worker = self.teams[sid]["w"][p["agent"]]
             worker.paused = True
+            worker.manual_pause = True
             worker.recovery = None
             worker.retry_at, worker.retry_due = 0, None
             if worker.status == "working":
@@ -4220,6 +4246,7 @@ class Office:
             if not p.get("paused", not w.paused) and getattr(w, "immediate_pause", False):
                 raise UserError("중단한 프로세스 정리 중 — 중단한 프로세스를 정리 중입니다. 잠시 후 다시 시작하세요.")
             w.paused = p.get("paused", not w.paused)
+            w.manual_pause = w.paused
             w.recovery = None
             if w.paused:
                 w.retry_at, w.retry_due = 0, None
