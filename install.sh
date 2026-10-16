@@ -226,6 +226,8 @@ PYLOCAL
 
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
+# 바이트코드 캐시는 내용 해시로 검사하게 미리 만든다(수정 시각·길이가 같은 변경도 놓치지 않음). 실패해도 설치는 계속한다.
+"$python_bin" -c 'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)' "$prefix/app/office.py" >/dev/null 2>&1 || true
 # Replace baseline metadata without following old metadata symlinks.
 rm -rf -- "$prefix/app/.office-orig"
 mv -- "$staging/.office-orig" "$prefix/app/.office-orig"
