@@ -1726,7 +1726,7 @@ function closeOfficeWindow(updating = updateState.state === "restarting") {
 }
 async function registerClient() {
   if (clientReady) return;
-  const r = await fetch("/api", {method: "POST", body: JSON.stringify({action: "hello", client: clientId}), signal: AbortSignal.timeout(8000)});
+  const r = await fetch("/api", {method: "POST", body: JSON.stringify({action: "hello", client: clientId}), signal: AbortSignal.timeout(15000)});
   const data = await r.json();
   if (!r.ok || data.error) throw new Error(data.error || "창을 등록하지 못했어요.");
   clientReady = true;
@@ -1741,19 +1741,22 @@ async function doRefresh() {
     // 바뀐 게 없으면 서버가 {unchanged} 만 보내게 마지막 rev를 같이 보냄 (같은 대화일 때만)
     let q = curSession && !follow ? "?session=" + encodeURIComponent(curSession) + (lastRev != null && revSession === curSession && lastSig && lastSess ? "&since_rev=" + lastRev : "") : "";
     if (clientId) q += (q ? "&" : "?") + "client=" + encodeURIComponent(clientId);
-    const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(8000)});
+    const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(15000)});
     s = await r.json().catch(() => ({}));
     if (!r.ok || s.error) throw new Error(s.error || `서버 오류 ${r.status}`);   // 화면은 이전 상태 그대로 두고 문구만
   } catch (e) {
     // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
     if (updateState.state === "restarting" && e.name === "TypeError") { closeOfficeWindow(true); return; }
-    downCount++;
-    if (!headlessClient && downCount >= 3) { closeOfficeWindow(); return; }
+    downCount = e.name === "TypeError" ? downCount + 1 : 0;
+    lastRev = null;   // 복구 뒤 전체 상태를 받아 지연 안내도 정상 화면으로 되돌려요.
+    if (!headlessClient && e.name === "TypeError" && downCount >= 3) { closeOfficeWindow(); return; }
     const conn = $("#conn");
     if (conn) {
-      conn.textContent = e.name === "TypeError" || e.name === "TimeoutError"
-        ? "서버와 연결이 끊어졌습니다 — 콘솔에서 office를 다시 실행하면 새 창이 열립니다 (이 창은 닫아도 됨)"
-        : `서버가 상태를 못 보냈습니다: ${e.message}`;
+      conn.textContent = e.name === "TimeoutError"
+        ? "서버 응답이 늦어 기다리고 있어요. 잠시 뒤 다시 확인해요."
+        : e.name === "TypeError"
+          ? "서버에 연결할 수 없어 다시 확인하고 있어요."
+          : `서버 상태를 확인하지 못했어요: ${e.message}`;
       conn.removeAttribute("title"); conn.hidden = false;
     }
     return;
