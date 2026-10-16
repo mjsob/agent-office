@@ -647,27 +647,115 @@ const HINT = {
 let lastDay = new Date().toDateString();   // 자정이 지나면 '오늘' 기준이 바뀌니 대화창을 다시 그림
 let mode = "job", lastSig = "", lastSess = "", curSession = new URLSearchParams(location.search).get("session") || null, followGen = 0, followDone = 0, openTurns = new Set(), expandedOld = new Set(), openDone = false, lastMsgs = 0, toastTimer;
 
-// 리더 선택은 이 PC에 기억 (새로고침마다 Claude로 돌아가 Codex 리더 요청이 실수로 Claude에게 가던 비대칭)
-if (["claude", "codex"].includes(localStorage.officeLead)) $("#lead").value = localStorage.officeLead;
-$("#lead").addEventListener("change", e => localStorage.officeLead = e.target.value);
-function setMode(m) {
+// 대상·리더·검증은 대화마다 서버에 저장해 껐다 켜도 그 대화 값으로 돌아와요.
+const VERIFY = {quick: "빠르게", standard: "기본", thorough: "꼼꼼하게"};
+const CHAT_DEFAULT = {mode: "job", lead: "claude", verification: "standard"};
+const LEGACY_OPTS_KEY = "officeChatOptionsMigrated";
+let verify = "standard";
+// optsEdit: 이 창에서 바꾼 횟수. 조회가 시작된 뒤 바꿨거나 저장 중이면 서버 값으로 되돌리지 않음
+let optsSupported = false, optsSession = null, optsEarly = false, optsEdit = 0, optsSaving = 0, optsSaveTimer = null, optsPending = null;
+function setMode(m, focus = true) {
   mode = m;
-  localStorage.officeMode = m;
   document.querySelectorAll("#modes button").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-pressed", b.dataset.m === m); });
   $("#input").placeholder = PH[m];
   $("#jobOpts").hidden = m !== "job";   // 리더·검증은 새 요청에만 쓰니 개인 메시지 땐 자리째 숨김
   $("#hint").textContent = HINT[m];
-  $("#input").focus();
+  if (focus) $("#input").focus();
 }
-document.querySelectorAll("#modes button").forEach(b => b.onclick = () => setMode(b.dataset.m));
-// 검증 강도: 새 요청마다 같이 보냄. 고른 값은 다음 요청에도 유지하고, 이미 진행 중인 요청엔 적용하지 않음
-const VERIFY = {quick: "빠르게", standard: "기본", thorough: "꼼꼼하게"};
-let verify = VERIFY[localStorage.officeVerify] ? localStorage.officeVerify : "standard";
 function setVerify(v) {
-  verify = v; localStorage.officeVerify = v;
+  verify = v;
   document.querySelectorAll("#verify button").forEach(b => { b.classList.toggle("on", b.dataset.v === v); b.setAttribute("aria-pressed", b.dataset.v === v); });
 }
-document.querySelectorAll("#verify button").forEach(b => b.onclick = () => { setVerify(b.dataset.v); $("#input").focus(); });
+function chatOptions() { return {mode, lead: $("#lead").value, verification: verify}; }
+function cleanChatOptions(o) {
+  o = o && typeof o === "object" ? o : {};
+  return {mode: ["job", "claude", "codex"].includes(o.mode) ? o.mode : CHAT_DEFAULT.mode,
+          lead: ["claude", "codex"].includes(o.lead) ? o.lead : CHAT_DEFAULT.lead,
+          verification: VERIFY[o.verification] ? o.verification : CHAT_DEFAULT.verification};
+}
+function applyChatOptions(o) {
+  o = cleanChatOptions(o);
+  setMode(o.mode, false); $("#lead").value = o.lead; setVerify(o.verification);
+}
+// 저장된 선택이 없는 대화: 예전 전역 선택이 있으면 처음 한 번만 지금 대화로 옮기고, 아니면 기본값
+function legacyChatOptions() {
+  try {
+    if (localStorage[LEGACY_OPTS_KEY]) return null;
+    if (!localStorage.officeMode && !localStorage.officeLead && !localStorage.officeVerify) return null;
+    return cleanChatOptions({mode: localStorage.officeMode, lead: localStorage.officeLead, verification: localStorage.officeVerify});
+  } catch (e) { return null; }
+}
+function markLegacyMigrated() {
+  try { localStorage[LEGACY_OPTS_KEY] = "1"; ["officeMode", "officeLead", "officeVerify"].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+}
+// 조회를 시작할 때의 선택 상태. 저장 중에 시작한 조회는 옛 값을 들고 올 수 있어 따라가지 않음
+const chatOptionsMark = () => ({edit: optsEdit, busy: optsSaving > 0 || !!optsPending});
+// 조회 응답의 선택을 화면에 반영
+function syncChatOptions(s, mark) {
+  if (!s.session) return;
+  optsSupported = s.chat_options_supported === true;
+  let saved = s.chat_options && typeof s.chat_options === "object" ? s.chat_options : null;
+  if (!optsSupported) { try { saved = JSON.parse(localStorage["officeChatOptions:" + s.session] || "null"); } catch (e) { saved = null; } }   // null: 아직 고른 적 없는 옛 대화
+  if (s.session !== optsSession) {
+    const early = optsSession === null && optsEarly;   // 첫 조회 전에 고른 값은 그대로 두고 이 대화에 저장
+    optsSession = s.session; optsEarly = false;
+    if (early) { saveChatOptions(true); return; }
+    clearTimeout(optsSaveTimer); optsSaveTimer = null;
+    if (optsPending) flushChatOptions();   // 옮기기 직전에 바꾼 값은 원래 대화에 저장
+    if (saved) applyChatOptions(saved);
+    else {
+      const legacy = legacyChatOptions();   // 옛 서버면 보여주기만 하고 지우지 않음
+      applyChatOptions(legacy || CHAT_DEFAULT);
+      if (legacy && optsSupported) migrateChatOptions(s.session, legacy);
+    }
+    return;
+  }
+  // 같은 대화: 다른 창에서 바꾼 값만 따라감. 이 창에서 방금 바꾼 값은 덮어쓰지 않음
+  if (saved && !mark.busy && !optsSaving && !optsPending && mark.edit === optsEdit) applyChatOptions(saved);
+}
+async function flushChatOptions() {
+  optsSaveTimer = null;
+  if (optsSaving) return;   // 저장 중이면 끝난 뒤 finally 에서 마지막 값을 이어서 보냄
+  const body = optsPending; optsPending = null;
+  if (!body) return;
+  optsSaving++;
+  try {
+    const res = await fetch("/api", {method: "POST", body: JSON.stringify({action: "chat_options", ...body}), signal: AbortSignal.timeout(15000)});
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok || r.error) toast(r.error || "선택을 저장하지 못했어요. 다시 골라 보세요.");
+  } catch (e) {
+    toast("선택을 저장하지 못했어요. 서버 연결을 확인해 보세요.");
+  } finally { optsSaving--; if (optsPending && !optsSaveTimer) flushChatOptions(); }
+}
+// 옛 전역 선택 옮기기: 다른 창이 먼저 골랐으면 서버 값을 그대로 둠(initialize_only)
+async function migrateChatOptions(session, legacy) {
+  const edit = optsEdit;
+  optsSaving++;
+  try {
+    const res = await fetch("/api", {method: "POST", body: JSON.stringify({action: "chat_options", session, ...legacy, initialize_only: true}), signal: AbortSignal.timeout(15000)});
+    const r = await res.json().catch(() => ({}));
+    if (res.ok && !r.error && r.chat_options) markLegacyMigrated();
+    if (res.ok && !r.error && r.chat_options && optsSession === session && optsEdit === edit && !optsPending) applyChatOptions(r.chat_options);
+  } catch (e) {} finally { optsSaving--; }
+}
+// 빠르게 여러 번 눌러도 마지막 값 하나만 보내요. 보낼 대화는 누른 순간의 대화로 고정
+function saveChatOptions(now = false) {
+  optsEdit++;
+  if (!optsSession) { optsEarly = true; return; }
+  if (!optsSupported) {   // 옛 서버: 새 저장 기능이 없으니 이 브라우저에만 대화별로 기억
+    try { localStorage["officeChatOptions:" + optsSession] = JSON.stringify(chatOptions()); } catch (e) {}
+    return;
+  }
+  optsPending = {session: optsSession, ...chatOptions()};
+  clearTimeout(optsSaveTimer);
+  if (now) flushChatOptions(); else optsSaveTimer = setTimeout(flushChatOptions, 250);
+}
+window.addEventListener("pagehide", () => { if (optsPending && optsSupported) { clearTimeout(optsSaveTimer);
+  try { navigator.sendBeacon?.("/api", JSON.stringify({action: "chat_options", ...optsPending})); } catch (e) {} } });
+document.querySelectorAll("#modes button").forEach(b => b.onclick = () => { setMode(b.dataset.m); saveChatOptions(); });
+$("#lead").addEventListener("change", () => saveChatOptions());
+// 검증 강도: 새 요청마다 같이 보냄. 이미 진행 중인 요청엔 적용하지 않음
+document.querySelectorAll("#verify button").forEach(b => b.onclick = () => { setVerify(b.dataset.v); saveChatOptions(); $("#input").focus(); });
 setVerify(verify);
 
 let updateState = {}, updateSubmitting = false, updateSignature = "";
@@ -1769,7 +1857,7 @@ async function registerClient() {
 }
 async function doRefresh() {
   if (officeClosed) return;
-  const seq = ++reqSeq, gen = followGen, follow = gen > followDone;
+  const seq = ++reqSeq, gen = followGen, follow = gen > followDone, optsMark = chatOptionsMark();
   let s;
   try {
     await registerClient();
@@ -1825,6 +1913,7 @@ async function doRefresh() {
       curSession = s.session; forceBottom = false; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
       lastMessagesKey = null; lastMessagesSession = null; lastMessages = [];
     }
+    safe("chatOptions", () => syncChatOptions(s, optsMark));
     if (s.msgs_unchanged && lastMessagesSession !== s.session) {
       lastRev = null; lastMessagesKey = null; return;   // 캐시 없는 부분 응답은 다음 조회에서 전체 기록을 받아요.
     }
@@ -1888,7 +1977,7 @@ async function applyResources() {
 }
 let lastMessages = [], lastMessagesKey = null, lastMessagesSession = null;
 let downCount = 0, lastSessAt = 0, lastBoardSig = "", lastJobs = [], lastTasks = [], lastRev = null, revSession = null, lastAgentState = {};
-setMode(["job", "claude", "codex"].includes(localStorage.officeMode) ? localStorage.officeMode : "job");
+setMode("job", false);   // 첫 조회에서 이 대화에 저장된 선택으로 바꿔요.
 // 화면을 보지 않을 때는 조회를 줄이고, 돌아오면 바로 최신 상태를 받아요.
 let lastPollAt = -Infinity;
 function pollRefresh() {
