@@ -874,7 +874,7 @@ def task_wait_status(t, now=None):
 
 
 def job_display_status(job, tasks, workers=None, now=None):
-    """저장한 업무 단계와 현재 실행 상태를 구분해요. 작업 이력은 바꾸지 않아요."""
+    """저장한 작업 단계와 현재 실행 상태를 구분해요. 작업 이력은 바꾸지 않아요."""
     pending = [t for t in tasks if t.get("job") == job["id"] and t.get("status") != "done"]
     if job.get("cancelled") or job["status"] == "done" and not pending:
         return "done", ""
