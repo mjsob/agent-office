@@ -230,8 +230,8 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .msg .body th { background: var(--chip); font-weight: 600; }
 .msg .body tbody tr:last-child td { border-bottom: 0; }
 .msg .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
-.msg .body code.path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
-.msg .body code.path:hover { color: var(--accent); }
+.msg .body .path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.msg .body .path:hover { color: var(--accent); }
 .msg .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
 .msg .body .code-lang { display: block; margin-bottom: 6px; color: var(--muted); font: 11px ui-monospace, monospace; }
 .msg .body .gap { height: 8px; }
@@ -281,6 +281,7 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .job.closed { opacity: .72; }
 .job .hd { display: flex; gap: 8px; align-items: flex-start; }
 .job .tx { font-weight: 600; flex: 1; min-width: 0; }
+.resolved { font-size: 11px; color: var(--ok); margin-left: 6px; white-space: nowrap; }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
 #resbox { font-size: 12px; color: var(--muted); margin: 10px 0; }
 #resbox .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
@@ -918,13 +919,14 @@ function ago(t) {
 
 // 대화 목록의 요청 상태: 서버가 status_counts/status_kind 를 주면 실제 상태별로, 없으면(구서버) 기존 '진행 중'
 function sessionStatusHtml(x) {
-  if (!x.open) return "";
+  if (!x.open) return x.needs_user > 0 ? `<span class="live waiting">확인 필요 ${x.needs_user}</span>` : "";
   const c = x.status_counts;
-  if (!c) return `<span class="live">진행 중 ${x.open}</span>`;
+  if (!c) return ask + `<span class="live">진행 중 ${x.open}</span>`;
   const names = {working: "작업 중", waiting: "기다리는 중", planning: "계획 중", review: "확인 중"};
+  const ask = x.needs_user > 0 ? `<span class="live waiting" title="사용자 확인을 기다리는 요청이 있어요">확인 필요 ${x.needs_user}</span>` : "";
   const parts = ["working", "waiting", "planning", "review"].filter(k => c[k] > 0).map(k => `${names[k]} ${c[k]}`);
   const why = x.status_reason ? ` title="${esc(x.status_reason)}"` : "";
-  return `<span class="live ${x.status_kind === "waiting" ? "waiting" : ""}"${why}>${esc(parts.join(" · ") || `진행 중 ${x.open}`)}</span>`;
+  return ask + `<span class="live ${x.status_kind === "waiting" ? "waiting" : ""}"${why}>${esc(parts.join(" · ") || `진행 중 ${x.open}`)}</span>`;
 }
 function renderSessions(list, cur) {
   window._sessions = list;
@@ -1172,15 +1174,16 @@ async function openPath(path) {
   if (await api({action: "open_path", path})) return;
   try { await navigator.clipboard.writeText(path); toast("열지 못해서 경로를 복사했어요"); } catch {}
 }
-document.addEventListener("click", e => { const el = e.target.closest("code.path"); if (el) openPath(el.dataset.path); });
-document.addEventListener("keydown", e => { const el = e.target.closest?.("code.path"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPath(el.dataset.path); } });
+document.addEventListener("click", e => { const el = e.target.closest(".path"); if (el) openPath(el.dataset.path); });
+document.addEventListener("keydown", e => { const el = e.target.closest?.(".path"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPath(el.dataset.path); } });
 // 주소를 직접 열어 주소창 있는 일반 탭으로 보고 있으면 앱 창으로 다시 여는 버튼을 보여 줘요
 $("#appWindow").hidden = !window.toolbar?.visible;
 async function openAppWindow() {
   if (await api({action: "open_window"})) setTimeout(() => window.close(), 800);   // 스크립트로 연 탭이 아니면 브라우저가 안 닫을 수 있어요
 }
 function md(s, lead) {
-  const inline = t => t.replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const pathAttr = c => c.replace(/"/g, "&quot;");
+  const inline = t => t.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (all, label, url) => isPath(url) ? `<span class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${pathAttr(url)}">${label}</span>` : all).replace(/`([^`\n]+)`/g, (_, c) => isPath(c) ? `<code class="path" role="button" tabindex="0" title="탐색기에서 열기" data-path="${c}">${c}</code>` : `<code>${c}</code>`).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   const lines = esc(String(s ?? "").trim()).split("\n"), out = [];
   const item = line => {
     const m = line.match(/^(\s*)([-•*]|\d+[.)])\s+(.*)$/);
@@ -1260,7 +1263,7 @@ function msgHtml(m, compact) {
     if (alert) {   // 경고는 '제목 — 상세'를 두 줄로: 문구가 길어져도 가운데 정렬로 들쭉날쭉 깨지지 않게
       const [head, detail] = splitMsg(m.text);
       const success = /로그인 (?:완료|성공)$/.test(head.trim());
-      return `<div class="event ${m.from} alert${success ? " success" : ""}">${icon(success ? "done" : "alert", "sm")}<div class="ev-body">${who}<span class="ev-head">${noticeLinks(head)}</span>${detail ? `<span class="ev-detail">${noticeLinks(detail)}</span>` : ""}</div><span class="ts">${esc(when(m))}</span></div>`;
+      return `<div class="event ${m.from} alert${success ? " success" : ""}">${icon(success ? "done" : "alert", "sm")}<div class="ev-body">${who}<span class="ev-head">${noticeLinks(head)}</span>${detail ? `<span class="ev-detail">${noticeLinks(detail)}</span>` : ""}</div>${m.resolved_at ? `<span class="resolved" title="${esc(m.resolution || "")}">해소됨</span>` : ""}<span class="ts">${esc(when(m))}</span></div>`;
     }
     return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${esc(when(m))}</span></div>`;
   }
