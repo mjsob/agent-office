@@ -191,5 +191,16 @@ W.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != 
 assert W.carry_msgs == [], W.carry_msgs
 assert o.Worker.next_turn(W, s) is None
 src_text = Path(src).read_text()
-assert 'if desc in ("plan", "reply", "review"):' in src_text and 'm["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry' in src_text, "차례 끝 다시 싣기 코드가 시험과 달라짐"
+assert 'self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]' in src_text, "차례 끝 다시 싣기 코드가 시험과 달라짐"
+assert '"carry_msgs": carry' in src_text and 'saved.get("carry_msgs", [])' in src_text, "다시 실을 메시지가 재시작 때 저장·복원돼야 함"
+assert o.checkpoint_valid({"read_upto": 3, "carry_msgs": [1, 2]}) and not o.checkpoint_valid({"read_upto": 3, "carry_msgs": ["x"]})
+
+# --- 동료가 done 뒤 '확인' 같은 짧은 답만 보내면 차례가 안 생기니 서버가 깨워야 함
+reset([task(1, "codex"), task(2, "claude")])
+wait(1, text="#2 결과 대기")
+o.cmd_done(argparse.Namespace(id=2, text="끝"))
+o.cmd_say(argparse.Namespace(text="확인", to="codex", info=False, re=None, job=1))
+age(2, 30)
+check()
+assert len(wakes(load())) == 1, "짧은 답은 깨운 말로 세면 안 됨"
 print("ok")

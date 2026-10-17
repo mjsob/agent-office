@@ -66,6 +66,7 @@ AGENT_SLOW_TOOL = 2 * 60   # 도구 하나가 이보다 오래 돌면 화면에 
 AGENT_TOOL_TIMEOUT = 3 * 60 * 60   # 명령·서브 에이전트가 도는 중엔 출력이 없어도 이 시간까지 기다림 (긴 빌드·테스트)
 RESULT_GRACE = 3      # 초: Claude 최종 답(result) 뒤 프로그램이 스스로 끝나길 기다리는 시간. 넘으면 차례를 끝낸다
 LEAD_BUSY_TAKEOVER = int(os.environ.get("OFFICE_LEAD_BUSY") or 120)   # 초: 담당이 다른 차례를 이만큼 붙잡고 있으면 쉬는 쪽이 새 요청 계획·미착수 작업을 맡는다
+IDLE_REPLIES = ("대기", "확인", "확인했음", "알겠습니다", "고마워")   # 차례를 만들지 않는 짧은 동료 답
 PEER_DONE_GRACE = 20   # 초: 동료 작업이 끝난 뒤 끝낸 쪽이 보내는 말을 기다렸다가, 그 말이 없을 때만 서버가 깨운다
 WAIT_DEADLINE = 15 * 60   # 초: office wait 기본 기한(감시 프로세스 없을 때), 백그라운드 로그가 이만큼 안 바뀌어도 담당을 한 번 깨운다
 
@@ -1833,7 +1834,9 @@ def checkpoint_valid(value):
     if not isinstance(value, dict):
         return False
     cursor = value.get("read_upto")
+    carry = value.get("carry_msgs", [])
     return ((cursor is None or type(cursor) is int and cursor >= 0)
+            and isinstance(carry, list) and all(type(i) is int for i in carry)
             and isinstance(value.get("paused", False), bool)
             and (value.get("error") is None or isinstance(value["error"], str))
             and (value.get("error_kind") is None or isinstance(value.get("error_kind"), str) and value.get("error_kind") in ERROR_KINDS)
@@ -1987,6 +1990,7 @@ class Worker:
             server_log("worker.checkpoint.read", error)
             saved = {"paused": True, "error": "진행 기록 읽기 실패 — 진행 기록을 읽지 못했습니다. 폴더 권한을 확인하세요."}
         self.read_upto = saved.get("read_upto")
+        self.carry_msgs = [i for i in saved.get("carry_msgs", []) if type(i) is int and i > 0]
         self.paused = saved.get("paused", False)
         self.manual_pause = saved.get("manual_pause", self.paused and not saved.get("error"))
         self.error = saved.get("error")
@@ -2044,7 +2048,8 @@ class Worker:
         cursor = getattr(self, "turn_read_start", self.read_upto) if self.status == "working" and not processed else self.read_upto
         with self.checkpoint_lock:
             interrupted = self.doing if self.status == "working" and not processed else (getattr(self, "resume_turn", None) if not processed else None)
-            atomic_json(self.checkpoint, {"read_upto": cursor, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
+            carry = list(getattr(self, "turn_carry", []) if self.status == "working" and not processed else getattr(self, "carry_msgs", []))
+            atomic_json(self.checkpoint, {"read_upto": cursor, "carry_msgs": carry, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
                          "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
                          "retry_counts": dict(getattr(self, "retry_counts", {})),
                          "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None)}, checkpoint_valid)
@@ -2586,7 +2591,7 @@ class Worker:
         new = [m for m in s["msgs"][self.read_upto:] if m.get("kind", "msg") == "msg"
                and m.get("job") not in cancelled
                and (m["from"] not in (self.name, "system") or m.get("wake") and m["to"] == self.name) and m["to"] in (self.name, "all")
-               and not (m["from"] != "user" and m["text"].strip() in ("대기", "확인", "확인했음", "알겠습니다", "고마워"))]
+               and not (m["from"] != "user" and m["text"].strip() in IDLE_REPLIES)]
         # 다른 요청 차례(기획·답장·검수)에 실려 지나간 깨우는 메시지는 한 번 더 싣는다
         carried = [s["msgs"][i - 1] for i in getattr(self, "carry_msgs", []) if 0 < i <= len(s["msgs"])
                    and s["msgs"][i - 1].get("job") not in cancelled and s["msgs"][i - 1] not in new]
@@ -2894,6 +2899,7 @@ class Worker:
             previous_read = self.turn_read_start = self.read_upto
             self.read_upto = total
             previous_carry, self.carry_msgs = list(getattr(self, "carry_msgs", [])), []
+            self.turn_carry = previous_carry
             self.reply_message_id = next((m["id"] for m in reversed(new) if m["from"] == "user"), new[-1]["id"] if new else None)
             if getattr(self, "recovery", None):
                 if self.recovery["phase"] == "recovered":
@@ -3071,8 +3077,8 @@ class Worker:
                     event(recovered, f"{disp(self.name)} 자동 복구 완료 · 중단된 차례가 정상으로 끝났어요.", job=job)
             self.resume_turn = None
             self.fail_count, self.failure_key = 0, None
-            if desc in ("plan", "reply", "review"):   # 이 요청만 다룬 차례: 다른 요청의 깨우는 메시지는 다음 차례에 다시 싣는다(한 번만)
-                self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]
+            # 차례는 한 요청을 골라 돈다: 다른 요청의 깨우는 메시지는 다음 차례에 다시 싣는다(한 번만)
+            self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]
             with state(sid=sid) as record:
                 made_progress = self.progress_signature(record) != self.turn_progress_signature
             if made_progress or any(m["from"] == "user" for m in new) or not only_chat:
@@ -3911,7 +3917,8 @@ class Office:
                 for m in reversed(msgs):
                     if m.get("at", 0) <= since:
                         return False
-                    if m.get("to") == name and m.get("job") == job and m.get("kind", "msg") == "msg" and (m.get("from") not in (name, "system") or m.get("wake")):
+                    if (m.get("to") == name and m.get("job") == job and m.get("kind", "msg") == "msg" and (m.get("from") not in (name, "system") or m.get("wake"))
+                            and not (m.get("from") != "user" and m.get("text", "").strip() in IDLE_REPLIES)):   # 차례를 안 만드는 짧은 답은 깨운 말로 안 센다
                         return True
                 return False
 
