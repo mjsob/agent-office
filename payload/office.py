@@ -4510,7 +4510,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -4527,10 +4527,10 @@ class Office:
                 raise UserError("휴지통 대화 확인 — 휴지통에 있는 대화만 처리할 수 있습니다.")
         if act == "rename" and (not isinstance(p.get("title"), str) or not p["title"].strip()):
             raise UserError("대화 제목 필요 — 대화 제목을 입력하세요.")
-        if act == "cancel_job" and (type(p.get("id")) is not int or p["id"] < 1):
+        if act in ("cancel_job", "remove_job") and (type(p.get("id")) is not int or p["id"] < 1):
             raise UserError("요청 선택 확인 — 올바른 요청을 선택하세요.")
         sid = None
-        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "merge", "open_path", "chat_options"):
+        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "merge", "open_path", "chat_options"):
             sid = (p.get("id") or p.get("session") or current_sid()) if act == "merge" else (p.get("session") or current_sid())
             if not valid_sid(sid):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -4728,6 +4728,19 @@ class Office:
                             worker.notice = None
                         worker.fail_count, worker.failure_key = 0, None
                         worker.save_checkpoint()
+        elif act == "remove_job":
+            with state(True, sid=sid) as s:
+                job = next((j for j in s["jobs"] if j["id"] == p["id"]), None)
+                if job is None:
+                    raise UserError("요청을 찾을 수 없어요. 대화를 새로고침하세요.")
+                if job.get("cancelled") is not True or job["status"] != "done":
+                    raise UserError("취소한 요청만 대화에서 지울 수 있어요.")
+                if any(t.get("job") == job["id"] and t["status"] != "done" for t in s["tasks"]):
+                    raise UserError("요청 취소가 아직 끝나지 않았어요. 잠시 후 다시 시도하세요.")
+                # 번호와 의존 관계를 유지한다. 화면에서 요청과 연결된 기록을 숨긴다.
+                if not job.get("removed"):
+                    job.update(removed=True, removed_at=time.time())
+            msg = "취소한 요청을 대화에서 지웠어요."
         elif act == "quit":
             self.shutdown()
         elif act == "update_check":
