@@ -66,6 +66,7 @@ AGENT_SLOW_TOOL = 2 * 60   # 도구 하나가 이보다 오래 돌면 화면에 
 AGENT_TOOL_TIMEOUT = 3 * 60 * 60   # 명령·서브 에이전트가 도는 중엔 출력이 없어도 이 시간까지 기다림 (긴 빌드·테스트)
 RESULT_GRACE = 3      # 초: Claude 최종 답(result) 뒤 프로그램이 스스로 끝나길 기다리는 시간. 넘으면 차례를 끝낸다
 LEAD_BUSY_TAKEOVER = int(os.environ.get("OFFICE_LEAD_BUSY") or 120)   # 초: 담당이 다른 차례를 이만큼 붙잡고 있으면 쉬는 쪽이 새 요청 계획·미착수 작업을 맡는다
+PEER_DONE_GRACE = 20   # 초: 동료 작업이 끝난 뒤 끝낸 쪽이 보내는 말을 기다렸다가, 그 말이 없을 때만 서버가 깨운다
 WAIT_DEADLINE = 15 * 60   # 초: office wait 기본 기한(감시 프로세스 없을 때), 백그라운드 로그가 이만큼 안 바뀌어도 담당을 한 번 깨운다
 
 
@@ -661,6 +662,7 @@ def board_text(s, n_msgs=15):
     out.append("== 작업판 ==")
     out += [f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {t['title']}"
             + (f" — 기다리는 중: {t['wait_reason']}" if t["status"] == "waiting" and t.get("wait_reason") else "")
+            + (" (" + ", ".join(f"#{x}" for x in t["wait_on"]) + " 끝나면 깨움)" if t["status"] == "waiting" and t.get("wait_on") else "")
             + (f" — 사용자 확인 필요: {pending_user_request(t)['text']}" if pending_user_request(t) else "")
             + (f" — 진행: {progress_text(t['progress'])}" if t["status"] != "done" and t.get("progress") else "")
             + (f" — {t['note']}" if t.get("note") else "") for t in s["tasks"] if t["status"] != "done" or
@@ -939,7 +941,7 @@ def cmd_claim(a):
 
 BG_FIELDS = ("wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd")
 WAIT_FIELDS = ("wait_reason", "waiting_at", "wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_deadline",
-               "wait_notified", "wait_overdue", "wait_stale")
+               "wait_notified", "wait_overdue", "wait_stale", "wait_on", "wait_ready", "wait_peer_seen")
 
 
 def wait_probe(t):
@@ -1042,7 +1044,14 @@ def mark_waiting(a, reason, **watch):
         for key in WAIT_FIELDS:
             t.pop(key, None)
         minutes = getattr(a, "minutes", None)
-        deadline = time.time() + minutes * 60 if minutes else (None if watch.get("wait_pid") else time.time() + WAIT_DEADLINE)
+        if minutes:
+            deadline = time.time() + minutes * 60
+        elif watch.get("wait_pid"):
+            deadline = None
+        elif watch.get("wait_on"):   # 기다리는 작업이 끝나면 바로 깨우니 기한은 안전망으로만 길게 둔다
+            deadline = time.time() + WAIT_DEADLINE * 4
+        else:   # 대상 없는 기다림: 기한 알림을 받고도 다시 걸면 15→30→60→120→240분으로 늘린다
+            deadline = time.time() + WAIT_DEADLINE * 2 ** min(t.get("wait_overdue_count", 0), 4)
         t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time(), **watch)
         if deadline:
             t["wait_deadline"] = deadline
@@ -1062,8 +1071,17 @@ def cmd_wait(a):
     if pid and not ident:
         raise UserError(f"프로세스 확인 — pid {pid} 가 이미 없습니다. 끝났는지 확인하고 office done 하거나 office bg 로 다시 띄우세요.")
     log = str(Path(a.log).expanduser().resolve()) if getattr(a, "log", None) else None
-    mark_waiting(a, reason, wait_pid=pid, wait_start=ident and ident["start"], wait_log=log)
-    print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else ""))
+    on = sorted(set(getattr(a, "on", None) or []))
+    if on:
+        with state() as s:
+            ids = {t["id"]: t for t in s["tasks"]}
+        if a.id in on or any(x not in ids for x in on):
+            raise UserError("기다릴 작업 확인 — --on 에는 이 작업이 아닌, 작업판에 있는 작업 번호를 적어 주세요.")
+        if all(ids[x]["status"] == "done" for x in on):
+            raise UserError(f"기다릴 작업 확인 — {', '.join('#' + str(x) for x in on)} 는 이미 끝났어요. 결과를 확인하고 이어가세요.")
+    mark_waiting(a, reason, wait_pid=pid, wait_start=ident and ident["start"], wait_log=log, wait_on=on or None)
+    print(f"#{a.id} 기다림" + (f" · pid {pid} 감시" if pid else "") + (f" · 로그 {log}" if log else "")
+          + (f" · {', '.join('#' + str(x) for x in on)} 끝나면 깨움" if on else ""))
 
 
 def pending_user_request(t, now=None):
@@ -1293,10 +1311,16 @@ def turn_log_job(msgs, agent, job, text=""):
 
 
 
+ASKS_PEER = re.compile(r"부탁|해\s?줘|봐\s?줘|알려\s?줘|넘겨\s?줘|맡아\s?줘|이어\s?받아|반영해\s?줘|검수해\s?줘|확인해\s?줘|진행해\s?줘")
+
+
 def cmd_say(a):
     with state(True) as s:
         job = message_job(s)
         kind = ("progress" if a.to == "user" else "note") if getattr(a, "info", False) else "msg"   # --to user --info: 사용자 진행 알림(차례·결과 카드 아님)
+        if kind == "note" and a.to in AGENTS and a.to != me() and ASKS_PEER.search(a.text):
+            kind = "msg"   # 동료가 행동해야 하는 말을 --info 로 보내면 상대가 안 깨어 일이 멈춘다
+            print("동료에게 할 일을 부탁하는 말이라 깨우는 메시지로 보냈어요.")
         explicit = getattr(a, "re", None)
         received = os.environ.get("OFFICE_REPLY_TO", "")
         if explicit is None and getattr(a, "job", None) is None and a.to == "user" and kind == "msg" and received.isdecimal() and any(m["id"] == int(received) and m.get("from") == "user" and m.get("to") in (me(), "all") for m in s["msgs"]):
@@ -1693,7 +1717,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office add "할일" --to 이름       작업 만들어 배정 (리더가 일 쪼갤 때)
   office claim ID                  주인 없는 작업 가져가기
   office done ID "결과 요약"        끝냄
-  office wait ID "기다리는 것" [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·감시 프로세스 종료·기한 지나면 깨어남)
+  office wait ID "기다리는 것" [--on 작업번호] [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·기다리던 작업 완료·감시 프로세스 종료·기한 지나면 깨어남)
   office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
   office progress ID "지금 상태" [--done N --total M] [--resume-at 20:10] [--notify]   오래 도는 일의 진행을 화면에 남기기 (bg 명령 안에선 ID 생략)
   office handoff ID --to {other} "진행상황/이유"   넘기기
@@ -1719,7 +1743,10 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
 - 작업 추가 전에 같은 작업이 있는지 확인하고 기존 ID를 사용한다. 작은 수정은 한 명이 끝내고 분리 가능한 작업·독립 검수에만 둘을 쓴다.
-- 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다.
+- 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다. 반영·검수·확인 부탁이나 넘겨줄 결과처럼 상대가 이어받아야 하는 말은 --info로 보내지 마라.
+- 동료 작업 결과를 기다리면 `office wait ID "사유" --on 작업번호`로 그 작업을 걸어라. 끝나면 서버가 바로 깨운다. 요청 전체를 대표하는 작업(최종 검수·마감 등)을 기다림으로 걸어 두지 말고, 남은 일은 작은 작업으로 등록해라.
+- 기다리는 결과와 무관한 일은 먼저 해라. OCR 하나·동료 작업 하나에 전체를 묶어 보류하지 말고, 이미 끝난 부분부터 반영해라.
+- 사용자에게 확인을 넘기기 전에 스스로 확인할 방법(짧은 구간 재처리·원본 대조 등)을 먼저 해 봐라. 그래도 사용자가 해야 하면 need-user에 무엇을·어디서·어떻게 할지 적어라.
 - 지금 차례의 요청이 아닌 다른 요청(예: 사용자의 새 요청)에 대한 말은 `office say --job 요청번호 ...`로 해당 요청 묶음에 붙인다.
 - 몇 분 넘는 요청에선 단계가 끝났을 때·동료 결과가 왔을 때·막히거나 가정이 틀렸거나 예상보다 길어질 때 `office say --to user --info "한 줄"`로 사용자에게 알린다(사용자 차례를 만들지 않음).
 - 메시지는 필요한 것만. 인사·감사·맞장구 금지.
@@ -2559,7 +2586,11 @@ class Worker:
                and m.get("job") not in cancelled
                and (m["from"] not in (self.name, "system") or m.get("wake") and m["to"] == self.name) and m["to"] in (self.name, "all")
                and not (m["from"] != "user" and m["text"].strip() in ("대기", "확인", "확인했음", "알겠습니다", "고마워"))]
-        body = "\n".join(f"- {m['from']}: {m['text']}" for m in new)
+        # 다른 요청 차례(기획·답장·검수)에 실려 지나간 깨우는 메시지는 한 번 더 싣는다
+        carried = [s["msgs"][i - 1] for i in getattr(self, "carry_msgs", []) if 0 < i <= len(s["msgs"])
+                   and s["msgs"][i - 1].get("job") not in cancelled and s["msgs"][i - 1] not in new]
+        new = carried + new
+        body = "\n".join(f"- {m['from']}: {m['text']}" + (" (다른 요청 차례에 같이 왔던 메시지 — 이미 처리했으면 넘어가라)" if m in carried else "") for m in new)
         jobs = [j for j in s["jobs"] if j["status"] != "done"]
         mine_lead = [j for j in jobs if j.get("acting_lead", j["lead"]) == self.name]
         planning = {j["id"] for j in jobs if j["status"] == "planning"}
@@ -2861,6 +2892,7 @@ class Worker:
                             j["status"] = "review"
             previous_read = self.turn_read_start = self.read_upto
             self.read_upto = total
+            previous_carry, self.carry_msgs = list(getattr(self, "carry_msgs", [])), []
             self.reply_message_id = next((m["id"] for m in reversed(new) if m["from"] == "user"), new[-1]["id"] if new else None)
             if getattr(self, "recovery", None):
                 if self.recovery["phase"] == "recovered":
@@ -2929,6 +2961,7 @@ class Worker:
             if self.immediate_pause:
                 self.immediate_pause = False
                 self.read_upto = previous_read
+                self.carry_msgs = previous_carry
                 self.resume_turn = dict(self.doing)
                 self.paused, self.error, self.error_kind = True, None, None
                 self.idle("paused")
@@ -2966,6 +2999,7 @@ class Worker:
                 if not why and self.rc:
                     why = f"현재 차례가 종료 코드 {self.rc}로 끝났어요. 현재 오류 출력이 없어 원인을 확인하지 못했어요."
                 self.read_upto = previous_read
+                self.carry_msgs = previous_carry
                 retry_key = "direct" if job is None else str(job)
                 retries = self.retry_counts.get(retry_key, 0)
                 if self.transient_failure(why) and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not getattr(self, "manual_pause", False):
@@ -3036,6 +3070,8 @@ class Worker:
                     event(recovered, f"{disp(self.name)} 자동 복구 완료 · 중단된 차례가 정상으로 끝났어요.", job=job)
             self.resume_turn = None
             self.fail_count, self.failure_key = 0, None
+            if desc in ("plan", "reply", "review"):   # 이 요청만 다룬 차례: 다른 요청의 깨우는 메시지는 다음 차례에 다시 싣는다(한 번만)
+                self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]
             with state(sid=sid) as record:
                 made_progress = self.progress_signature(record) != self.turn_progress_signature
             if made_progress or any(m["from"] == "user" for m in new) or not only_chat:
@@ -3860,16 +3896,58 @@ class Office:
                 post(record, "system", "user", text, "progress", job=job)
 
     def check_waits(self, sid):
-        """기다림 작업: 감시 프로세스가 끝나면(실패·강제 종료 포함), 기한이 지나면, 로그가 오래 멈추면 담당을 한 번씩 깨운다"""
+        """기다림 작업: 감시 프로세스가 끝나면(실패·강제 종료 포함), 기다리던 작업·같은 요청의 동료 작업이 끝나면,
+        기한이 지나면, 로그가 오래 멈추면 담당을 한 번씩 깨운다"""
         now = time.time()
+        notes = []   # (작업, 표시 필드, 저장 값, 머리말, 꼬리, 조용히 표시만, 사용자에게도 알림)
         with state(sid=sid) as s:
+            tasks = {t["id"]: t for t in s["tasks"]}
             waits = [dict(t) for t in s["tasks"] if t["status"] == "waiting" and t.get("owner") in AGENTS]
-        notes = []
+            msgs = s["msgs"]
+
+            def woken_since(name, since, job):
+                """since 뒤에 같은 요청으로 name 을 깨우는 메시지(동료 말·시스템 깨움)가 이미 갔는지"""
+                for m in reversed(msgs):
+                    if m.get("at", 0) <= since:
+                        return False
+                    if m.get("to") == name and m.get("job") == job and m.get("kind", "msg") == "msg" and (m.get("from") not in (name, "system") or m.get("wake")):
+                        return True
+                return False
+
+            told = set()
+            for t in waits:
+                if pending_user_request(t, now):
+                    continue
+                owner = t["owner"]
+                on = [tasks[x] for x in t.get("wait_on") or [] if x in tasks]
+                if on:   # office wait --on: 기다리던 작업이 모두 끝나면 바로 깨운다
+                    if t.get("wait_ready") or not all(x["status"] == "done" for x in on):
+                        continue
+                    latest = max(x.get("done_at") or 0 for x in on)
+                    if now - latest < PEER_DONE_GRACE:   # 끝낸 쪽이 바로 보내는 말과 겹쳐 두 번 깨우지 않게 잠깐 기다린다
+                        continue
+                    head = f"[기다리던 작업 끝남] 작업 #{t['id']} · " + ", ".join(f"#{x['id']}" for x in on) + " 완료"
+                    tail = "\n".join(f"- #{x['id']} {disp(x.get('owner'))}: {(x.get('note') or x['title'])[:300]}" for x in on)
+                    notes.append((t, "wait_ready", now, head, tail, woken_since(owner, latest, t.get("job")), False))
+                    continue
+                if t.get("wait_pid"):   # 자기 프로세스를 기다리는 중이면 그 프로세스 결과로 깨운다
+                    continue
+                seen = max(t.get("waiting_at") or 0, t.get("wait_peer_seen") or 0)
+                done = [x for x in tasks.values() if x["status"] == "done" and x.get("owner") not in (None, owner)
+                        and x.get("job") == t.get("job") and (x.get("done_at") or 0) > seen]
+                if not done:
+                    continue
+                latest = max(x["done_at"] for x in done)
+                if now - latest < PEER_DONE_GRACE:
+                    continue
+                key = (owner, t.get("job"), latest)
+                head = (f"[동료 작업 끝남] 작업 #{t['id']} 기다리는 중에 동료가 "
+                        + ", ".join(f"#{x['id']}" for x in done) + "을(를) 끝냈어요")
+                tail = "\n".join(f"- #{x['id']} {disp(x.get('owner'))}: {(x.get('note') or x['title'])[:300]}" for x in done)
+                notes.append((t, "wait_peer_seen", latest, head, tail, key in told or woken_since(owner, latest, t.get("job")), False))
+                told.add(key)
         for t in waits:
-            user_request = pending_user_request(t, now)
-            if user_request:
-                if user_request["status"] == "expired" and not t.get("user_expired_notified"):
-                    notes.append((t, "user_expired_notified", f"[사용자 확인 기한 지남] 작업 #{t['id']} · {user_request['text']}", ""))
+            if pending_user_request(t, now):
                 continue
             alive, log_at = wait_probe(t)
             label = f"작업 #{t['id']} · {t.get('wait_reason') or '기다림'}"
@@ -3887,24 +3965,45 @@ class Office:
                             tail = safe_agent_diagnostic(f.read().decode(errors="replace")).strip()[-600:]
                 except OSError:
                     pass
+                # office bg 는 종료 코드 파일을 남긴다. 그게 없으면 강제 종료일 수 있고, --pid 감시는 원래 종료 코드를 모른다
                 result = (f"끝났어요(종료 코드 0)" if rc == 0 else f"실패했어요(종료 코드 {rc})" if rc is not None
-                          else "중간에 멈췄어요(종료 코드 없음 — 강제 종료됐을 수 있어요)")
-                notes.append((t, "wait_notified", f"[백그라운드 {result}] {label}", tail))
+                          else "중간에 멈췄어요(종료 코드가 남지 않았어요 — 강제 종료됐을 수 있어요)" if t.get("wait_rc")
+                          else "감시하던 프로세스가 끝났어요(종료 코드는 알 수 없어요)")
+                notes.append((t, "wait_notified", now, f"[백그라운드 {result}] {label}", tail, False, True))
             elif t.get("wait_deadline") and now >= t["wait_deadline"] and not t.get("wait_overdue"):
-                notes.append((t, "wait_overdue", f"[기다림 기한 지남] {label} · {int((now - t.get('waiting_at', now)) // 60)}분째", ""))
+                # 사용자 화면엔 처음 한 번만 알린다. 같은 작업을 다시 걸어 반복되는 기한 알림은 담당에게만 간다
+                notes.append((t, "wait_overdue", now, f"[기다림 기한 지남] {label} · {int((now - t.get('waiting_at', now)) // 60)}분째", "",
+                              False, not t.get("wait_overdue_count")))
             elif (alive and log_at and now - max(log_at, (t.get("progress") or {}).get("at") or 0, t.get("waiting_at") or 0) >= WAIT_DEADLINE
                   and now >= ((t.get("progress") or {}).get("resume_at") or 0) + 300 and not t.get("wait_stale")):
-                notes.append((t, "wait_stale", f"[로그 멈춤] {label} · 프로세스는 살아 있는데 로그가 {int((now - log_at) // 60)}분째 안 바뀌어요", ""))
+                notes.append((t, "wait_stale", now, f"[로그 멈춤] {label} · 프로세스는 살아 있는데 로그가 {int((now - log_at) // 60)}분째 안 바뀌어요", "", False, True))
+        user_expired = [(t, pending_user_request(t, now)) for t in waits]
+        for t, request in user_expired:
+            if request and request["status"] == "expired" and not t.get("user_expired_notified"):
+                notes.append((t, "user_expired_notified", now, f"[사용자 확인 기한 지남] 작업 #{t['id']} · {request['text']}", "", False, True))
         if not notes:
             return
         with state(True, sid) as s:
-            for t, flag, head, tail in notes:
+            for t, flag, value, head, tail, silent, to_user in notes:
                 cur = next((x for x in s["tasks"] if x["id"] == t["id"]), None)
-                if not cur or cur["status"] != "waiting" or cur.get(flag):
+                if not cur or cur["status"] != "waiting":
                     continue
-                cur[flag] = now
-                post(s, "system", "user", head, "progress", job=cur.get("job"))
-                body = head + (f"\n로그 끝:\n{tail}" if tail else "") + f"\n확인한 뒤 `office claim {cur['id']}`로 이어가거나 끝났으면 `office done {cur['id']}`. 더 기다릴 거면 `office wait {cur['id']} \"사유\"`로 다시 걸어라."
+                if flag == "wait_peer_seen" and (cur.get(flag) or 0) >= value or flag != "wait_peer_seen" and cur.get(flag):
+                    continue
+                if flag == "wait_peer_seen" and cur.get("waiting_at") != t.get("waiting_at"):
+                    continue   # 그 사이 다시 걸었으면 새 기다림 기준으로 다음 점검에서 본다
+                cur[flag] = value
+                if flag == "wait_overdue":
+                    cur["wait_overdue_count"] = cur.get("wait_overdue_count", 0) + 1
+                if silent:   # 이미 깨우는 말이 갔으면 표시만 남긴다
+                    continue
+                if to_user:
+                    post(s, "system", "user", head, "progress", job=cur.get("job"))
+                if flag in ("wait_ready", "wait_peer_seen"):
+                    hint = f"\n결과를 이어받을 일이 있으면 `office claim {cur['id']}`로 다시 시작해라. 아직 기다릴 거면 그대로 두고 차례를 끝내라."
+                else:
+                    hint = f"\n확인한 뒤 `office claim {cur['id']}`로 이어가거나 끝났으면 `office done {cur['id']}`. 더 기다릴 거면 `office wait {cur['id']} \"사유\"`로 다시 걸어라."
+                body = head + (f"\n{'로그 끝:' if flag == 'wait_notified' else '끝낸 작업:'}\n{tail}" if tail else "") + hint
                 post(s, "system", cur["owner"], body, "msg", job=cur.get("job"))
                 s["msgs"][-1]["wake"] = True
                 server_log("task.wait." + flag)
@@ -5193,7 +5292,8 @@ def main():
     x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_done)
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
-    x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움. 기본 15분, --pid 를 주면 기한 없음"); x.set_defaults(f=cmd_wait)
+    x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움. 기본 15분, --pid 를 주면 기한 없음")
+    x.add_argument("--on", type=int, nargs="+", help="기다릴 작업 번호 (그 작업이 모두 끝나면 바로 깨움)"); x.set_defaults(f=cmd_wait)
     x = sp.add_parser("need-user", help="사용자에게 필요한 자료·행동을 남기기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--expires-at"); x.set_defaults(f=cmd_need_user)
     x = sp.add_parser("resolve-user", help="사용자 자료·답 확인 후 작업 재개"); x.add_argument("id", type=int); x.add_argument("text")
