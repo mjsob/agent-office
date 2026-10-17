@@ -22,12 +22,16 @@ assert f([M(29)], "claude", 27, "x") == (29, "x")                 # 다른 요�
 assert f([M(29), M(29)], "claude", 27, "x") == (29, "x")
 assert f([M(27)], "claude", 27, "x") == (27, "x")                 # 원래 요청
 assert f([M(28), M(29), M(29)], "claude", 27, "x") == (None, "(요청 28·29 관련) x")   # 섞임: 한쪽으로 몰지 않음
-assert f([M(29), M(27)], "claude", 27, "x") == (27, "x")          # 원래 요청 포함이면 유지
-assert f([M(None), M(29)], "claude", 27, "x") == (27, "x")        # 단독 대화 포함이면 유지
+assert f([M(29), M(27)], "claude", 27, "x") == (None, "(요청 27·29 관련) x")  # 원래 요청도 혼합이면 분리
+assert f([M(None), M(29)], "claude", 27, "x") == (None, "(요청 29·공통 기록 관련) x")  # 공통 기록 혼합
 assert f([], "claude", 27, "x") == (27, "x")                      # 사용자 발송 없음
 assert f([M(29, f="codex")], "claude", 27, "x") == (27, "x")      # 동료 메시지만
 assert f([M(29, t="codex")], "claude", 27, "x") == (27, "x")      # 사용자 대상 아님
 assert f([M(29, k="note")], "claude", 27, "x") == (27, "x")       # 대상 종류 아님
+
+assert f([M(None)], "claude", 27, "x") == (None, "x")
+assert f([M(None), M(27), M(29)], "claude", 27, "x") == (None, "(요청 27·29·공통 기록 관련) x")
+assert f([M(27), M(27)], "claude", 27, "x") == (27, "x")
 
 # --- say --job / retag
 d = o.sdir("t1")

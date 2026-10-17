@@ -1280,12 +1280,17 @@ def turn_log_job(msgs, agent, job, text=""):
     """차례 글이 붙을 (요청, 글). 이번 차례에 사용자에게 한 말이 다른 요청 하나에만 붙었으면 그 요청에 붙인다.
     서로 다른 요청이 섞였으면 어느 한 요청 본문으로 보이지 않게 단독 기록(요청 없음)으로 두고 관련 요청을 앞에 적는다."""
     said = [m.get("job") for m in msgs if m["from"] == agent and m["to"] == "user" and m.get("kind") in ("msg", "report", "progress")]
-    if not said or job in said or None in said:
+    if not said:
         return job, text
-    jobs = sorted(set(said))
-    if len(jobs) == 1:
-        return jobs[0], text
-    return None, "(요청 " + "·".join(map(str, jobs)) + " 관련) " + text
+    targets = set(said)
+    if len(targets) == 1:
+        return said[0], text
+    jobs = sorted(j for j in targets if j is not None)
+    related = "요청 " + "·".join(map(str, jobs))
+    if None in targets:
+        related += "·공통 기록"
+    return None, "(" + related + " 관련) " + text
+
 
 
 def cmd_say(a):
