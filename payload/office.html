@@ -374,6 +374,8 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 #typing .tp-act { margin: 0 0 4px 12px; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (prefers-reduced-motion: reduce) { #typing .tp::before { animation: none; } }
 .thread.cancelled .pill.done { color: var(--muted); }
+.removebar { display: flex; justify-content: flex-end; }
+.removebar button { font-size: 12px; padding: 3px 8px; }
 .thread.flash { animation: flash 1.2s; }
 @keyframes flash { 0%, 40% { background: var(--warn-soft); } 100% { background: none; } }
 .summary { font-size: 12.5px; white-space: pre-wrap; margin-top: 8px; padding: 8px 10px; background: var(--chip); border-radius: 8px; }
@@ -1611,7 +1613,8 @@ function threadHtml(t) {
     ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}${bar}
     ${status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
-      ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}</div>`;
+      ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}
+    ${j.cancelled && !live ? `<div class="removebar"><button class="ghost" onclick='removeJob(${j.id})'>${icon("x", "sm")}대화에서 지우기</button></div>` : ""}</div>`;
 }
 
 function renderTimeline(msgs, jobs) {
@@ -1623,7 +1626,8 @@ function renderTimeline(msgs, jobs) {
   const anchor = stick ? null : [...tl.querySelectorAll(".thread[id]")].find(el => el.getBoundingClientRect().bottom > sec.getBoundingClientRect().top);
   const anchorId = anchor?.id, anchorTop = anchor?.getBoundingClientRect().top;
   // 끝난 요청이 쌓이면 최근 KEEP개만 펼치고, 그 이전은 맨 위 '이전 요청 N건'에 한 줄씩 압축 (눌러서 개별로 펼침)
-  const items = threads(msgs, jobs), KEEP = 5;
+  // 대화에서 지운(취소한) 요청은 묶음째 숨김. 요청 순서로 번호를 맞추는 threads()엔 전체 목록을 넘김
+  const items = threads(msgs, jobs).filter(x => !x.job?.removed), KEEP = 5;
   const tIdx = items.map((x, i) => x.m ? -1 : i).filter(i => i >= 0);
   const cut = tIdx.length > KEEP ? tIdx[tIdx.length - KEEP] : 0;
   const old = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) === "done");
@@ -1715,6 +1719,7 @@ function taskProgressHtml(t) {
   return `<span class="task-progress" data-progress-task="${t.id}" title="${esc(taskProgressTip(t))}"><span class="progress-text">${esc(text)}</span>${ratio ? `<progress max="${p.total}" value="${Math.min(p.done, p.total)}" aria-label="처리한 항목 비율"></progress>` : ""}${typeof p.at === "number" && p.at > 0 ? `<span class="freshness">진행 정보 갱신 ${esc(ago(p.at))}</span>` : ""}</span>`;
 }
 function renderBoard(jobs, tasks, resv = [], cur = "") {
+  jobs = jobs.filter(j => !j.removed);   // 대화에서 지운 요청은 끝난 요청 목록에도 안 보임
   // 작업 번호는 '요청번호-순번'(3-1)으로: '요청 3'과 '작업 #3'이 헷갈리던 문제. 원래 번호는 툴팁에
   const taskRow = (t, i) => `<div class="task ${t.status} ${t.wait_alive === false ? "wait-stopped" : ""}">${icon(t.status)}
     <span class="ti"><span class="t" title="작업 #${t.id} · ${esc(t.title)}"><span class="tno">${t.job ? `${t.job}-${i + 1}` : `#${t.id}`}</span> ${esc(t.title)}${t.level ? `<small class="task-level">${esc({light:"가벼움",normal:"보통",heavy:"집중"}[t.level] || t.level)}</small>` : ""}</span>${t.status === "waiting" ? `<span class="note">${t.wait_alive === false && !t.wait_detail ? "백그라운드 작업이 멈췄어요" : t.wait_kind === "waiting" ? "기다리는 중" : t.wait_kind === "working" || t.wait_alive === true ? "백그라운드 실행 중" : "기다리는 중"}${t.wait_detail ? ` · ${esc(t.wait_detail)}` : ""}${t.wait_log_at ? ` · 마지막 기록 ${ago(t.wait_log_at)}` : ""}${t.wait_reason ? ` · ${esc(t.wait_reason)}` : ""}</span>` : ""}${t.note ? `<span class="note">${esc(t.note)}</span>` : ""}${t.status === "done" ? "" : taskProgressHtml(t)}</span>
@@ -1810,6 +1815,11 @@ const splitMsg = t => { const s = String(t ?? ""), i = s.indexOf(" — "); retur
 function cancelJob(id) {
   if (confirm(`요청 ${id}을(를) 취소할까요?\n지금 하던 차례는 멈추고 이 요청을 닫습니다. 이미 바뀐 파일은 그대로 남습니다.`))
     api({action: "cancel_job", id});
+}
+// 취소한 요청만 대화에서 지울 수 있음. 서버는 숨김 표시만 하고 기록은 남김
+function removeJob(id) {
+  if (confirm(`취소한 요청 ${id}을(를) 대화에서 지울까요?\n대화와 작업판에서 사라져요. 바뀐 파일은 그대로 남아요.`))
+    api({action: "remove_job", id});
 }
 // 진행 중 요청 묶음의 한 줄 상태: 이 요청을 맡아 일하는 에이전트·멈춘 에이전트·요청 후 경과 시간 (매초 갱신, 다시 그리기 없이 글자만 교체)
 // 내가 보낸 메시지가 아직 안 읽혔을 때: 받을 에이전트가 차례를 끝낼 때까지 읽지 못하니 무엇을 하는 중인지 말풍선 아래에 보여 줌
