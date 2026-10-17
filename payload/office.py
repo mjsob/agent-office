@@ -1289,6 +1289,11 @@ def cmd_say(a):
             if source is None:
                 raise UserError("답장 대상 확인 — 받은 사용자 메시지를 선택하세요.")
             job = source.get("job")
+        forced = getattr(a, "job", None)
+        if forced is not None:   # --job: 동료 메시지를 받고 일하던 차례라도 다른 요청에 대한 말은 그 요청 묶음에 붙인다
+            if me() not in AGENTS or explicit is not None or not any(j["id"] == forced for j in s["jobs"]):
+                raise UserError("요청 번호 확인 — --job은 담당자가 있는 요청 번호에만 쓸 수 있고 --re와 함께 쓸 수 없습니다.")
+            job = forced
         if explicit is not None and (me() not in AGENTS or a.to != "user" or kind != "msg"):
             raise UserError("답장 대상 확인 — --re는 담당자의 사용자 답장에만 사용할 수 있습니다.")
         reply_to = reply_target(s, me(), explicit) if me() in AGENTS and a.to == "user" and kind == "msg" and (job is None or explicit is not None) else None
@@ -1679,6 +1684,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
 - 작업 추가 전에 같은 작업이 있는지 확인하고 기존 ID를 사용한다. 작은 수정은 한 명이 끝내고 분리 가능한 작업·독립 검수에만 둘을 쓴다.
 - 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다.
+- 지금 차례의 요청이 아닌 다른 요청(예: 사용자의 새 요청)에 대한 말은 `office say --job 요청번호 ...`로 해당 요청 묶음에 붙인다.
 - 몇 분 넘는 요청에선 단계가 끝났을 때·동료 결과가 왔을 때·막히거나 가정이 틀렸거나 예상보다 길어질 때 `office say --to user --info "한 줄"`로 사용자에게 알린다(사용자 차례를 만들지 않음).
 - 메시지는 필요한 것만. 인사·감사·맞장구 금지.
 - 사용자에게 직접 받은 메시지는 job·작업판이 비어 있어도 요청이다. 질문에는 답하고, 수정·실행 요청은 작업을 등록·claim한 뒤 실제로 완료해라. 단독 요청을 '대기'로 무시하지 마라.
@@ -5165,6 +5171,7 @@ def main():
     x = sp.add_parser("say"); x.add_argument("text"); x.add_argument("--to", default="all", choices=(*AGENTS, "user", "all"))
     x.add_argument("--re", type=int, help="답장할 사용자 메시지 ID (생략하면 자동 연결)")
     x.add_argument("--info", action="store_true", help="진행 알림만 남기고 상대를 깨우지 않음")
+    x.add_argument("--job", type=int, help="이 말이 속한 요청 번호 (생략하면 이번 차례의 요청). 다른 요청 이야기를 할 때만")
     x.set_defaults(f=cmd_say)
     x = sp.add_parser("finish"); x.add_argument("text"); x.set_defaults(f=cmd_finish)
     x = sp.add_parser("lesson"); x.add_argument("text"); x.set_defaults(f=cmd_lesson)
