@@ -203,4 +203,39 @@ o.cmd_say(argparse.Namespace(text="확인", to="codex", info=False, re=None, job
 age(2, 30)
 check()
 assert len(wakes(load())) == 1, "짧은 답은 깨운 말로 세면 안 됨"
+
+# --- 동료가 모두에게(to=all) 보낸 말도 깨운 말로 센다 (next_turn 과 같은 기준)
+reset([task(1, "codex"), task(2, "claude")])
+wait(1, text="#2 결과 대기")
+o.cmd_done(argparse.Namespace(id=2, text="끝"))
+o.cmd_say(argparse.Namespace(text="#2 끝났어, 반영해줘", to="all", info=False, re=None, job=1))
+age(2, 30)
+check()
+assert not wakes(load()), "to=all 말이 이미 깨웠으면 서버가 또 깨우면 안 됨"
+
+# --- 점검 도중 --on 대상을 바꿔 다시 걸면 옛 대상 완료로 새 기다림을 표시하지 않음
+reset([task(1, "codex"), task(2, "claude"), task(3, "claude")])
+wait(1, on=[2])
+o.cmd_done(argparse.Namespace(id=2, text="끝"))
+age(2, 30)
+real_post = o.Office.check_waits
+orig_state = o.state
+calls = {"n": 0}
+from contextlib import contextmanager
+@contextmanager
+def racing_state(write=False, sid=None):
+    if write and calls["n"] == 0:   # 읽기와 쓰기 사이에 다시 건다
+        calls["n"] = 1
+        wait(1, on=[3])
+    with orig_state(write, sid) as s:
+        yield s
+o.state = racing_state
+check()
+o.state = orig_state
+t = next(x for x in load()["tasks"] if x["id"] == 1)
+assert t["wait_on"] == [3] and not t.get("wait_ready") and not wakes(load()), t
+o.cmd_done(argparse.Namespace(id=3, text="끝3"))
+age(3, 30)
+check()
+assert len(wakes(load())) == 1 and "#3" in wakes(load())[0]["text"], wakes(load())
 print("ok")

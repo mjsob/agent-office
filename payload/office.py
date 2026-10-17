@@ -3917,7 +3917,7 @@ class Office:
                 for m in reversed(msgs):
                     if m.get("at", 0) <= since:
                         return False
-                    if (m.get("to") == name and m.get("job") == job and m.get("kind", "msg") == "msg" and (m.get("from") not in (name, "system") or m.get("wake"))
+                    if (m.get("to") in (name, "all") and m.get("job") == job and m.get("kind", "msg") == "msg" and (m.get("from") not in (name, "system") or m.get("wake"))
                             and not (m.get("from") != "user" and m.get("text", "").strip() in IDLE_REPLIES)):   # 차례를 안 만드는 짧은 답은 깨운 말로 안 센다
                         return True
                 return False
@@ -3998,7 +3998,7 @@ class Office:
                     continue
                 if flag == "wait_peer_seen" and (cur.get(flag) or 0) >= value or flag != "wait_peer_seen" and cur.get(flag):
                     continue
-                if flag == "wait_peer_seen" and cur.get("waiting_at") != t.get("waiting_at"):
+                if flag in ("wait_peer_seen", "wait_ready") and (cur.get("waiting_at"), cur.get("wait_on")) != (t.get("waiting_at"), t.get("wait_on")):
                     continue   # 그 사이 다시 걸었으면 새 기다림 기준으로 다음 점검에서 본다
                 cur[flag] = value
                 if flag == "wait_overdue":
