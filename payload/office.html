@@ -431,6 +431,42 @@ body > footer { grid-row: 3; }
 .msg .body .code-toolbar .code-lang { margin: 0; }
 .copy-code { padding: 3px 8px; font-size: 12px; min-width: 64px; justify-content: center; }
 .msg .body .code-shell pre.codeblock { margin: 0; border: 0; border-radius: 0; }
+/* 확인 대기 카드 본문도 대화 본문과 같은 글 꼴·링크·코드 스타일 */
+.user-action .body { white-space: pre-wrap; }
+.user-action .body code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+.user-action .body { line-height: 1.65; white-space: normal; word-break: keep-all; }
+.user-action .body .p { margin: 0; }
+.user-action .body .p + .p { margin-top: 10px; }
+.user-action .body .md-list { margin: 8px 0; padding-left: 22px; }
+.user-action .body .md-list li { padding-left: 2px; margin: 4px 0; }
+.user-action .body .md-list li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.user-action .body .md-list .md-list { margin: 4px 0; padding-left: 22px; }
+.user-action .body .table-wrap { max-width: 100%; min-width: 0; overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.user-action .body table { border-collapse: collapse; width: 100%; min-width: max-content; font-size: 12.5px; line-height: 1.6; }
+.user-action .body th, .user-action .body td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.user-action .body th { background: var(--chip); font-weight: 600; }
+.user-action .body tbody tr:last-child td { border-bottom: 0; }
+.user-action .body pre.codeblock { margin: 8px 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; line-height: 1.5; }
+.user-action .body a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.user-action .body a:hover { color: var(--accent); }
+.user-action .body .path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.user-action .body .path:hover { color: var(--accent); }
+.user-action .body pre.codeblock code { background: none; padding: 0; border-radius: 0; }
+.user-action .body .code-lang { display: block; margin-bottom: 6px; color: var(--muted); font: 11px ui-monospace, monospace; }
+.user-action .body .gap { height: 8px; }
+.user-action .body .h { font-weight: 700; font-size: 14.5px; color: var(--text); margin: 18px 0 7px; line-height: 1.5; }
+.user-action .body .gap + .h { margin-top: 8px; }
+.user-action .body .h + .gap { display: none; }
+.user-action .body .h:first-child { margin-top: 0; }
+.user-action .body .li { position: relative; padding-left: 16px; margin: 3px 0; }
+.user-action .body .li::before { content: "•"; position: absolute; left: 3px; color: var(--muted); }
+.user-action .body .li.num { padding-left: 22px; }
+.user-action .body .li.num::before { content: none; }
+.user-action .body .li .n { position: absolute; left: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.user-action .body .quote { border-left: 3px solid var(--line); padding-left: 10px; color: var(--muted); }
+.user-action .body .lead1 { font-weight: 700; font-size: 14.5px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.user-action .body .code-toolbar .code-lang { margin: 0; }
+.user-action .body .code-shell pre.codeblock { margin: 0; border: 0; border-radius: 0; }
 #timeline.empty-timeline { min-height: 100%; justify-content: center; align-items: center; }
 .empty-conversation { color: var(--faint); font-size: 25px; font-weight: 500; text-align: center; padding: 24px; }
 @media (max-width: 600px) {
@@ -1567,7 +1603,7 @@ function threadHtml(t) {
   // 진행 중이면 묶음 맨 아래(가장 최근 메시지 바로 아래)에서: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
-  const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><span>${linkPlainPaths(esc(u.text || "대화창에 필요한 내용을 보내세요."))}</span>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
+  const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><div class="body">${md(u.text || "대화창에 필요한 내용을 보내세요.")}</div>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
   return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
     ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}${bar}
