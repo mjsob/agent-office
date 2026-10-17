@@ -615,6 +615,7 @@ def message_job(s):
 
 def request_history(jobs):
     """최근 6건 원문, 앞선 14건 한 줄 요약, 더 오래된 요청은 범위와 건수."""
+    jobs = [j for j in jobs if not j.get("removed")]
     lines = []
     if len(jobs) > 20:
         older = jobs[:-20]
@@ -634,7 +635,7 @@ def request_history(jobs):
 def recent_results(jobs, count=6, cap=700):
     """새 세션은 이전 대화를 기억 못 하니, 최근 끝난 요청의 사용자 원문과 최종 보고를 넘겨 이어받게 한다"""
     rows = []
-    for j in [j for j in jobs if j.get("status") == "done"][-count:]:
+    for j in [j for j in jobs if j.get("status") == "done" and not j.get("removed")][-count:]:
         answer = "취소됨" if j.get("cancelled") else (j.get("summary") or "").strip()
         if len(answer) > cap:
             answer = answer[:cap] + " …(생략)"
