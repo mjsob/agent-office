@@ -163,7 +163,6 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 /* 안 읽힌 메시지는 말풍선 너비·안내 줄을 처음부터 고정해 글이 바뀌어도 대화창이 흔들리지 않게 */
 .msg.pend { min-width: min(80%, 27em); }
 .msg.pend .readnote { min-height: 1.5em; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 0; min-width: 100%; box-sizing: border-box; }
-.msg.pend .readnote[hidden] { display: block; visibility: hidden; }
 .pulse.quiet { color: var(--muted); }
 .pulse.quiet::before { background: var(--faint); animation: none; }
 .dot.wrap { background: var(--faint); animation: none; }
@@ -1821,11 +1820,13 @@ function updateReadNotes(agents) {
       && !a.paused && Number.isFinite(a.read_id) && a.read_id < id);
     const waited = Date.now() / 1000 - at;
     el.closest(".msg")?.classList.toggle("pend", targets.length > 0);
-    if (!targets.length || waited < 5) { el.hidden = true; el.textContent = ""; el.removeAttribute("title"); return; }
+    if (!targets.length || waited < 5) {   // 안 읽힌 동안은 줄을 비워 두고(보이지 않게) 자리만 잡아 둠
+      el.hidden = !targets.length; el.style.visibility = targets.length ? "hidden" : ""; el.textContent = ""; el.removeAttribute("title"); return;
+    }
     const what = targets.length === 1 ? liveText(targets[0][1]) || doingText(targets[0][1].doing) : "";
     el.textContent = (targets.length > 1 ? "둘 다 일하는 중이라 차례가 끝나면 읽어요" : `${NAME[targets[0][0]]}가 이번 차례가 끝나면 읽어요`)
       + ` · ${dur(waited)}째` + (what ? ` · 지금 ${what}` : "");
-    el.title = el.textContent; el.hidden = false;
+    el.title = el.textContent; el.hidden = false; el.style.visibility = "";
   });
 }
 function updateLiveBars(agents) {
