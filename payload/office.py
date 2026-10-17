@@ -901,6 +901,16 @@ def cmd_add(a):
         j = open_job(s)
         if j and j.get("cancelled"):
             sys.exit("사용자가 취소한 요청에는 작업을 추가할 수 없습니다. 새 요청으로 진행하세요.")
+        # 선두 작업 번호가 있으면 그 작업을 우선한다. 본문 참조는 요청이 하나일 때만 연결한다.
+        # 숫자만으로 영상·시간을 작업으로 오인하지 않게 맨 번호는 작업 후속 문구가 있을 때만 쓴다.
+        leading = re.match(r"^\s*(?:#(\d+)(?![A-Za-z0-9_])|(\d+)\s+(?=후보|검수|독립|잔여|후속|새\s*실거래|완료|결과|보완))", a.text)
+        refs = ([int(leading.group(1) or leading.group(2))] if leading else
+                [int(x) for x in re.findall(r"(?<![\w/])#(\d+)(?![A-Za-z0-9_])", a.text)])
+        task_jobs = {t.get("job") for t in s["tasks"] if t["id"] in refs}
+        targets = [job for job in s["jobs"] if job["id"] in task_jobs
+                   and job["status"] != "done" and not job.get("cancelled")]
+        if len(targets) == 1:
+            j = targets[0]
         normalized = " ".join(a.text.split()).casefold()
         existing = next((task for task in s["tasks"] if task.get("job") == (j and j["id"]) and task["status"] != "done" and " ".join(task["title"].split()).casefold() == normalized), None)
         if existing:
@@ -919,7 +929,7 @@ def cmd_add(a):
                 event(s, f"요청 {j['id']} 후속 작업으로 다시 진행", me(), job=j["id"])
             j["status"] = "working"
             j.pop("finished_at", None)
-        event(s, f"작업 #{s['seq']} 추가: {a.text}" + (f" (담당 {disp(a.to)})" if a.to else ""), me(), job=message_job(s))
+        event(s, f"작업 #{s['seq']} 추가: {a.text}" + (f" (담당 {disp(a.to)})" if a.to else ""), me(), job=j and j["id"])
         print(f"#{s['seq']} 추가됨")
 
 
