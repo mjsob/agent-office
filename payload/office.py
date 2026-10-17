@@ -661,13 +661,27 @@ def board_text(s, n_msgs=15):
     out = ["== 요청(job) =="]
     out += [f"요청 {j['id']} [{j['status']}] 리더={j['lead']} : {j['text']}" for j in s["jobs"] if j["status"] != "done"] or ["(없음)"]
     out.append("== 작업판 ==")
-    out += [f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {t['title']}"
-            + (f" — 기다리는 중: {t['wait_reason']}" if t["status"] == "waiting" and t.get("wait_reason") else "")
+    # 열린 요청에 끝난 작업이 수백 개 쌓이면 차례 입력이 실행 인자 한도(128KB)를 넘어 에이전트가 못 뜬다.
+    # 끝난 작업은 최근 12개만 짧게 보이고 나머지는 개수로 줄인다. 진행 중 작업 글도 길이를 제한한다.
+    live = [t for t in s["tasks"] if t["status"] != "done"]
+    shown_done = [t for t in s["tasks"] if t["status"] == "done"
+                  and any(j["id"] == t.get("job") and j["status"] != "done" for j in s["jobs"])]
+    if len(shown_done) > 12:
+        out.append(f"(끝난 작업 {len(shown_done) - 12}개 생략)")
+        shown_done = shown_done[-12:]
+    def clip(text, n):
+        text = str(text)
+        return text if len(text) <= n else text[:n] + " …(생략)"
+    rows = []
+    for t in live + shown_done:
+        done = t["status"] == "done"
+        rows.append(f"{icon[t['status']]} #{t['id']} (요청 {t.get('job')}) [{t['owner'] or '미배정'}] {clip(t['title'], 160 if done else 700)}"
+            + (f" — 기다리는 중: {clip(t['wait_reason'], 300)}" if t["status"] == "waiting" and t.get("wait_reason") else "")
             + (" (" + ", ".join(f"#{x}" for x in t["wait_on"]) + " 끝나면 깨움)" if t["status"] == "waiting" and t.get("wait_on") else "")
-            + (f" — 사용자 확인 필요: {pending_user_request(t)['text']}" if pending_user_request(t) else "")
-            + (f" — 진행: {progress_text(t['progress'])}" if t["status"] != "done" and t.get("progress") else "")
-            + (f" — {t['note']}" if t.get("note") else "") for t in s["tasks"] if t["status"] != "done" or
-            any(j["id"] == t.get("job") and j["status"] != "done" for j in s["jobs"])] or ["(비어있음)"]
+            + (f" — 사용자 확인 필요: {clip(pending_user_request(t)['text'], 500)}" if pending_user_request(t) else "")
+            + (f" — 진행: {clip(progress_text(t['progress']), 400)}" if not done and t.get("progress") else "")
+            + (f" — {clip(t['note'], 200 if done else 500)}" if t.get("note") else ""))
+    out += rows or ["(비어있음)"]
     out.append("== 최근 대화 ==")
     out += [f"[{m['ts']}] {m['from']}{'' if m['to'] in ('all', 'log') else ' → ' + m['to']}: {m['text'][:150]}"
             for m in s["msgs"][-n_msgs:] if m.get("kind") != "turn"]
@@ -2232,6 +2246,9 @@ class Worker:
 
     # 에이전트 한 차례 실행. 진행상황을 activity로 흘리고 마지막 답을 돌려줌
     def run_agent(self, prompt, job, model_override=None):
+        raw = prompt.encode()
+        if len(raw) > 100_000:   # 실행 인자 한 개는 128KB 를 넘으면 안 된다. 가운데를 줄여 에이전트가 뜨게 한다
+            prompt = raw[:60_000].decode(errors="ignore") + "\n…(입력이 너무 길어 가운데를 생략했어. 작업판은 office board 로 확인해라)…\n" + raw[-35_000:].decode(errors="ignore")
         self.rc, self.error, self.notice = 0, None, None
         self.subs.clear()
         self.open_tools = {}   # 결과를 아직 안 받은 도구 호출: 이게 있으면 조용해도 명령이 도는 중
