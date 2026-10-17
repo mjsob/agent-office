@@ -160,6 +160,10 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .pulse::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pulse 1.2s ease-in-out infinite; }
 /* 오래 조용한 건 오류가 아님(긴 생각·긴 명령 실행 중) — 경고색 없이 차분하게. 진짜 오류는 서버가 error/notice로 따로 알림 */
 .readnote { margin: 6px 0 0; font-size: 11.5px; color: var(--faint); word-break: keep-all; }
+/* 안 읽힌 메시지는 말풍선 너비·안내 줄을 처음부터 고정해 글이 바뀌어도 대화창이 흔들리지 않게 */
+.msg.pend { min-width: min(80%, 27em); }
+.msg.pend .readnote { min-height: 1.5em; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 0; min-width: 100%; box-sizing: border-box; }
+.msg.pend .readnote[hidden] { display: block; visibility: hidden; }
 .pulse.quiet { color: var(--muted); }
 .pulse.quiet::before { background: var(--faint); animation: none; }
 .dot.wrap { background: var(--faint); animation: none; }
@@ -1816,11 +1820,12 @@ function updateReadNotes(agents) {
     const targets = Object.entries(agents || {}).filter(([n, a]) => (to === "all" || to === n) && a.status === "working"
       && !a.paused && Number.isFinite(a.read_id) && a.read_id < id);
     const waited = Date.now() / 1000 - at;
-    if (!targets.length || waited < 5) { el.hidden = true; el.textContent = ""; return; }
+    el.closest(".msg")?.classList.toggle("pend", targets.length > 0);
+    if (!targets.length || waited < 5) { el.hidden = true; el.textContent = ""; el.removeAttribute("title"); return; }
     const what = targets.length === 1 ? liveText(targets[0][1]) || doingText(targets[0][1].doing) : "";
     el.textContent = (targets.length > 1 ? "둘 다 일하는 중이라 차례가 끝나면 읽어요" : `${NAME[targets[0][0]]}가 이번 차례가 끝나면 읽어요`)
       + ` · ${dur(waited)}째` + (what ? ` · 지금 ${what}` : "");
-    el.hidden = false;
+    el.title = el.textContent; el.hidden = false;
   });
 }
 function updateLiveBars(agents) {
