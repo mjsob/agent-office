@@ -906,9 +906,11 @@ def cmd_add(a):
         leading = re.match(r"^\s*(?:#(\d+)(?![A-Za-z0-9_])|(\d+)\s+(?=후보|검수|독립|잔여|후속|새\s*실거래|완료|결과|보완))", a.text)
         refs = ([int(leading.group(1) or leading.group(2))] if leading else
                 [int(x) for x in re.findall(r"(?<![\w/])#(\d+)(?![A-Za-z0-9_])", a.text)])
-        task_jobs = {t.get("job") for t in s["tasks"] if t["id"] in refs}
+        bare = bool(leading and leading.group(2))   # '#' 없는 맨 번호는 영상 번호일 수 있어 아직 안 끝난 작업만 따른다
+        task_jobs = {t.get("job") for t in s["tasks"] if t["id"] in refs and not (bare and t["status"] == "done")}
+        # 옛 요청 차례에 붙은 후속만 바로잡는다. 새 요청에서 옛 작업을 참고하는 일은 새 요청에 남긴다
         targets = [job for job in s["jobs"] if job["id"] in task_jobs
-                   and job["status"] != "done" and not job.get("cancelled")]
+                   and job["status"] != "done" and not job.get("cancelled") and (not j or job["id"] > j["id"])]
         if len(targets) == 1:
             j = targets[0]
         normalized = " ".join(a.text.split()).casefold()

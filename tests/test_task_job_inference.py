@@ -21,11 +21,11 @@ assert d.is_relative_to(TMP)
 
 def reset():
     jobs = [{"id": i, "status": status, "lead": "codex", "text": str(i)}
-            for i, status in [(20, "working"), (36, "working"), (37, "review"), (38, "done"), (39, "working")]]
+            for i, status in [(20, "working"), (36, "working"), (37, "review"), (38, "done"), (45, "working"), (39, "working")]]
     jobs[-1]["cancelled"] = True
     tasks = [{"id": i, "job": job, "title": f"작업{i}", "owner": "claude", "status": status,
               "note": "", "created_at": 1}
-             for i, job, status in [(74, 36, "doing"), (186, 36, "done"), (194, 36, "done"),
+             for i, job, status in [(74, 36, "doing"), (186, 36, "waiting"), (194, 36, "waiting"), (193, 36, "done"),
                                     (92, 37, "todo"), (31, 37, "done"), (80, 38, "done"), (81, 39, "todo")]]
     with (d / "state.json").open("w") as f:
         json.dump({"jobs": jobs, "tasks": tasks, "msgs": [], "seq": 200}, f)
@@ -62,6 +62,16 @@ reset()
 add("후보 #74와 #194 검수", 36)
 reset()
 add("후보 #74와 #92 비교", 20)
+
+# 새 요청 차례에서 옛 요청의 작업을 참고해도 새 요청에 남아요.
+for text in ["#74 결과로 화자 표시 보완", "194 후속 정리", "후속 결과는 #74 참고"]:
+    reset()
+    os.environ["OFFICE_JOB"] = "45"
+    add(text, 45)
+# '#' 없는 맨 번호는 끝난 작업이면 영상 번호로 보고 따르지 않아요. '#'을 붙이면 따라요.
+for text, expected in [("31 후속 정리", 20), ("193 후보 확인", 20), ("#193 후보 확인", 36), ("#31 후속 정리", 37)]:
+    reset()
+    add(text, expected)
 
 # 영상·시각·용량 숫자를 작업 번호로 해석하지 않아요.
 for text in ["31번 905~965초 번역 자막", "31 905~965초 번역 자막", "194초 화면 확인", "194MB 결과 확인",
@@ -112,5 +122,5 @@ except SystemExit:
     pass
 else:
     raise AssertionError("취소된 현재 요청에서 작업 추가를 허용했어요.")
-assert len(load()["tasks"]) == 7
+assert len(load()["tasks"]) == 8
 print("ok: task references, ambiguous numbers, closed jobs, events, deduplication, review and direct contexts")
