@@ -2969,7 +2969,11 @@ class Worker:
                         + "\n".join(f"- #{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'}: {t.get('note') or t['title']}"
                                     for t in s["tasks"] if t.get("job") == job))
                 if out and out.strip() != "대기" and not (job is None and sent_to_user) and report is None:
-                    post(s, self.name, "log", out, "turn", job=job)
+                    # 이번 차례에 사용자에게 한 말이 모두 한 다른 요청(--job/--re)에 붙었으면 차례 글도 그 요청에 붙인다
+                    said = {m.get("job") for m in s["msgs"][total:] if m["from"] == self.name and m["to"] == "user"
+                            and m.get("kind") in ("msg", "report", "progress")}
+                    turn_job = next(iter(said)) if len(said) == 1 and None not in said and job not in said else job
+                    post(s, self.name, "log", out, "turn", job=turn_job)
                 for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
                         j["status"] = "working"
