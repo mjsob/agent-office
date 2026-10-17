@@ -1276,13 +1276,21 @@ def cmd_handoff(a):
         release_reservations(current_sid(), released_job, me())
 
 
+def turn_log_job(msgs, agent, job):
+    """차례 글이 붙을 요청: 이번 차례에 사용자에게 한 말이 다른 요청에만 붙었으면 그중 가장 많은(같으면 마지막) 요청."""
+    said = [m.get("job") for m in msgs if m["from"] == agent and m["to"] == "user" and m.get("kind") in ("msg", "report", "progress")]
+    if not said or job in said or None in said:
+        return job
+    return max(dict.fromkeys(said), key=lambda j: (said.count(j), len(said) - 1 - said[::-1].index(j)))
+
+
 def cmd_say(a):
     with state(True) as s:
         job = message_job(s)
         kind = ("progress" if a.to == "user" else "note") if getattr(a, "info", False) else "msg"   # --to user --info: 사용자 진행 알림(차례·결과 카드 아님)
         explicit = getattr(a, "re", None)
         received = os.environ.get("OFFICE_REPLY_TO", "")
-        if explicit is None and a.to == "user" and kind == "msg" and received.isdecimal() and any(m["id"] == int(received) and m.get("from") == "user" and m.get("to") in (me(), "all") for m in s["msgs"]):
+        if explicit is None and getattr(a, "job", None) is None and a.to == "user" and kind == "msg" and received.isdecimal() and any(m["id"] == int(received) and m.get("from") == "user" and m.get("to") in (me(), "all") for m in s["msgs"]):
             explicit = int(received)
         if explicit is not None:
             source = next((m for m in s["msgs"] if m["id"] == explicit and m["from"] == "user"), None)
@@ -1531,6 +1539,25 @@ def cmd_import(a):
         print(f"- {title}")
     if added and running():
         print("열려 있는 Office 창을 새로고침하면 목록에 보여요. 안 보이면 Office를 다시 시작하세요.")
+
+
+def cmd_retag(a):
+    """잘못 붙은 메시지를 다른 요청 묶음으로 옮김: 잠금 안에서 처리, 원래 요청은 job_was 에 남김(내용·ID 그대로)."""
+    with state(True) as s:
+        if not any(j["id"] == a.job for j in s["jobs"]):
+            raise UserError(f"요청 {a.job} 없음")
+        for mid in a.ids:
+            m = next((x for x in s["msgs"] if x["id"] == mid), None)
+            if m is None:
+                raise UserError(f"메시지 {mid} 없음")
+            if m["from"] == "user":
+                raise UserError(f"메시지 {mid}는 사용자 메시지라 옮기지 않습니다")
+        for mid in a.ids:
+            m = next(x for x in s["msgs"] if x["id"] == mid)
+            if m.get("job") != a.job:
+                m.setdefault("job_was", m.get("job"))
+                m["job"] = a.job
+    print(f"메시지 {len(a.ids)}건 → 요청 {a.job}")
 
 
 def cmd_title(a):
@@ -2970,9 +2997,7 @@ class Worker:
                                     for t in s["tasks"] if t.get("job") == job))
                 if out and out.strip() != "대기" and not (job is None and sent_to_user) and report is None:
                     # 이번 차례에 사용자에게 한 말이 모두 한 다른 요청(--job/--re)에 붙었으면 차례 글도 그 요청에 붙인다
-                    said = {m.get("job") for m in s["msgs"][total:] if m["from"] == self.name and m["to"] == "user"
-                            and m.get("kind") in ("msg", "report", "progress")}
-                    turn_job = next(iter(said)) if len(said) == 1 and None not in said and job not in said else job
+                    turn_job = turn_log_job(s["msgs"][total:], self.name, job)
                     post(s, self.name, "log", out, "turn", job=turn_job)
                 for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
@@ -5172,6 +5197,7 @@ def main():
     x.add_argument("--notify", action="store_true", help="사용자에게도 한 줄 알림 (상태가 바뀔 때만)"); x.set_defaults(f=cmd_progress)
     x = sp.add_parser("handoff"); x.add_argument("id", type=int); x.add_argument("--to", choices=AGENTS, required=True)
     x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_handoff)
+    x = sp.add_parser("retag", help="잘못 붙은 메시지를 다른 요청 묶음으로 옮김"); x.add_argument("--job", type=int, required=True); x.add_argument("ids", type=int, nargs="+"); x.set_defaults(f=cmd_retag)
     x = sp.add_parser("say"); x.add_argument("text"); x.add_argument("--to", default="all", choices=(*AGENTS, "user", "all"))
     x.add_argument("--re", type=int, help="답장할 사용자 메시지 ID (생략하면 자동 연결)")
     x.add_argument("--info", action="store_true", help="진행 알림만 남기고 상대를 깨우지 않음")
