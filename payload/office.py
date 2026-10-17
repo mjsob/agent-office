@@ -968,6 +968,8 @@ def cmd_claim(a):
 
 
 BG_FIELDS = ("wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd")
+BARE_WAIT_WINDOW = 2 * 3600   # 초: 대상 없는 기다림을 세는 기간
+BARE_WAIT_LIMIT = 3   # 이 기간에 대상 없이 이만큼 걸었으면 다시 걸 때 거절
 WAIT_FIELDS = ("wait_reason", "waiting_at", "wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_deadline",
                "wait_notified", "wait_overdue", "wait_stale", "wait_on", "wait_ready", "wait_peer_seen")
 
@@ -1069,6 +1071,17 @@ def mark_waiting(a, reason, **watch):
         watch = {k: v for k, v in watch.items() if v is not None}
         if not watch.get("wait_pid"):
             watch = {**live_bg_watch(t), **watch}
+        # 기다릴 대상(--on/--pid/--log/--minutes)이 없는 기다림을 같은 작업에 짧은 시간 안에 되풀이하면 거절한다.
+        # 큰 작업을 '기다림'에 걸어 두고 메시지마다 다시 거는 자리표시 대기(한 작업 100번 넘게)를 막는다
+        now = time.time()
+        if not (watch.get("wait_pid") or watch.get("wait_on") or watch.get("wait_log") or getattr(a, "minutes", None)):
+            recent = [x for x in t.get("bare_waits", []) if now - x < BARE_WAIT_WINDOW]
+            if len(recent) >= BARE_WAIT_LIMIT:
+                sys.exit(f"기다림 거절 — #{a.id} 를 기다릴 대상 없이 {len(recent)}번 걸었어요. 무엇을 기다리는지 --on 작업번호·--pid·--log 로 걸거나, "
+                         "남은 일을 작은 작업으로 나눠 등록하고 이 작업은 office done 으로 닫으세요. 준비된 일이 있으면 기다리지 말고 이어서 하세요.")
+            t["bare_waits"] = recent + [now]
+        else:
+            t.pop("bare_waits", None)
         for key in WAIT_FIELDS:
             t.pop(key, None)
         minutes = getattr(a, "minutes", None)

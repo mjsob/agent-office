@@ -149,6 +149,7 @@ for n in range(6):
     t = s["tasks"][0]
     spans.append(round((t["wait_deadline"] - t["waiting_at"]) / 60))
     t["wait_deadline"] = time.time() - 1
+    t.pop("bare_waits", None)   # 시간 간격을 흉내: 반복 거절은 tests/test_bare_wait_guard.py 에서 따로 본다
     json.dump(s, open(d / "state.json", "w"))
     check()
 assert spans == [15, 30, 60, 120, 240, 240], spans
