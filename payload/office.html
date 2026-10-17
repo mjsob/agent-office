@@ -1567,7 +1567,7 @@ function threadHtml(t) {
   // 진행 중이면 묶음 맨 아래(가장 최근 메시지 바로 아래)에서: 누가 뭘 하는지·걸린 시간(매초 updateLiveBars가 채움) + 글자 있는 취소 버튼
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
-  const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><span>${esc(u.text || "대화창에 필요한 내용을 보내세요.")}</span>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
+  const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><span>${linkPlainPaths(esc(u.text || "대화창에 필요한 내용을 보내세요."))}</span>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
   return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
     ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}${bar}
