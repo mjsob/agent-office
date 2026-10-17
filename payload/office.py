@@ -1276,12 +1276,16 @@ def cmd_handoff(a):
         release_reservations(current_sid(), released_job, me())
 
 
-def turn_log_job(msgs, agent, job):
-    """차례 글이 붙을 요청: 이번 차례에 사용자에게 한 말이 다른 요청에만 붙었으면 그중 가장 많은(같으면 마지막) 요청."""
+def turn_log_job(msgs, agent, job, text=""):
+    """차례 글이 붙을 (요청, 글). 이번 차례에 사용자에게 한 말이 다른 요청 하나에만 붙었으면 그 요청에 붙인다.
+    서로 다른 요청이 섞였으면 어느 한 요청 본문으로 보이지 않게 단독 기록(요청 없음)으로 두고 관련 요청을 앞에 적는다."""
     said = [m.get("job") for m in msgs if m["from"] == agent and m["to"] == "user" and m.get("kind") in ("msg", "report", "progress")]
     if not said or job in said or None in said:
-        return job
-    return max(dict.fromkeys(said), key=lambda j: (said.count(j), len(said) - 1 - said[::-1].index(j)))
+        return job, text
+    jobs = sorted(set(said))
+    if len(jobs) == 1:
+        return jobs[0], text
+    return None, "(요청 " + "·".join(map(str, jobs)) + " 관련) " + text
 
 
 def cmd_say(a):
@@ -2997,8 +3001,10 @@ class Worker:
                                     for t in s["tasks"] if t.get("job") == job))
                 if out and out.strip() != "대기" and not (job is None and sent_to_user) and report is None:
                     # 이번 차례에 사용자에게 한 말이 모두 한 다른 요청(--job/--re)에 붙었으면 차례 글도 그 요청에 붙인다
-                    turn_job = turn_log_job(s["msgs"][total:], self.name, job)
-                    post(s, self.name, "log", out, "turn", job=turn_job)
+                    turn_job, turn_text = turn_log_job(s["msgs"][total:], self.name, job, out)
+                    post(s, self.name, "log", turn_text, "turn", job=turn_job)
+                    if turn_job is None and job is not None:   # 섞인 차례 글이 단독 메시지의 답으로 잘못 묶이지 않게
+                        s["msgs"][-1].pop("re", None)
                 for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
                         j["status"] = "working"
