@@ -296,13 +296,23 @@ case ":$original_path:" in
     ;;
 esac
 
+# 바로가기로 열어도 서버 종료 뒤 대화형 셸을 남겨요.
+{
+  printf '# Office 콘솔을 시작해요. 서버가 끝나면 이 셸을 계속 사용하세요.\n'
+  printf 'if [[ -f $HOME/.bashrc ]]; then . "$HOME/.bashrc"; fi\n'
+  printf 'cd -- %q\n' "$workspace"
+  printf '%q\n' "$prefix/bin/office"
+} > "$staging/office-console.bashrc"
+chmod 600 "$staging/office-console.bashrc"
+mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
+
 # WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
 # 같은 이름의 바로가기가 wsl.exe를 가리키지 않으면(다른 프로그램) 건드리지 않는다.
 if (( shortcut )) && [[ -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
   if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
     cat > "$staging/office-shortcut.ps1" <<'PS1'
-param([string]$Distro, [string]$Launcher, [string]$Icon)
+param([string]$Distro, [string]$ShellInit, [string]$Icon)
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'Office'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -320,7 +330,7 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
   }
   $lnk = $shell.CreateShortcut($path)
   $lnk.TargetPath = $wsl
-  $lnk.Arguments = "-d $Distro --cd ~ -e bash -lc `"exec $Launcher`""
+  $lnk.Arguments = "-d $Distro --cd ~ -e bash --rcfile $ShellInit -i"
   $lnk.IconLocation = $ico
   $lnk.Description = 'Office'
   $lnk.Save()
@@ -329,7 +339,7 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
 $made -join "`n"
 PS1
     if made=$(timeout 30 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$staging/office-shortcut.ps1")" \
-        "$WSL_DISTRO_NAME" "$prefix/bin/office" "$(wslpath -w "$prefix/app/office.ico")" 2>/dev/null | tr -d '\r') && [[ -n $made ]]; then
+        "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$prefix/app/office.ico")" 2>/dev/null | tr -d '\r') && [[ -n $made ]]; then
       printf '바로가기를 만들었어요. 바탕화면이나 시작 메뉴의 Office를 누르면 앱 창으로 열려요.\n'
     else
       printf '윈도우 바로가기는 만들지 못했어요. office 명령으로 실행하세요.\n'
