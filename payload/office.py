@@ -1393,24 +1393,52 @@ def report_brief(text):
 
 
 def cmd_finish(a):
+    extra = []
+    also = getattr(a, "also", None)
+    if also is not None:
+        for raw in also.split(","):
+            token = raw.strip()
+            if not re.fullmatch(r"[0-9]+", token) or int(token) < 1:
+                raise UserError("함께 마감할 요청 번호를 쉼표로 구분하세요. 예: --also 27,28")
+            if int(token) not in extra:
+                extra.append(int(token))
     with state(True) as s:
         j = open_job(s)
         if not j:
             sys.exit("진행 중인 일 없음")
-        if j.get("cancelled"):
-            sys.exit("사용자가 취소한 요청입니다. 완료 보고를 덮어쓰지 않습니다.")
-        if me() != j.get("acting_lead", j["lead"]):
-            sys.exit("선택된 리더 또는 대행 리더만 완료 보고할 수 있습니다.")
-        left = [t for t in s["tasks"] if t.get("job") == j["id"] and t["status"] != "done"]
-        if any(t["status"] == "waiting" for t in left):
-            sys.exit("기다리는 작업이 남아 있습니다. 결과가 나와 완료한 뒤 보고하세요. 중간 상황은 office say --to user 로 알리세요.")
-        if left:
-            sys.exit("남은 작업을 완료한 뒤 보고하세요.")
-        jid = message_job(s)
-        j.update(status="done", finished_by=me(), finished_at=time.time(), summary=a.text, brief=report_brief(a.text))
-        event(s, f"요청 {j['id']} 완료", me(), job=jid)
-        post(s, me(), "user", a.text, "report", job=jid)
-        print(f"요청 {j['id']} 완료 보고함")
+        targets = [j]
+        for jid in extra:
+            if jid == j["id"]:
+                continue
+            target = next((row for row in s["jobs"] if row["id"] == jid), None)
+            if target is None:
+                raise UserError(f"요청 {jid}을 찾을 수 없어요.")
+            targets.append(target)
+        # Validate the whole group before modifying any job or emitting messages.
+        for target in targets:
+            label = f"요청 {target['id']}: "
+            if target.get("cancelled") or target.get("removed"):
+                sys.exit(label + "사용자가 취소한 요청입니다. 완료 보고를 덮어쓰지 않습니다.")
+            if target["status"] == "done":
+                sys.exit(label + "이미 끝난 요청이에요. 기존 보고를 유지해요.")
+            if me() != target.get("acting_lead", target["lead"]):
+                sys.exit(label + "선택된 리더 또는 대행 리더만 완료 보고할 수 있습니다.")
+            left = [t for t in s["tasks"] if t.get("job") == target["id"] and t["status"] != "done"]
+            if any(t["status"] == "waiting" for t in left):
+                sys.exit(label + "기다리는 작업이 남아 있습니다. 결과가 나와 완료한 뒤 보고하세요. 중간 상황은 office say --to user 로 알리세요.")
+            if left:
+                sys.exit(label + "남은 작업을 완료한 뒤 보고하세요.")
+        finished_at = time.time()
+        for target in targets:
+            target.update(status="done", finished_by=me(), finished_at=finished_at,
+                          summary=a.text, brief=report_brief(a.text))
+            text = (f"요청 {target['id']} 완료" if target is j else
+                    f"요청 {target['id']} 완료 · 요청 {j['id']} 보고에 함께 답함")
+            event(s, text, me(), job=target["id"])
+        post(s, me(), "user", a.text, "report", job=j["id"])
+        if also is not None:
+            s["msgs"][-1]["jobs"] = [target["id"] for target in targets]
+        print(f"요청 {', '.join(str(target['id']) for target in targets)} 완료 보고함")
 
 
 
@@ -1809,6 +1837,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 """
 
 PLAN = """[리더 차례: 새 요청 접수] 요청 {jid}: {text}
+열린 다른 요청과 같은 흐름이면 각 요청의 남은 일을 완료한 뒤 `office finish "보고" --also 요청번호,요청번호`로 한 보고에 묶어라. 각 요청의 리더/대행일 때만 가능하다.
 이 일을 끝까지 책임지는 리더는 너다. 필요하면 파일을 살펴본 뒤 작업으로 쪼개서
 `office add "..." --to claude|codex` 로 둘에게 나눠 배정해라 (너 자신 포함, 병렬로 할 수 있게, 같은 파일 겹치지 않게).
 쪼갤 필요 없는 작은 일이면 직접 처리하고 `office finish "보고"` 해도 된다.
@@ -5412,7 +5441,7 @@ def main():
     x.add_argument("--info", action="store_true", help="진행 알림만 남기고 상대를 깨우지 않음")
     x.add_argument("--job", type=int, help="이 말이 속한 요청 번호 (생략하면 이번 차례의 요청). 다른 요청 이야기를 할 때만")
     x.set_defaults(f=cmd_say)
-    x = sp.add_parser("finish"); x.add_argument("text"); x.set_defaults(f=cmd_finish)
+    x = sp.add_parser("finish"); x.add_argument("text"); x.add_argument("--also", help="한 보고로 함께 마감할 요청 번호 (예: 27,28)"); x.set_defaults(f=cmd_finish)
     x = sp.add_parser("lesson"); x.add_argument("text"); x.set_defaults(f=cmd_lesson)
     x = sp.add_parser("title"); x.add_argument("text"); x.set_defaults(f=cmd_title)
     x = sp.add_parser("shot"); x.add_argument("size", nargs="?", default="both", choices=("wide", "narrow", "both"))
