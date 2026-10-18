@@ -293,6 +293,12 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .resolved { font-size: 11px; color: var(--ok); margin-left: 6px; white-space: nowrap; }
 .user-action { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); display: grid; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
 .user-action small { color: var(--muted); }
+#askbar { display: grid; gap: 4px; margin-bottom: 6px; }
+#askbar .row { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); font-size: 13px; min-width: 0; }
+#askbar .row b { flex: none; color: var(--warn); }
+#askbar .row .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+#askbar .row button { flex: none; font-size: 12px; padding: 3px 10px; }
+#askbar .more { font-size: 12px; color: var(--muted); padding-left: 12px; }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
 .settings-panel { position: fixed; top: calc(var(--office-header-height, 52px) + 12px); right: 16px; z-index: 20; width: 320px; max-height: calc(100dvh - var(--office-header-height, 52px) - 24px); overflow-y: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 13px; word-break: keep-all; }
 #settingsBtn { white-space: nowrap; flex-shrink: 0; }
@@ -377,6 +383,8 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .removebar { display: flex; justify-content: flex-end; }
 .removebar button { font-size: 12px; padding: 3px 8px; }
 .thread.flash { animation: flash 1.2s; }
+.user-action.flash { animation: askflash 1.2s; }
+@keyframes askflash { 0%, 40% { box-shadow: 0 0 0 3px var(--warn); } 100% { box-shadow: 0 0 0 0 transparent; } }
 @keyframes flash { 0%, 40% { background: var(--warn-soft); } 100% { background: none; } }
 .summary { font-size: 12.5px; white-space: pre-wrap; margin-top: 8px; padding: 8px 10px; background: var(--chip); border-radius: 8px; }
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
@@ -639,6 +647,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 </main>
 
 <footer>
+  <div id="askbar" role="status" hidden></div>
   <div class="composer">
     <div class="ctools">
       <div class="seg" id="modes" role="group" aria-label="보낼 대상">
@@ -1903,6 +1912,21 @@ function updateLiveBars(agents) {
     setHtmlIfChanged(text.querySelector(".lb-progress"), progressing.map(taskProgressHtml).join(""));
   });
 }
+// 확인 요청이 대화에 묻히지 않게 입력창 위에 고정해 보여 주고, 누르면 그 확인 카드로 이동
+function renderAskBar(jobs) {
+  const asks = jobs.filter(j => !j.removed).flatMap(j => (j.needs_user || []).map(u => ({job: j.id, expired: u.status === "expired", text: firstLine(u.text) || "대화창에서 내용을 확인하세요."})));
+  const bar = $("#askbar");
+  bar.hidden = !asks.length;
+  bar.innerHTML = asks.slice(0, 3).map(a => `<div class="row"><b>${a.expired ? "확인 기한이 지났어요" : "확인이 필요해요"}</b><span class="tx" title="${esc(a.text)}">요청 ${a.job} · ${esc(a.text)}</span><button class="ghost" onclick="jumpToAsk(${a.job})">보러 가기</button></div>`).join("")
+    + (asks.length > 3 ? `<div class="more">외 ${asks.length - 3}건</div>` : "");
+}
+function jumpToAsk(id) {
+  jumpTo(id);
+  setTimeout(() => {
+    const card = document.querySelector(`#th-${id} .user-action`);
+    if (card) { card.scrollIntoView({behavior: "smooth", block: "center"}); card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1200); }
+  }, 450);
+}
 function jumpTo(id, again) {
   const el = document.getElementById("th-" + id);
   if (!el) {   // 압축된 이전 요청이면 펼친 뒤 다시 이동
@@ -2059,6 +2083,7 @@ async function doRefresh() {
     if (tsig !== lastSig && safe("timeline", () => renderTimeline(msgs, jobs))) lastSig = tsig;
     const resv = s.file_reservations || [];
     const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업 상태와 예약이 바뀌면 현황판도 갱신해요.
+    safe("askbar", () => renderAskBar(jobs));
     if (bsig !== lastBoardSig && safe("board", () => renderBoard(jobs, tasks, resv, s.session))) lastBoardSig = bsig;
     safe("livebars", () => updateLiveBars(s.agents));
     safe("typing", () => updateTyping(s.agents));
