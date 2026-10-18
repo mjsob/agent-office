@@ -3893,9 +3893,16 @@ class Office:
             live = [x["id"] for x in m["sessions"] if not x["deleted"]]
         for sid in live:
             self.ensure_team(sid)
+        # 지운 대화의 에이전트 정리는 기다리지 않는다. 늦게 끝나도 삭제는 이미 저장됐으니 화면에 오류로 돌려주지 않게
         for sid in list(self.teams):
             if sid not in live:
-                self.stop_team(sid)
+                threading.Thread(target=self.stop_team_quietly, args=(sid,), daemon=True).start()
+
+    def stop_team_quietly(self, sid):
+        try:
+            self.stop_team(sid)
+        except (OSError, UserError) as error:
+            server_log("session.stop_team", error)
 
     def watch_team(self, sid, stop):
         """둘 다 차례를 붙잡고 있어도 도는 감시: 바쁜 리더 대신 계획·미착수 작업 넘기기, 기다림 작업의 프로세스·기한 확인"""
@@ -4623,6 +4630,8 @@ class Office:
                         x["deleted"] = act == "delete"; x["deleted_at"] = time.time()
                         if act == "restore":
                             m["current"] = x["id"]
+            if act == "delete" and CURRENT_HINT["sid"] == p["id"]:
+                CURRENT_HINT.update(sid=None, at=0.0)   # 방금 고른 대화를 지우면 화면이 지운 대화를 계속 찾지 않게
         elif act == "purge":                    # 휴지통에 있는 것만 영구 삭제
             with meta(True) as m:
                 x = next((x for x in m["sessions"] if x["id"] == p["id"] and x["deleted"]), None)
