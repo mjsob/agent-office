@@ -382,7 +382,16 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .thread.cancelled .pill.done { color: var(--muted); }
 .removebar { display: flex; justify-content: flex-end; }
 .removebar button { font-size: 12px; padding: 3px 8px; }
-.thread.flash { animation: flash 1.2s; }
+.thread.flash, .msg.flash { animation: flash 1.2s; }
+/* 시간순 보기: 나뉜 묶음의 요청 쪽 상태 줄, 답 쪽 인용 줄 */
+.thread.head { gap: 4px; padding-bottom: 4px; border-bottom: 0; }
+.re-meta { align-self: flex-end; display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.re-meta button, .re-note button { font-size: 12px; padding: 2px 8px; }
+.re-quote { align-self: flex-start; display: flex; gap: 4px; align-items: center; max-width: 100%; min-width: 0; padding: 2px 8px 2px 6px; border-left: 3px solid var(--line); color: var(--muted); font-size: 12px; cursor: pointer; }
+.re-quote b { flex: none; font-weight: 600; }
+.re-quote span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.re-quote:hover { color: var(--text); border-left-color: var(--accent); }
+.re-note { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; }
 .user-action.flash { animation: askflash 1.2s; }
 @keyframes askflash { 0%, 40% { box-shadow: 0 0 0 3px var(--warn); } 100% { box-shadow: 0 0 0 0 transparent; } }
 @keyframes flash { 0%, 40% { background: var(--warn-soft); } 100% { background: none; } }
@@ -1596,8 +1605,52 @@ function threads(msgs, jobs) {
   return items;
 }
 
+// 시간순 보기: 요청은 보낸 자리, 답(결과 보고)은 실제로 온 자리에 둔다.
+// 요청과 답 사이에 다른 대화가 끼면 묶음을 '요청'과 '답'으로 나눠 각자 자리에 두고, 서로 눌러 오가게 한다.
+// 사이에 낀 게 없으면 지금처럼 한 묶음. 진행 중인 요청의 진행 상황은 맨 아래에 요청 순서대로 둔다.
+const LIVE_KEY = 1e15;
+let coveredBy = new Map();   // 다른 요청 결과 보고에 함께 답한 요청 번호 → 그 보고를 낸 요청 번호
+function chrono(items) {
+  const key = new Map(), ans = new Map(), threadsHere = items.filter(x => !x.m);
+  const ids = x => [x.req, ...x.steps, ...x.reports].filter(Boolean).map(m => m.id).filter(Number.isFinite);
+  let prev = 0;
+  for (const x of items) {
+    // 질문 아래로 옮긴 단독 대화 답장은 질문 자리를 따른다(답장 자체 시각은 더 늦어도 그 자리에 둠)
+    const moved = x.m?.re != null && items.some(y => y.m && y.m.id === x.m.re && y.m.from === "user");
+    const own = x.m ? x.m.id : Math.min(...ids(x));
+    key.set(x, moved || !Number.isFinite(own) ? prev : own);
+    prev = key.get(x);
+  }
+  for (const x of threadsHere) {
+    const status = jobStatus(x.job), h = key.get(x);
+    const reports = x.reports.filter(m => m.kind === "report"), host = coveredBy.get(x.job.id);
+    const hostReport = host != null && items.find(y => !y.m && y.job.id === host)?.reports.find(m => m.jobs?.includes(x.job.id));
+    const a = status && status !== "done" ? LIVE_KEY + x.job.id
+      : hostReport ? hostReport.id - 0.5
+      : Math.max(...(reports.length ? reports : x.reports.length ? x.reports : [{id: Math.max(...ids(x))}]).map(m => m.id));
+    ans.set(x, Number.isFinite(a) ? Math.max(a, h) : h);
+  }
+  // 요청과 답 사이에 다른 대화·요청·나뉜 답이 있으면 나눈다. 나뉜 답이 다른 묶음 사이에 들어갈 수 있어 바뀌지 않을 때까지 반복
+  const split = new Set();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const t of threadsHere) {
+      if (split.has(t)) continue;
+      const h = key.get(t), a = ans.get(t);
+      if (items.some(y => y !== t && key.get(y) > h && key.get(y) < a) || [...split].some(y => ans.get(y) > h && ans.get(y) < a)) { split.add(t); changed = true; }
+    }
+  }
+  const out = [];
+  for (const x of items) {
+    if (x.m) out.push({x, k: key.get(x)});
+    else if (!split.has(x)) out.push({x: {...x, part: "full"}, k: key.get(x)});
+    else out.push({x: {...x, part: "head"}, k: key.get(x)}, {x: {...x, part: "tail"}, k: ans.get(x)});
+  }
+  return out.sort((p, q) => p.k - q.k).map(e => e.x);
+}
+
 const RECENT_LIVE = 3;   // 진행 중 요청에서 바로 보이는 최근 안내 수
-function threadHtml(t) {
+function threadHtml(t, part = "full") {
   // 지나간 경고(예: 'Codex 일시정지')는 그 에이전트가 이후에 다시 움직였으면 해결된 것 → 결과 자리에서 빼서 진행 과정으로 접음
   const all = [...t.steps, ...t.reports];
   // '파일 대기 중 — 파일명…' 경고는 같은 파일의 '파일 예약 풀림 — 파일명…' 알림이 뒤에 오면 해결
@@ -1629,10 +1682,21 @@ function threadHtml(t) {
   const bar = live ? `<div class="livebar" data-job="${j.id}" data-since="${t.req?._at || ""}"><span class="stage"></span><span class="lb-text">진행 중</span>
       <button class="ghost cancel" onclick='cancelJob(${j.id})'>${icon("x", "sm")}요청 취소</button></div>` : "";
   const userNeeds = (j.needs_user || []).map(u => `<div class="user-action" role="status"><b>${u.status === "expired" ? "확인 기한이 지났어요" : "내 확인을 기다려요"}</b><div class="body">${md(u.text || "대화창에 필요한 내용을 보내세요.")}</div>${u.expires_at && u.status !== "expired" ? `<small>${progressTime(u.expires_at)}까지 확인하세요.</small>` : ""}</div>`).join("");
-  return `<div class="thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}" id="th-${j.id}">${req}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
+  // 다른 요청 결과 보고에 함께 답한 요청은 같은 보고를 한 번 더 그리지 않고 그 보고로 이어 줌
+  const host = coveredBy.get(j.id);
+  const together = host != null ? `<div class="re-note">요청 ${host} 결과 보고에서 함께 답했어요<button class="ghost" onclick="jumpToAnswer(${host})">답 보기</button></div>` : "";
+  const cls = `thread ${live ? "live" : ""} ${j.cancelled ? "cancelled" : ""}`;
+  // 나뉜 묶음의 요청 쪽: 요청 말풍선 + 상태 + 답(진행 상황)으로 가는 버튼
+  if (part === "head") return `<div class="${cls} head" id="th-${j.id}">${req}<div class="re-meta"><span class="pill ${status || ""}">${st}</span>
+    <button class="ghost" onclick="jumpToAnswer(${host ?? j.id})">${live ? "진행 보기" : j.cancelled ? "기록 보기" : "답 보기"}</button></div></div>`;
+  // 나뉜 묶음의 답 쪽은 어느 요청의 답인지 맨 위에 인용으로 보여 주고, 누르면 요청으로 올라감
+  const reqIds = [j.id, ...new Set(t.reports.flatMap(m => m.kind === "report" && m.jobs || []).filter(id => id !== j.id))];
+  const quote = part === "tail" || reqIds.length > 1
+    ? `<div class="re-quote" role="button" tabindex="0" title="요청으로 이동" onclick="jumpTo(${j.id})"><b>요청 ${reqIds.join("·")} ${live ? "진행 상황" : j.cancelled ? "기록" : "답"}</b>${t.req ? `<span>· ${esc(firstLine(t.req.text))}</span>` : ""}</div>` : "";
+  return `<div class="${cls}${part === "tail" ? " tail" : ""}" id="${part === "tail" ? "ans" : "th"}-${j.id}">${part === "tail" ? "" : req}${quote}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
     ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
-    ${t.reports.map(m => msgHtml(m)).join("")}${bar}
-    ${status === "done" && !j.cancelled && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
+    ${t.reports.map(m => msgHtml(m)).join("")}${bar}${together}
+    ${status === "done" && !j.cancelled && host == null && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
       ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}
     ${j.cancelled && !live ? `<div class="removebar"><button class="ghost" onclick='removeJob(${j.id})'>${icon("x", "sm")}대화에서 지우기</button></div>` : ""}</div>`;
 }
@@ -1648,6 +1712,7 @@ function renderTimeline(msgs, jobs) {
   // 끝난 요청이 쌓이면 최근 KEEP개만 펼치고, 그 이전은 맨 위 '이전 요청 N건'에 한 줄씩 압축 (눌러서 개별로 펼침)
   // 대화에서 지운(취소한) 요청은 묶음째 숨김. 요청 순서로 번호를 맞추는 threads()엔 전체 목록을 넘김
   const items = threads(msgs, jobs).filter(x => !x.job?.removed), KEEP = 5;
+  coveredBy = new Map(items.flatMap(x => x.m ? [] : x.reports.flatMap(m => m.kind === "report" && Array.isArray(m.jobs) ? m.jobs.filter(id => id !== x.job.id).map(id => [id, x.job.id]) : [])));
   const tIdx = items.map((x, i) => x.m ? -1 : i).filter(i => i >= 0);
   const cut = tIdx.length > KEEP ? tIdx[tIdx.length - KEEP] : 0;
   const old = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) === "done");
@@ -1659,7 +1724,7 @@ function renderTimeline(msgs, jobs) {
   const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, () => `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
   const empty = !items.length;
   tl.classList.toggle("empty-timeline", empty);
-  tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + rest.map(x => x.m ? msgHtml(x.m) : threadHtml(x)).join("");
+  tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + chrono(rest).map(x => x.m ? msgHtml(x.m) : threadHtml(x, x.part)).join("");
   bindTimelineFolds(tl);
   if (stick) sec.scrollTop = sec.scrollHeight;
   else {
@@ -1923,9 +1988,18 @@ function renderAskBar(jobs) {
 function jumpToAsk(id) {
   jumpTo(id);
   setTimeout(() => {
-    const card = document.querySelector(`#th-${id} .user-action`);
+    const card = document.querySelector(`#ans-${id} .user-action, #th-${id} .user-action`);
     if (card) { card.scrollIntoView({behavior: "smooth", block: "center"}); card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1200); }
   }, 450);
+}
+// 요청에서 그 답으로: 나뉜 묶음이면 답 쪽, 아니면 묶음 안의 마지막 결과 보고(없으면 묶음 맨 아래)로 이동
+function jumpToAnswer(id) {
+  const box = document.getElementById("ans-" + id) || document.getElementById("th-" + id);
+  if (!box) return jumpTo(id);
+  const reports = box.querySelectorAll(":scope > .msg.report"), el = box.id.startsWith("ans-") ? box : reports[reports.length - 1] || box;
+  document.body.classList.remove("show-side");
+  el.scrollIntoView({behavior: "smooth", block: el === box ? "start" : "center"});
+  el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200);
 }
 function jumpTo(id, again) {
   const el = document.getElementById("th-" + id);
