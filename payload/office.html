@@ -1627,7 +1627,8 @@ function chrono(items) {
     const hostReport = host != null && items.find(y => !y.m && y.job.id === host)?.reports.find(m => m.jobs?.includes(x.job.id));
     const a = status && status !== "done" ? LIVE_KEY + x.job.id
       : hostReport ? hostReport.id - 0.5
-      : Math.max(...(reports.length ? reports : x.reports.length ? x.reports : [{id: Math.max(...ids(x))}]).map(m => m.id));
+      : reports.length ? reports[0].id   // 첫 결과 보고 자리(뒤에 덧붙인 보고는 그 아래로 같이 둠)
+      : Math.max(...(x.reports.length ? x.reports : [{id: Math.max(...ids(x))}]).map(m => m.id));
     ans.set(x, Number.isFinite(a) ? Math.max(a, h) : h);
   }
   // 요청과 답 사이에 다른 대화·요청·나뉜 답이 있으면 나눈다. 나뉜 답이 다른 묶음 사이에 들어갈 수 있어 바뀌지 않을 때까지 반복
@@ -1640,17 +1641,29 @@ function chrono(items) {
       if (items.some(y => y !== t && key.get(y) > h && key.get(y) < a) || [...split].some(y => ans.get(y) > h && ans.get(y) < a)) { split.add(t); changed = true; }
     }
   }
+  // 같은 요청에 결과 보고가 또 왔고 그 사이에 다른 대화가 있으면, 뒤 보고는 따로 온 자리에 둔다
+  const keys = items.map(y => key.get(y)), later = new Map();
+  for (const x of threadsHere) {
+    const reps = x.reports.filter(m => m.kind === "report");
+    later.set(x, reps.slice(1).filter(m => keys.some(k => k > reps[0].id && k < m.id)));
+  }
   const out = [];
   for (const x of items) {
-    if (x.m) out.push({x, k: key.get(x)});
-    else if (!split.has(x)) out.push({x: {...x, part: "full"}, k: key.get(x)});
-    else out.push({x: {...x, part: "head"}, k: key.get(x)}, {x: {...x, part: "tail"}, k: ans.get(x)});
+    const k = key.get(x), moved = later.get(x) || [];
+    if (x.m) { out.push({x, k}); continue; }
+    for (const m of moved) out.push({x: {...x, part: "more", more: m}, k: m.id});
+    const y = moved.length ? {...x, reports: x.reports.filter(m => !moved.includes(m))} : x;
+    if (!split.has(x)) out.push({x: {...y, part: "full"}, k});
+    else out.push({x: {...y, part: "head"}, k}, {x: {...y, part: "tail"}, k: ans.get(x)});
   }
   return out.sort((p, q) => p.k - q.k).map(e => e.x);
 }
 
+// 답 쪽 맨 위 인용 줄: 어느 요청의 답인지 보여 주고 누르면 그 요청으로 이동
+const quoteHtml = (j, req, ids, what) => `<div class="re-quote" role="button" tabindex="0" title="요청으로 이동" onclick="jumpTo(${j.id})"><b>요청 ${ids.join("·")} ${what}</b>${req ? `<span>· ${esc(firstLine(req.text))}</span>` : ""}</div>`;
 const RECENT_LIVE = 3;   // 진행 중 요청에서 바로 보이는 최근 안내 수
 function threadHtml(t, part = "full") {
+  if (part === "more") return `<div class="thread tail">${quoteHtml(t.job, t.req, [t.job.id], "답")}${msgHtml(t.more)}</div>`;
   // 지나간 경고(예: 'Codex 일시정지')는 그 에이전트가 이후에 다시 움직였으면 해결된 것 → 결과 자리에서 빼서 진행 과정으로 접음
   const all = [...t.steps, ...t.reports];
   // '파일 대기 중 — 파일명…' 경고는 같은 파일의 '파일 예약 풀림 — 파일명…' 알림이 뒤에 오면 해결
@@ -1691,8 +1704,7 @@ function threadHtml(t, part = "full") {
     <button class="ghost" onclick="jumpToAnswer(${host ?? j.id})">${live ? "진행 보기" : j.cancelled ? "기록 보기" : "답 보기"}</button></div></div>`;
   // 나뉜 묶음의 답 쪽은 어느 요청의 답인지 맨 위에 인용으로 보여 주고, 누르면 요청으로 올라감
   const reqIds = [j.id, ...new Set(t.reports.flatMap(m => m.kind === "report" && m.jobs || []).filter(id => id !== j.id))];
-  const quote = part === "tail" || reqIds.length > 1
-    ? `<div class="re-quote" role="button" tabindex="0" title="요청으로 이동" onclick="jumpTo(${j.id})"><b>요청 ${reqIds.join("·")} ${live ? "진행 상황" : j.cancelled ? "기록" : "답"}</b>${t.req ? `<span>· ${esc(firstLine(t.req.text))}</span>` : ""}</div>` : "";
+  const quote = part === "tail" || reqIds.length > 1 ? quoteHtml(j, t.req, reqIds, live ? "진행 상황" : j.cancelled ? "기록" : "답") : "";
   return `<div class="${cls}${part === "tail" ? " tail" : ""}" id="${part === "tail" ? "ans" : "th"}-${j.id}">${part === "tail" ? "" : req}${quote}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
     ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}${bar}${together}
@@ -1715,13 +1727,21 @@ function renderTimeline(msgs, jobs) {
   coveredBy = new Map(items.flatMap(x => x.m ? [] : x.reports.flatMap(m => m.kind === "report" && Array.isArray(m.jobs) ? m.jobs.filter(id => id !== x.job.id).map(id => [id, x.job.id]) : [])));
   const tIdx = items.map((x, i) => x.m ? -1 : i).filter(i => i >= 0);
   const cut = tIdx.length > KEEP ? tIdx[tIdx.length - KEEP] : 0;
-  const old = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) === "done");
-  const rest = items.slice(0, cut).filter(x => !x.m && jobStatus(x.job) !== "done").concat(items.slice(cut));
+  // 압축 구간의 단독 대화도 이전 요청 목록 안에 같이 둔다(빼면 어디에도 안 보임)
+  const head = items.slice(0, cut), oldSet = new Set(head.filter(x => x.m || jobStatus(x.job) === "done"));
+  // 최근 요청과 한 보고로 함께 답한 옛 요청은 접지 않는다(접으면 방금 온 보고가 대화에서 안 보임)
+  const inOld = id => [...oldSet].some(y => !y.m && y.job.id === id);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const x of oldSet) if (!x.m && x.reports.some(m => m.kind === "report" && m.jobs?.some(id => id !== x.job.id && !inOld(id)))) { oldSet.delete(x); changed = true; }
+  }
+  const old = head.filter(x => oldSet.has(x)), oldN = old.filter(x => !x.m).length;
+  const rest = head.filter(x => !oldSet.has(x)).concat(items.slice(cut));
   const oldRow = x => expandedOld.has(x.job.id) ? threadHtml(x)
     : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
         ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
-  const oldBlock = old.length ? fold("old", `이전 요청 ${old.length}건`, () => `<div class="oldlist">${old.map(oldRow).join("")}</div>`, "older") : "";
+  const oldBlock = old.length ? fold("old", oldN ? `이전 요청 ${oldN}건` : `이전 대화 ${old.length}건`, () => `<div class="oldlist">${old.map(x => x.m ? msgHtml(x.m, true) : oldRow(x)).join("")}</div>`, "older") : "";
   const empty = !items.length;
   tl.classList.toggle("empty-timeline", empty);
   tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + chrono(rest).map(x => x.m ? msgHtml(x.m) : threadHtml(x, x.part)).join("");
