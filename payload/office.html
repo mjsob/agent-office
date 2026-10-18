@@ -1975,7 +1975,15 @@ async function doRefresh() {
     if (clientId) q += (q ? "&" : "?") + "client=" + encodeURIComponent(clientId);
     const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(15000)});
     s = await r.json().catch(() => ({}));
-    if (!r.ok || s.error) throw new Error(s.error || `서버 오류 ${r.status}`);   // 화면은 이전 상태 그대로 두고 문구만
+    if (!r.ok || s.error) {
+      // 삭제된 주소·삭제 응답 누락으로 옛 대화를 조회했으면 서버가 고른 대화로 바로 돌아가요.
+      // 일반 서버 오류는 현재 대화를 유지해요. 복구 조회도 실패하면 다음 틱에서 다시 확인해요.
+      if (!follow && curSession && (s.code === "session_missing" || String(s.error || "").startsWith("대화를 찾을 수 없음"))) {
+        followGen++; lastRev = null; lastMessagesKey = null;
+        return doRefresh();
+      }
+      throw new Error(s.error || `서버 오류 ${r.status}`);
+    }
   } catch (e) {
     // 서버가 꺼져 접속 자체가 거부되면(TypeError) 3번 연속 확인 뒤 창도 같이 닫음. 응답만 느린 건(Timeout) 닫지 않음
     if (updateState.state === "restarting" && e.name === "TypeError") { closeOfficeWindow(true); return; }
