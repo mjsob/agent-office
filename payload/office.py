@@ -4788,12 +4788,18 @@ class Office:
             return
         self.stop.set()
         print("\r\033[KOffice를 종료했습니다.", flush=True)
+        def stop(sid):
+            try:
+                self.stop_team(sid)
+            except Exception as error:
+                server_log("shutdown.team", error)
         def cleanup():
-            for sid in list(self.teams):
-                try:
-                    self.stop_team(sid)
-                except (OSError, UserError) as error:
-                    server_log("shutdown.team", error)
+            # 대화마다 차례로 기다리면 종료가 대화 수만큼 길어져서 한꺼번에 정리한다.
+            stoppers = [threading.Thread(target=stop, args=(sid,), daemon=True) for sid in list(self.teams)]
+            for thread in stoppers:
+                thread.start()
+            for thread in stoppers:
+                thread.join()
             try:
                 (D / "server.json").unlink(missing_ok=True)
             except OSError as error:
@@ -4967,10 +4973,26 @@ def serve():
     opened = open_window(port)
     status_line(office, port, opened=opened)
     if office.stop.is_set():
-        office.cleanup_done.wait()   # 정리가 끝나기 전에 서버 수명 잠금을 풀지 않는다.
+        wait_cleanup(office)   # 정리가 끝나기 전에 서버 수명 잠금을 풀지 않는다.
         if getattr(office, "restart", None):
             # 새 버전으로 다시 시작: 서버 잠금 파일은 exec 때 닫혀 풀리고, 새 프로세스가 새 창을 연다
             os.execv(office.restart[0], office.restart)
+
+
+def wait_cleanup(office):
+    """종료 정리를 기다린다. 기다리는 중 다시 누른 Ctrl+C 는 트레이스백 대신 안내만 하고 계속 기다린다"""
+    notice = "에이전트를 정리하고 있어요. 끝나면 " + ("다시 켜져요." if getattr(office, "restart", None) else "바로 꺼져요.")
+    told = False
+    while True:
+        try:
+            if office.cleanup_done.wait(1):
+                return
+            if not told:
+                told = True
+                print(notice, flush=True)
+        except KeyboardInterrupt:
+            told = True
+            print("\r\033[K" + notice, flush=True)
 
 
 def until(ts):
