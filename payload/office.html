@@ -978,30 +978,41 @@ async function startUpdate() {
   finally { updateSubmitting = false; renderUpdate(updateState); }
 }
 
+// 대화 전환(새 대화·선택·복원·삭제)을 서버에 보낸 때부터 화면이 새 대화로 바뀔 때까지 세요. 그 사이 보낸 글이 옛 대화로 가지 않게 send()가 기다려요
+const SWITCH_ACTIONS = ["switch", "new_session", "restore", "delete", "purge", "empty_trash"];
+let switchPending = 0, carryInput = false;
 async function api(body) {
   let ok = false;
+  const isSwitch = SWITCH_ACTIONS.includes(body.action);
+  if (isSwitch) { switchPending++; if (body.action === "new_session") carryInput = true; }   // 새 대화를 누른 뒤 친 글은 새 대화로 가져가요
   try {
     // 지금 화면에 떠 있는 대화를 명시 — 탭 전환과 전송이 겹쳐도 엉뚱한 대화로 안 감
     const res = await fetch("/api", {method: "POST", body: JSON.stringify({session: curSession, ...body}),
                                      signal: AbortSignal.timeout(body.action === "merge" ? 120000 : 15000)});
     const r = await res.json().catch(() => ({}));   // 서버가 처리했는데 본문만 깨진 경우 '실패'로 오인해 중복 전송하지 않게
     if (!res.ok || r.error) toast(r.error || `처리하지 못했습니다 (서버 오류 ${res.status}).`);
-    else { ok = true; if (r.ok) toast(r.ok); if (["switch", "new_session", "restore", "delete", "purge", "empty_trash"].includes(body.action)) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
+    else { ok = true; if (r.ok) toast(r.ok); if (isSwitch) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
   } catch (e) {
     if (body.action === "quit" && e.name === "TypeError") return true;   // 종료 직후 연결이 끊길 수 있음. 시간 초과는 성공으로 간주하지 않음
     toast(e.name === "TimeoutError" ? "서버 응답이 너무 늦습니다. 잠시 뒤 다시 시도하세요. 쓴 내용은 그대로 남아 있습니다."
                                     : "서버에 보내지 못했습니다. office를 띄운 콘솔이 켜져 있는지 확인하세요. 쓴 내용은 그대로 남아 있습니다.");
   }
-  refresh();
+  const refreshed = refresh();
+  if (isSwitch) {
+    try { await refreshed; } catch {}
+    switchPending--; carryInput = false;
+  }
   return ok;
 }
 // 서버가 받았을 때만 입력창을 비움 — 통신 실패 시 쓴 내용 보존, 전송 중 중복 전송 막음
 let sending = false, forceBottom = false;
 const drafts = {};
 async function send() {
-  const text = $("#input").value.trim();
-  if (!text || sending) return;
+  if (!$("#input").value.trim() || sending) return;
   sending = true; $("#send").disabled = true;
+  while (switchPending) await new Promise(r => setTimeout(r, 50));   // 대화 전환이 화면에 반영된 뒤 지금 보는 대화로 보내요
+  const text = $("#input").value.trim();
+  if (!text) { sending = false; $("#send").disabled = false; return; }
   const from = curSession;
   const ok = mode === "job" ? await api({action: "job", text, lead: $("#lead").value, verification: verify})
                             : await api({action: "msg", text, to: mode});
@@ -2009,8 +2020,11 @@ async function doRefresh() {
     $("#version").textContent = version ? "v" + version.replace(/^v/, "") : "";
     $("#version").hidden = !version;
     if (s.session !== curSession) {   // 대화 전환: 쓰던 초안은 그 대화에 남겨두고 새 대화 초안을 불러옴
-      if (curSession) drafts[curSession] = $("#input").value;
-      $("#input").value = drafts[s.session] || ""; grow();
+      if (carryInput) carryInput = false;   // 새 대화를 누른 뒤 친 글은 옛 대화 초안으로 보내지 않고 새 대화 입력창에 그대로 둠
+      else {
+        if (curSession) drafts[curSession] = $("#input").value;
+        $("#input").value = drafts[s.session] || ""; grow();
+      }
       curSession = s.session; forceBottom = false; lastSig = ""; lastMsgs = 0; openTurns = new Set(); expandedOld = new Set();
       lastMessagesKey = null; lastMessagesSession = null; lastMessages = [];
     }
