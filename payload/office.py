@@ -1420,7 +1420,7 @@ def cmd_finish(a):
             if target.get("cancelled") or target.get("removed"):
                 sys.exit(label + "사용자가 취소한 요청입니다. 완료 보고를 덮어쓰지 않습니다.")
             if target["status"] == "done":
-                sys.exit(label + "이미 끝난 요청이에요. 기존 보고를 유지해요.")
+                sys.exit(label + "이미 끝난 요청이에요. 기존 보고를 유지해요. 덧붙일 말은 office say --to user 로 남기세요.")
             if me() != target.get("acting_lead", target["lead"]):
                 sys.exit(label + "선택된 리더 또는 대행 리더만 완료 보고할 수 있습니다.")
             left = [t for t in s["tasks"] if t.get("job") == target["id"] and t["status"] != "done"]
