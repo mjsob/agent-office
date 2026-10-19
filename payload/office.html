@@ -162,7 +162,7 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .readnote { margin: 6px 0 0; font-size: 11.5px; color: var(--faint); word-break: keep-all; }
 /* 안 읽힌 메시지는 말풍선 너비·안내 줄을 처음부터 고정해 글이 바뀌어도 대화창이 흔들리지 않게 */
 .msg.pend { min-width: min(80%, 27em); }
-.msg.pend .readnote { min-height: 1.5em; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 0; min-width: 100%; box-sizing: border-box; }
+.msg.pend .readnote { line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 0; min-width: 100%; box-sizing: border-box; }
 .pulse.quiet { color: var(--muted); }
 .pulse.quiet::before { background: var(--faint); animation: none; }
 .dot.wrap { background: var(--faint); animation: none; }
@@ -999,6 +999,7 @@ async function startUpdate() {
 // 대화 전환(새 대화·선택·복원·삭제)을 서버에 보낸 때부터 화면이 새 대화로 바뀔 때까지 세요. 그 사이 보낸 글이 옛 대화로 가지 않게 send()가 기다려요
 const SWITCH_ACTIONS = ["switch", "new_session", "restore", "delete", "purge", "empty_trash"];
 let switchPending = 0, carryInput = false;
+let lastApiError = "";
 async function api(body) {
   let ok = false;
   const isSwitch = SWITCH_ACTIONS.includes(body.action);
@@ -1008,7 +1009,8 @@ async function api(body) {
     const res = await fetch("/api", {method: "POST", body: JSON.stringify({session: curSession, ...body}),
                                      signal: AbortSignal.timeout(body.action === "merge" ? 120000 : 15000)});
     const r = await res.json().catch(() => ({}));   // 서버가 처리했는데 본문만 깨진 경우 '실패'로 오인해 중복 전송하지 않게
-    if (!res.ok || r.error) toast(r.error || `처리하지 못했습니다 (서버 오류 ${res.status}).`);
+    lastApiError = "";
+    if (!res.ok || r.error) toast(lastApiError = r.error || `처리하지 못했습니다 (서버 오류 ${res.status}).`);
     else { ok = true; if (r.ok) toast(r.ok); if (isSwitch) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
   } catch (e) {
     if (body.action === "quit" && e.name === "TypeError") return true;   // 종료 직후 연결이 끊길 수 있음. 시간 초과는 성공으로 간주하지 않음
@@ -1141,7 +1143,8 @@ function applyTheme(t) {
 function cycleTheme() {
   const order = ["auto", "light", "dark"], cur = localStorage.officeTheme || "auto";
   const next = order[(order.indexOf(cur) + 1) % 3];
-  localStorage.officeTheme = next; applyTheme(next);
+  localStorage.officeTheme = next; applyTheme(next); themeTouched = Date.now();
+  api({action: "ui_settings", theme: next});   // 서버에도 저장: 다시 켜서 주소(포트)가 바뀌어도 색 모드가 유지돼요
 }
 applyTheme(new URLSearchParams(location.search).get("theme") || localStorage.officeTheme);   // ?theme=는 캡처 점검용(저장 안 함)
 function emptyTrash() {
@@ -1440,6 +1443,7 @@ function linkPlainPaths(html) {
 async function openPath(path) {
   path = path.replace(/:\d+(:\d+)?$/, "");   // 줄 번호(:12)는 떼고 연다
   if (await api({action: "open_path", path})) return;
+  if (lastApiError.startsWith("탐색기는 열렸")) return;   // 열렸으니 서버가 띄운 안내만 보여 줌 (복사·'열지 못했어요' 문구 없이)
   try { await navigator.clipboard.writeText(path); toast("열지 못해서 경로를 복사했어요"); } catch {}
 }
 document.addEventListener("click", e => { const el = e.target.closest(".path"); if (el) openPath(el.dataset.path); });
@@ -1935,9 +1939,7 @@ function updateReadNotes(agents) {
       && !a.paused && Number.isFinite(a.read_id) && a.read_id < id);
     const waited = Date.now() / 1000 - at;
     el.closest(".msg")?.classList.toggle("pend", targets.length > 0);
-    if (!targets.length || waited < 5) {   // 안 읽힌 동안은 줄을 비워 두고(보이지 않게) 자리만 잡아 둠
-      el.hidden = !targets.length; el.style.visibility = targets.length ? "hidden" : ""; el.textContent = ""; el.removeAttribute("title"); return;
-    }
+    if (!targets.length || waited < 5) { el.hidden = true; el.style.visibility = ""; el.textContent = ""; el.removeAttribute("title"); return; }   // 보여 줄 상태가 없으면 줄 자리도 없음
     const what = targets.length === 1 ? liveText(targets[0][1]) || doingText(targets[0][1].doing) : "";
     el.textContent = (targets.length > 1 ? "둘 다 일하는 중이라 차례가 끝나면 읽어요" : `${NAME[targets[0][0]]}가 이번 차례가 끝나면 읽어요`)
       + ` · ${dur(waited)}째` + (what ? ` · 지금 ${what}` : "");
@@ -2060,7 +2062,7 @@ function refresh() {
 const safe = (name, f) => { try { f(); return true; } catch (e) { console.error(name, e); return false; } };
 const headlessClient = /HeadlessChrome/i.test(navigator.userAgent);
 const clientId = headlessClient ? "" : crypto.randomUUID();
-let officeClosed = false, clientReady = headlessClient, serverInstance = null;
+let officeClosed = false, clientReady = headlessClient, serverInstance = null, themeSynced = false, themeTouched = 0;
 function closeOfficeWindow(updating = updateState.state === "restarting") {
   if (officeClosed) return;
   officeClosed = true;
@@ -2120,6 +2122,11 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
+  // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
+  if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
+    if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
+    else if (!s.ui.theme && localStorage.officeTheme && !themeSynced) { themeSynced = true; api({action: "ui_settings", theme: localStorage.officeTheme}); }
+  }
   // 처음 연결한 서버와 다른 서버가 응답하면 다시 시작된 것: 새 서버가 연 창만 남기고 이 창은 닫음 (식별자를 안 주는 옛 서버는 그대로)
   if (!headlessClient && typeof s.server_instance === "string" && s.server_instance) {
     serverInstance ??= s.server_instance;

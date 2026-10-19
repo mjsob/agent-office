@@ -4560,7 +4560,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options", "ui_settings"}
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -4598,6 +4598,12 @@ class Office:
                 raise UserError("리더 선택 확인 — 리더는 Claude 또는 Codex를 선택하세요.")
             if act == "msg" and p.get("to", "all") not in (*AGENTS, "all"):
                 raise UserError("받는 에이전트 확인 — 메시지를 받을 에이전트를 다시 선택하세요.")
+        if act == "ui_settings":                # 화면 설정(색 모드)은 서버 쪽 파일에 저장해 서버를 다시 켜 포트가 바뀌어도 유지
+            theme = p.get("theme")
+            if theme not in ("auto", "light", "dark"):
+                raise UserError("화면 색 확인 — 색 모드는 자동·밝게·어둡게 중 하나여야 합니다.")
+            atomic_json(D / "ui-settings.json", {"theme": theme})
+            return {"ui": {"theme": theme}}
         if act == "chat_options":
             changes = {key: p[key] for key in CHAT_OPTION_VALUES if key in p}
             if not changes or any(value not in CHAT_OPTION_VALUES[key] for key, value in changes.items()):
@@ -4923,6 +4929,8 @@ def make_handler(office):
                         if snapshot["owner"]:
                             office.window_seen = time.time()
                     snapshot["closing"] = office.stop.is_set()
+                    saved_ui = read_json_file(D / "ui-settings.json", {})
+                    snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
                     self.json_reply(200, snapshot)
                 elif path == "/api/window":
