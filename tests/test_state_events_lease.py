@@ -178,4 +178,12 @@ class Checks(unittest.TestCase):
    with self.assertRaises(o.StorageError):o.atomic_json(path,{'seq':2})
   self.assertEqual(path.read_bytes(),before);self.assertFalse(list(self.d.glob('atomic.json.*.tmp')))
 
+ def test_resolved_wait_without_target_returns_to_todo(self):
+  t=self.task(status='todo',user_request={'status':'pending','text':'login','source':'agent_auth','resume_status':'todo'})
+  o.state_transition(t,'waiting',waiting_at=1,wait_reason='login');t['user_request']['status']='resolved'
+  o.state_transition(t,'todo');self.assertEqual(t['status'],'todo');self.assertNotIn('wait_reason',t)
+  w=self.task(status='waiting',wait_on=[2]);o.state_transition(w,'todo',owner='claude');self.assertEqual(w['status'],'waiting')
+ def test_background_cleanup_notice_does_not_wake(self):
+  o.post(self.s,'system','codex','bg cleaned','msg',job=1,requires_action=False);self.assertIsNone(self.w.next_turn(self.s))
+
 if __name__=='__main__':unittest.main()

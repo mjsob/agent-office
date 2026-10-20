@@ -490,8 +490,9 @@ def state_transition(target, status, scope=None, record=None, **changes):
     scope = scope or ("task" if "title" in target else "job" if "lead" in target else "run")
     if scope not in TRANSITION_STATES or status not in TRANSITION_STATES[scope]:
         raise UserError("상태 변경 확인 — 지원하지 않는 작업 단계예요.")
-    if scope == "task" and status == "todo" and target.get("status") == "waiting":
-        status = "waiting"   # 넘겨받아도 외부 결과·사용자 행동 대기는 유지해요.
+    if scope == "task" and status == "todo" and target.get("status") == "waiting" and (
+            any(target.get(k) for k in ("wait_on", "wait_pid", "wait_log", "wait_deadline")) or pending_user_request(target)):
+        status = "waiting"   # 넘겨받아도 외부 결과·사용자 행동 대기는 유지해요. 대기가 풀렸으면 그대로 todo로 돌려요.
     previous = target.get("status")
     edges = {"job": {None: {"planning"}, "planning": {"planning", "working", "done"},
                       "working": {"working", "review", "done"}, "review": {"review", "working", "done"}, "done": {"done", "working"}},
@@ -3833,7 +3834,7 @@ class Worker:
                 if getattr(self, "bg_dropped", None):
                     names = ", ".join(self.bg_dropped)[:200]
                     post(s, "system", "user", ui_notice("백그라운드 작업 정리됨", f"{disp(self.name)} 차례가 끝나며 차례 안에서 띄운 백그라운드 작업이 같이 멈췄어요: {names}"), "event", job=job)
-                    post(s, "system", self.name, f"네 차례가 끝나며 차례 안에서 띄운 백그라운드 명령이 같이 정리됐다: {names}. 계속 돌려야 하면 `office bg ID \"설명\" \"명령\"`으로 다시 띄워라.", "msg", job=job)
+                    post(s, "system", self.name, f"네 차례가 끝나며 차례 안에서 띄운 백그라운드 명령이 같이 정리됐다: {names}. 계속 돌려야 하면 `office bg ID \"설명\" \"명령\"`으로 다시 띄워라.", "msg", job=job, requires_action=False)
                     s["msgs"][-1]["wake"] = True
                     self.bg_dropped = []
                 if closing:
@@ -4923,7 +4924,10 @@ class Office:
                                     request = task.get("user_request") or {}
                                     if task.get("owner") == n and request.get("source") == "agent_auth" and pending_user_request(task):
                                         request.update(status="resolved", resolved_at=time.time(), resolution="로그인 성공을 확인했어요.")
-                                        state_transition(task, "done" if task.get("auth_task") else request.get("resume_status", "doing"))
+                                        resume = "done" if task.get("auth_task") else request.get("resume_status", "doing")
+                                        if resume == "waiting" and not any(task.get(k) for k in ("wait_on", "wait_pid", "wait_log", "wait_deadline")):
+                                            resume = "todo"   # 로그인 중에 기한이 지워진 대기는 다시 시작할 작업으로 돌려요.
+                                        state_transition(task, resume)
                                         if task["status"] == "done":
                                             task["done_at"] = time.time()
                                         task.pop("wait_reason", None)
