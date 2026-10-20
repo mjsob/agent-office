@@ -47,7 +47,12 @@ def check():
 def wait(i, text="기다림", on=None, minutes=None, who="codex"):
     os.environ["OFFICE_AS"] = who
     try:
-        o.cmd_wait(argparse.Namespace(id=i, text=text, pid=None, log=None, minutes=minutes, on=on))
+        args = argparse.Namespace(id=i, text=text, pid=None, log=None, minutes=minutes, on=on)
+        if on is None and minutes is None:
+            # 새 CLI는 대상을 요구해요. 기존 자료의 대기를 만들어 감시 호환성을 확인해요.
+            o.mark_waiting(args, text)
+        else:
+            o.cmd_wait(args)
     finally:
         os.environ["OFFICE_AS"] = "claude"
 
@@ -173,14 +178,15 @@ reset([task(1, "codex", "waiting", waiting_at=NOW - 500)],
       [msg(1, "system", "codex", "[백그라운드 끝났어요(종료 코드 0)] 작업 #1", job=1, wake=True),
        msg(2, "claude", "codex", "#150 통과", job=1),
        msg(3, "user", "all", "비용 얼마야?", kind="request", job=2)])
-W = types.SimpleNamespace(name="codex", other="claude", read_upto=0, carry_msgs=[], stall_prompts=[], nudge_state={}, retry_counts={}, retry_due=None, cont=0)
+W = types.SimpleNamespace(sid="t1", name="codex", other="claude", read_upto=0, carry_msgs=[], stall_prompts=[], nudge_state={}, retry_counts={}, retry_due=None, cont=0)
 W.waiting_on_peer = lambda s, doing: o.Worker.waiting_on_peer(W, s, doing)
 s = load()
 s["jobs"][1]["status"] = "planning"
 s["jobs"][1]["lead"] = "codex"
 tail, job, desc, new = o.Worker.next_turn(W, s)
-assert (job, desc) == (2, "plan") and [m["id"] for m in new] == [1, 2], (job, desc, [m["id"] for m in new])
+assert (job, desc) == (2, "plan") and [m["id"] for m in new] == [1, 2, 3], (job, desc, [m["id"] for m in new])
 # 차례 끝: 기획·답장·검수 차례면 이 요청이 아닌 깨우는 메시지만 다시 싣는다(사용자 메시지 제외)
+o.Worker.acknowledge_events(W, new, job)
 W.read_upto, previous_carry = len(s["msgs"]), []
 W.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]
 s["jobs"][1]["status"] = "done"
@@ -190,6 +196,7 @@ assert [m["id"] for m in new] == [1, 2] and "다른 요청 차례에 같이 왔�
 previous_carry, W.carry_msgs = W.carry_msgs, []
 W.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != 99 and m["id"] not in previous_carry]
 assert W.carry_msgs == [], W.carry_msgs
+o.Worker.acknowledge_events(W, new, 1)
 assert o.Worker.next_turn(W, s) is None
 src_text = Path(src).read_text()
 assert 'self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]' in src_text, "차례 끝 다시 싣기 코드가 시험과 달라짐"

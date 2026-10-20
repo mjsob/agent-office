@@ -127,6 +127,8 @@ def state_valid(data):
         return False
     if type(data.get("seq", 0)) is not int or data.get("seq", 0) < 0:
         return False
+    if type(data.get("revision", 0)) is not int or data.get("revision", 0) < 0:
+        return False
     for key in ("jobs", "tasks", "msgs"):
         items = data.get(key, [])
         if not isinstance(items, list):
@@ -478,6 +480,82 @@ def touch(sid, text=None, request=False):
 
 
 # ── 대화별 상태 저장소 (sessions/<id>/state.json, flock) ─────
+# 요청·작업·실행의 상태 변경은 이 함수에서만 적용해요.
+TRANSITION_STATES = {"job": {"planning", "working", "review", "done"},
+                     "task": {"todo", "doing", "waiting", "done"},
+                     "run": {"idle", "working", "paused", "acquired", "running", "completed", "failed", "cancelled"}}
+
+
+def state_transition(target, status, scope=None, record=None, **changes):
+    scope = scope or ("task" if "title" in target else "job" if "lead" in target else "run")
+    if scope not in TRANSITION_STATES or status not in TRANSITION_STATES[scope]:
+        raise UserError("상태 변경 확인 — 지원하지 않는 작업 단계예요.")
+    if scope == "task" and status == "todo" and target.get("status") == "waiting":
+        status = "waiting"   # 넘겨받아도 외부 결과·사용자 행동 대기는 유지해요.
+    previous = target.get("status")
+    edges = {"job": {None: {"planning"}, "planning": {"planning", "working", "done"},
+                      "working": {"working", "review", "done"}, "review": {"review", "working", "done"}, "done": {"done", "working"}},
+             "task": {None: {"todo", "waiting"}, "todo": {"todo", "doing", "waiting", "done"},
+                       "doing": {"todo", "doing", "waiting", "done"}, "waiting": {"todo", "doing", "waiting", "done"}, "done": {"done", "todo"}}}
+    if scope in edges and status not in edges[scope].get(previous, set()):
+        raise UserError("상태 전이 확인 — 현재 단계에서는 요청한 단계로 바꿀 수 없어요.")
+    # 기존 호출의 소유권·완료 근거 검사는 유지하고 전이 공통 불변식을 여기서 적용해요.
+    proposed = {**target, **changes, "status": status}
+    if scope == "task" and status == "waiting" and not (
+            any(proposed.get(k) for k in ("wait_on", "wait_pid", "wait_log", "wait_deadline"))
+            or pending_user_request(proposed)):
+        raise UserError("기다릴 대상 필요 — 작업 번호·프로세스·로그·기한 중 하나를 지정하세요.")
+    if scope == "task" and status == "waiting" and proposed.get("wait_on") and record is not None:
+        tasks = {t["id"]: t for t in record["tasks"]}
+        on = proposed["wait_on"]
+        if target["id"] in on or any(i not in tasks for i in on) or all(tasks[i]["status"] == "done" for i in on):
+            raise UserError("기다릴 작업 확인 — 끝나지 않은 다른 작업을 지정하세요.")
+        pending, seen = list(on), set()
+        while pending:
+            current = pending.pop()
+            if current == target["id"]:
+                raise UserError("서로 기다리는 작업 — 기다릴 작업의 연결을 확인하세요.")
+            if current not in seen:
+                seen.add(current)
+                pending.extend(tasks.get(current, {}).get("wait_on", []))
+    if scope == "task" and status == "doing" and pending_user_request(proposed):
+        raise UserError("사용자 확인 대기 — 받은 자료를 확인하고 resolve-user로 해결하세요.")
+    if scope == "job" and target.get("cancelled") and status != "done":
+        raise UserError("취소된 요청 — 새 요청으로 작업을 시작하세요.")
+    target.update(changes)
+    target["status"] = status
+    if scope == "task" and status in ("todo", "doing", "done"):
+        keep = live_bg_watch(target) if status == "doing" else {}
+        for key in WAIT_FIELDS:
+            target.pop(key, None)
+        target.update(keep)
+    target["transition_revision"] = target.get("transition_revision", 0) + 1
+    return target
+
+
+def actionable_event(row):
+    return bool(row.get("wake")) or row.get("requires_action", row.get("kind", "msg") in ("msg", "request")) is True
+
+
+def event_for_worker(row, worker, jobs):
+    if not actionable_event(row) or row.get("to") not in (worker.name, "all"):
+        return False
+    if row.get("kind", "msg") == "request":
+        return any(j["id"] == row.get("job") and j["status"] != "done" and not j.get("cancelled")
+                   and j.get("acting_lead", j["lead"]) == worker.name for j in jobs)
+    if row.get("kind", "msg") != "msg":
+        return False
+    if row.get("from") == worker.name:
+        return row.get("to") == worker.name and (row.get("requires_action") is True or bool(row.get("wake")))
+    if row.get("from") == "system" and not (row.get("requires_action") is True or row.get("wake")):
+        return False
+    return row.get("from") == "user" or row.get("text", "").strip() not in IDLE_REPLIES
+
+
+def event_identity(row, sid):
+    return row.get("event_id") or f"legacy:{sid}:{row['id']}"
+
+
 def bump_job_progress(record, jid):
     job = next((j for j in record.get("jobs", []) if j["id"] == jid), None)
     if job is not None:
@@ -508,13 +586,20 @@ def state(write=False, sid=None):
         for k in ("jobs", "tasks", "msgs"):
             s.setdefault(k, [])
         s.setdefault("seq", 0)
+        original_record = copy.deepcopy(s) if write else None
+        original_version = file_key(STATE) if write else None
         before = progress_fingerprints(s) if write else None
         yield s
         if write:
+            if s == original_record:
+                return
             after = progress_fingerprints(s)
             for job in s["jobs"]:
                 if before.get(job["id"]) != after[job["id"]]:
                     bump_job_progress(s, job["id"])
+            if file_key(STATE) != original_version:
+                raise StorageError("원본 변경 감지 — 대화 기록이 바뀌어 저장하지 않았어요.")
+            s["revision"] = s.get("revision", 0) + 1
             atomic_json(STATE, s, state_valid)
 
 
@@ -577,14 +662,15 @@ def reply_target(s, actor, explicit=None):
                  and m["id"] not in answered), None)
 
 
-def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
+def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None, requires_action=None):
     if frm in AGENTS and (to == "user" and kind == "msg"
                           or kind == "turn" and job is None):
         if job is None or reply_to is not None:
             reply_to = reply_target(s, frm, reply_to)
     # ts 는 오늘 기준 시:분:초, at 은 날짜까지 알 수 있는 시각(화면에서 오늘이 아니면 날짜로 표시)
     row = {"id": len(s["msgs"]) + 1, "ts": time.strftime("%H:%M:%S"), "at": round(time.time(), 3),
-           "from": frm, "to": to, "text": text, "kind": kind, "job": job}
+           "from": frm, "to": to, "text": text, "kind": kind, "job": job,
+           "event_id": uuid.uuid4().hex, "requires_action": bool(kind in ("msg", "request") and to in (*AGENTS, "all") and frm != to) if requires_action is None else bool(requires_action)}
     if reply_to is not None:
         row["re"] = reply_to
     s["msgs"].append(row)
@@ -943,6 +1029,7 @@ def release_reservations(session, job, owner):
 
 
 def cmd_write(a):
+    require_run_token()
     path, identity = guarded_path(a.path), reservation_owner()
     source = Path(a.source).expanduser().resolve()
     if source == path:
@@ -966,6 +1053,7 @@ def cmd_write(a):
                     os.fchmod(target.fileno(), mode)
                 if file_digest(path) != old["version"]:
                     raise UserError("원본 변경 감지 — 저장 직전에 다른 변경이 생겨 저장하지 않았습니다.")
+                require_run_token()
                 os.replace(temporary, path)
                 saved = True
                 old["version"] = hashlib.sha256(content).hexdigest()
@@ -1036,9 +1124,7 @@ def cmd_add(a):
         pair = {"id": uuid.uuid4().hex, "criteria": criteria.strip(), "formula": copy.deepcopy(AB_FORMULA)} if ab else None
         for owner in AGENTS if ab else (a.to,):
             s["seq"] += 1
-            added = {"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": owner,
-                     "status": "todo", "note": "", "created_at": time.time(),
-                     "kind": tag.strip() if tag else (original or {}).get("kind", "일반")}
+            added = state_transition({"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": owner, "note": "", "created_at": time.time(), "kind": tag.strip() if tag else (original or {}).get("kind", "일반")}, "todo")
             if pair:
                 added.update(ab=copy.deepcopy(pair), level="light")
             if original is not None:
@@ -1058,7 +1144,7 @@ def cmd_add(a):
         if j and j["status"] in ("planning", "review", "done"):
             if j["status"] == "done":
                 event(s, f"요청 {j['id']} 후속 작업으로 다시 진행", me(), job=j["id"])
-            j["status"] = "working"
+            state_transition(j, "working")
             j.pop("finished_at", None)
 
 
@@ -1075,14 +1161,12 @@ def cmd_claim(a):
         for key in WAIT_FIELDS:
             t.pop(key, None)
         t.update(keep)   # 아직 도는 백그라운드는 claim 뒤에도 계속 감시한다
-        t.update(owner=me(), status="doing", claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
+        state_transition(t, "doing", owner=me(), claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
         event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=message_job(s))
         print(f"#{a.id} 맡음")
 
 
 BG_FIELDS = ("wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_process")
-BARE_WAIT_WINDOW = 2 * 3600   # 초: 대상 없는 기다림을 세는 기간
-BARE_WAIT_LIMIT = 3   # 이 기간에 대상 없이 이만큼 걸었으면 다시 걸 때 거절
 WAIT_FIELDS = ("wait_reason", "waiting_at", "wait_pid", "wait_start", "wait_log", "wait_rc", "wait_cmd", "wait_deadline",
                "wait_notified", "wait_overdue", "wait_stale", "wait_on", "wait_ready", "wait_peer_seen", "wait_process")
 
@@ -1132,10 +1216,15 @@ def task_wait_status(t, now=None):
     return {"wait_alive": alive, "wait_log_at": log_at, "wait_kind": kind, "wait_detail": detail}
 
 
+def remaining_job_tasks(tasks, jid):
+    """사용자 행동 대기와 실행할 작업을 구분해요. 검수·마감·화면이 같은 판정을 사용해요."""
+    return [t for t in tasks if t.get("job") == jid and t["status"] != "done" and not pending_user_request(t)]
+
+
 def job_display_status(job, tasks, workers=None, now=None):
     """저장한 작업 단계와 현재 실행 상태를 구분해요. 작업 이력은 바꾸지 않아요."""
     pending = [t for t in tasks if t.get("job") == job["id"] and t.get("status") != "done"]
-    if job.get("cancelled") or job["status"] == "done" and all(pending_user_request(t, now) for t in pending):
+    if job.get("cancelled") or job["status"] == "done" and not remaining_job_tasks(tasks, job["id"]):
         return "done", ""
     active = [w for w in (workers or {}).values() if w.get("status") == "working"
               and not w.get("error")
@@ -1184,17 +1273,6 @@ def mark_waiting(a, reason, **watch):
         watch = {k: v for k, v in watch.items() if v is not None}
         if not watch.get("wait_pid"):
             watch = {**live_bg_watch(t), **watch}
-        # 기다릴 대상(--on/--pid/--log/--minutes)이 없는 기다림을 같은 작업에 짧은 시간 안에 되풀이하면 거절한다.
-        # 큰 작업을 '기다림'에 걸어 두고 메시지마다 다시 거는 자리표시 대기(한 작업 100번 넘게)를 막는다
-        now = time.time()
-        if not (watch.get("wait_pid") or watch.get("wait_on") or watch.get("wait_log") or getattr(a, "minutes", None)):
-            recent = [x for x in t.get("bare_waits", []) if now - x < BARE_WAIT_WINDOW]
-            if len(recent) >= BARE_WAIT_LIMIT:
-                sys.exit(f"기다림 거절 — #{a.id} 를 기다릴 대상 없이 {len(recent)}번 걸었어요. 무엇을 기다리는지 --on 작업번호·--pid·--log 로 걸거나, "
-                         "남은 일을 작은 작업으로 나눠 등록하고 이 작업은 office done 으로 닫으세요. 준비된 일이 있으면 기다리지 말고 이어서 하세요.")
-            t["bare_waits"] = recent + [now]
-        else:
-            t.pop("bare_waits", None)
         for key in WAIT_FIELDS:
             t.pop(key, None)
         minutes = getattr(a, "minutes", None)
@@ -1206,7 +1284,7 @@ def mark_waiting(a, reason, **watch):
             deadline = time.time() + WAIT_DEADLINE * 4
         else:   # 대상 없는 기다림: 기한 알림을 받고도 다시 걸면 15→30→60→120→240분으로 늘린다
             deadline = time.time() + WAIT_DEADLINE * 2 ** min(t.get("wait_overdue_count", 0), 4)
-        t.update(owner=me(), status="waiting", wait_reason=reason, waiting_at=time.time(), **watch)
+        state_transition(t, "waiting", record=s, owner=me(), wait_reason=reason, waiting_at=time.time(), wait_deadline=deadline, **watch)
         if deadline:
             t["wait_deadline"] = deadline
         t.setdefault("claimed_at", time.time())
@@ -1220,12 +1298,17 @@ def cmd_wait(a):
     reason = " ".join((a.text or "").split())[:200]
     if not reason:
         raise UserError("입력 내용 확인 — 무엇을 기다리는지 적어 주세요.")
+    minutes = getattr(a, "minutes", None)
+    if minutes is not None and (not isinstance(minutes, (int, float)) or not math.isfinite(minutes) or minutes <= 0):
+        raise UserError("기한 확인 — --minutes에 0보다 큰 시간을 지정하세요.")
     pid = getattr(a, "pid", None)
     ident = process_identity(pid) if pid else None
     if pid and not ident:
         raise UserError(f"프로세스 확인 — pid {pid} 가 이미 없습니다. 끝났는지 확인하고 office done 하거나 office bg 로 다시 띄우세요.")
     log = str(Path(a.log).expanduser().resolve()) if getattr(a, "log", None) else None
     on = sorted(set(getattr(a, "on", None) or []))
+    if not (pid or log or on or getattr(a, "minutes", None)):
+        raise UserError("기다릴 대상 필요 — --on·--pid·--log·--minutes 중 하나를 지정하세요.")
     if on:
         with state() as s:
             ids = {t["id"]: t for t in s["tasks"]}
@@ -1261,7 +1344,7 @@ def cmd_need_user(a):
         request = {"status": "pending", "text": text, "created_at": old.get("created_at") if old else time.time(),
                    "expires_at": expires, "resolved_at": None, "resolution": None, "reply_to": None}
         task["user_request"] = request
-        task.update(owner=me(), status="waiting", waiting_at=time.time(), wait_reason=text[:200])
+        state_transition(task, "waiting", owner=me(), waiting_at=time.time(), wait_reason=text[:200])
         task.pop("wait_deadline", None)
         task.pop("user_expired_notified", None)
         if not old or old.get("text") != text or old.get("expires_at") != expires:
@@ -1280,7 +1363,7 @@ def cmd_resolve_user(a):
         if reply is not None and not any(m["id"] == reply and m["from"] == "user" for m in record["msgs"]):
             raise UserError("받은 메시지 확인 — 자료나 답을 보낸 사용자 메시지 번호를 적으세요.")
         task["user_request"].update(status="resolved", resolved_at=time.time(), resolution=a.text.strip(), reply_to=reply)
-        task.update(status="doing", claimed_at=time.time())
+        state_transition(task, "doing", claimed_at=time.time())
         for key in ("wait_reason", "wait_deadline", "wait_overdue", "wait_stale"):
             task.pop(key, None)
         post(record, me(), "user", "사용자 확인 해결 — " + a.text.strip(), "progress", job=task.get("job"))
@@ -1407,6 +1490,8 @@ def cmd_bg(a):
     # 새 세션으로 띄워 에이전트 실행 도구·차례 종료가 프로세스 그룹을 정리해도 같이 죽지 않게 한다
     # 명령 안에서 office progress 를 ID 없이 쓰고, 띄운 차례의 요청이 먼저 끝나도 작업이 속한 요청으로 파일을 저장하게
     env = {**os.environ, "OFFICE_TASK": str(a.id), **({"OFFICE_JOB": str(task_job)} if task_job else {})}
+    env.pop("OFFICE_RUN_ID", None)
+    env.pop("OFFICE_RUN_TOKEN", None)
     proc = subprocess.Popen(limited_command(["bash", "-c", script]), cwd=os.getcwd(), env=env, start_new_session=True, close_fds=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ident = process_identity(proc.pid)
@@ -1706,7 +1791,7 @@ def cmd_done(a):
         t["execution"] = {"status": "succeeded", "at": time.time()}
         record_verdict(targets, verdict, review_task=a.id)
         t.setdefault("completed_by", t.get("owner"))
-        t.update(status="done", note=a.text, done_at=time.time())
+        state_transition(t, "done", note=a.text, done_at=time.time())
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} 실행 성공 · " + ("산출물 검증 근거 기록" if t["completion"]["status"] == "verified" else "산출물 미확인(--evidence로 근거를 남기세요)"))
         released_job = t.get("job")
@@ -1726,7 +1811,7 @@ def cmd_handoff(a):
         t.pop("claimed_at", None)
         t.pop("done_at", None)
         t["created_at"] = time.time()
-        t.update(owner=a.to, status="todo", note=f"{disp(me())}에게서 넘겨받음" + (f": {a.text}" if a.text else ""))
+        state_transition(t, "todo", owner=a.to, note=f"{disp(me())}에게서 넘겨받음" + (f": {a.text}" if a.text else ""))
         event(s, f"작업 #{a.id}을(를) {disp(a.to)}에게 넘김" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} → {a.to}")
         released_job = t.get("job")
@@ -1824,15 +1909,14 @@ def cmd_finish(a):
                 sys.exit(label + "이미 끝난 요청이에요. 기존 보고를 유지해요. 덧붙일 말은 office say --to user 로 남기세요.")
             if me() != target.get("acting_lead", target["lead"]):
                 sys.exit(label + "선택된 리더 또는 대행 리더만 완료 보고할 수 있습니다.")
-            left = [t for t in s["tasks"] if t.get("job") == target["id"] and t["status"] != "done" and not pending_user_request(t)]
+            left = remaining_job_tasks(s["tasks"], target["id"])
             if any(t["status"] == "waiting" for t in left):
                 sys.exit(label + "기다리는 작업이 남아 있습니다. 결과가 나와 완료한 뒤 보고하세요. 중간 상황은 office say --to user 로 알리세요.")
             if left:
                 sys.exit(label + "남은 작업을 완료한 뒤 보고하세요.")
         finished_at = time.time()
         for target in targets:
-            target.update(status="done", finished_by=me(), finished_at=finished_at,
-                          summary=a.text, brief=report_brief(a.text), completion=request_completion(s, target["id"]))
+            state_transition(target, "done", finished_by=me(), finished_at=finished_at, summary=a.text, brief=report_brief(a.text), completion=request_completion(s, target["id"]))
             text = (f"요청 {target['id']} 완료" if target is j else
                     f"요청 {target['id']} 완료 · 요청 {j['id']} 보고에 함께 답함")
             event(s, text, me(), job=target["id"])
@@ -2207,7 +2291,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office correction 대상작업 --re 사용자메시지   되돌림·재작업 지시를 원담당에게 연결(같은 메시지는 한 번)
   office scores                   종류별 표본·정정·완료 시간 비율 확인
   office add "작은 비교 작업" --ab --criteria "같은 검증 기준"   두 담당자가 별도 파일에서 수행, 배정 때 고정한 품질 우선·시간 보조 기준으로 비교
-  office wait ID "기다리는 것" [--on 작업번호] [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·기다리던 작업 완료·감시 프로세스 종료·기한 지나면 깨어남)
+  office wait ID "기다리는 것" [--on 작업번호] [--pid N] [--log 파일] [--minutes M] (대상 하나 필수)   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·기다리던 작업 완료·감시 프로세스 종료·기한 지나면 깨어남)
   office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
   office progress ID "지금 상태" [--done N --total M] [--resume-at 20:10] [--notify]   오래 도는 일의 진행을 화면에 남기기 (bg 명령 안에선 ID 생략)
   office handoff ID --to {other} "진행상황/이유"   넘기기
@@ -2218,6 +2302,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 네 담당 작업부터 처리. 시작할 때 `office claim ID`로 진행중 표시 (주인 없는 todo도 claim으로 가져감). 동료 담당은 건드리지 마라.
 - 상대가 더 잘할 일이거나 막히면 handoff. 의견이 필요하면 say로 묻고 기다리는 동안 다른 일 해라.
 - 외부 프로세스(tmux·서버·다른 CLI)에 입력을 보냈으면 실제로 들어갔는지 바로 확인해라. 결과를 1분 넘게 반복 확인하며 기다리지 마라.
+- 기다릴 대상 없는 wait는 쓸 수 없다. --on·--pid·--log·--minutes 중 하나를 지정해라.
 - 동료 완료·답을 기다릴 때 sleep·백그라운드 작업·반복 확인으로 차례를 붙잡지 마라. 할 일이 없으면 차례를 끝내라. 새 메시지·작업 변화가 생기면 서버가 다시 깨운다(차례를 붙잡고 있으면 그 사이 넘어온 일을 못 받는다).
 - 동료가 작업 중인 파일은 직접 고치지 말고 say로 조율.
 - 파일을 만들기 전에 기존 폴더 구조를 확인하고 같은 목적의 파일이 있는 곳에 함께 두세요. 새 프로젝트는 `~/projects/<프로젝트명>/`에 두고, 문서·입력 자료·코드·결과물은 기존 분류를 따라 나누세요.
@@ -2335,6 +2420,13 @@ def checkpoint_valid(value):
     carry = value.get("carry_msgs", [])
     return ((cursor is None or type(cursor) is int and cursor >= 0)
             and isinstance(carry, list) and all(type(i) is int for i in carry)
+            and isinstance(value.get("pending_events", []), list)
+            and all(type(i) is int and i > 0 for i in value.get("pending_events", []))
+            and isinstance(value.get("handled_events", []), list)
+            and all(isinstance(i, str) and i for i in value.get("handled_events", []))
+            and (value.get("run_id") is None or isinstance(value.get("run_id"), str))
+            and value.get("execution_phase", "idle") in ("idle", "paused", "executing", "processed")
+            and isinstance(value.get("manual_pause", False), bool)
             and isinstance(value.get("paused", False), bool)
             and (value.get("error") is None or isinstance(value["error"], str))
             and (value.get("error_kind") is None or isinstance(value.get("error_kind"), str) and value.get("error_kind") in ERROR_KINDS)
@@ -2490,8 +2582,72 @@ def activity_step(kind, line):
     return "look"
 
 
+def ensure_no_active_run(sid, name):
+    with (sdir(sid) / f"{name}.run.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise UserError("중복 담당 방지 — 같은 담당의 실행을 먼저 마치세요.") from None
+
+
+@contextmanager
+def execution_lease(worker, job):
+    folder = sdir(worker.sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{worker.name}.run.json"
+    with (folder / f"{worker.name}.run.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise UserError("중복 실행 방지 — 같은 담당이 이미 실행 중이에요.") from None
+        # A lock-free lease can still have an orphan child after a server crash.
+        process = read_json_file(folder / f"{worker.name}.process.json", {}, process_record_valid)
+        if process and process_identity(process["pid"]) == {k: process[k] for k in ("start", "uid", "command")}:
+            raise UserError("기존 실행 확인 — 이전 프로세스가 끝난 뒤 이어서 시작하세요.")
+        token = uuid.uuid4().hex
+        lease = {"run_id": token, "token": token, "job": job, "owner": os.getpid(),
+                 "resumed_from": getattr(worker, "active_run_id", None) or getattr(worker, "previous_run_id", None),
+                 "identity": process_identity(os.getpid()), "expires_at": time.time() + 90}
+        state_transition(lease, "acquired", scope="run")
+        atomic_json(path, lease)
+        worker.active_run_id, worker.run_token = token, token
+        worker.run_lease = lease
+        failed = False
+        try:
+            yield lease
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            current = read_json_file(path, {})
+            if current.get("token") == token:
+                state_transition(current, "failed" if failed or getattr(worker, "error", None) or getattr(worker, "rc", 0) else "completed", scope="run")
+                current["expires_at"] = time.time()
+                atomic_json(path, current)
+            worker.run_token = None
+            worker.run_lease = None
+
+
+def require_run_token():
+    token = os.environ.get("OFFICE_RUN_TOKEN")
+    if not token:   # Older agents and explicitly managed background tasks remain compatible.
+        return
+    actor = me()
+    record = read_json_file(sdir(current_sid()) / f"{actor}.run.json", {})
+    if record.get("token") != token or record.get("status") not in ("acquired", "running"):
+        raise UserError("실행 권한 만료 — 새 차례에서 파일을 다시 예약하고 저장하세요.")
+
+
 class Worker:
-    """대화 하나에 붙은 에이전트 한 명. 대화마다 claude·codex 한 쌍이 따로 돎"""
+    """대화 하나의 담당을 실행해요. 차례가 끝나면 미처리 이벤트를 저장해요."""
+    @property
+    def status(self):
+        return self.__dict__.get("_execution", {}).get("status", "idle")
+
+    @status.setter
+    def status(self, value):
+        state_transition(self.__dict__.setdefault("_execution", {}), value, scope="run")
+
     def __init__(self, name, sid, stop):
         self.name, self.other = name, AGENTS[1 - AGENTS.index(name)]
         self.sid, self.stop = sid, stop
@@ -2517,6 +2673,7 @@ class Worker:
         self.interrupted_job = None
         self.immediate_pause = False
         self.process_file = sdir(sid) / f"{name}.process.json"
+        ensure_no_active_run(sid, name)
         recovered = recover_recorded_process(self.process_file)
         self.subs = {}
         self.codex_message_rows = {}
@@ -2530,6 +2687,8 @@ class Worker:
             saved = {"paused": True, "error": "진행 기록 읽기 실패 — 진행 기록을 읽지 못했습니다. 폴더 권한을 확인하세요."}
         self.read_upto = saved.get("read_upto")
         self.carry_msgs = [i for i in saved.get("carry_msgs", []) if type(i) is int and i > 0]
+        self.pending_events = list(saved.get("pending_events", self.carry_msgs))
+        self.handled_events = set(saved.get("handled_events", []))
         self.paused = saved.get("paused", False)
         self.manual_pause = saved.get("manual_pause", self.paused and not saved.get("error"))
         self.error = saved.get("error")
@@ -2537,6 +2696,7 @@ class Worker:
         if not self.error_kind or self.error_kind == "unknown":
             self.error_kind = classify_agent_error(self.error) if self.error else None
         self.resume_turn = saved.get("interrupted_turn")
+        self.previous_run_id = saved.get("run_id")
         self.auto_retries = saved.get("auto_retries", 0)
         self.retry_job = saved.get("retry_job")
         self.retry_counts = dict(saved.get("retry_counts", {}))
@@ -2588,7 +2748,7 @@ class Worker:
         with self.checkpoint_lock:
             interrupted = self.doing if self.status == "working" and not processed else (getattr(self, "resume_turn", None) if not processed else None)
             carry = list(getattr(self, "turn_carry", []) if self.status == "working" and not processed else getattr(self, "carry_msgs", []))
-            atomic_json(self.checkpoint, {"read_upto": cursor, "carry_msgs": carry, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
+            atomic_json(self.checkpoint, {"read_upto": cursor, "carry_msgs": carry, "pending_events": list(getattr(self, "pending_events", [])), "handled_events": sorted(getattr(self, "handled_events", set())), "run_id": getattr(self, "active_run_id", None) or getattr(self, "previous_run_id", None), "execution_phase": "processed" if processed else "executing" if self.status == "working" else self.status, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
                          "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
                          "retry_counts": dict(getattr(self, "retry_counts", {})),
                          "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None)}, checkpoint_valid)
@@ -2752,10 +2912,26 @@ class Worker:
             with state(True, self.sid) as s:
                 for j in s["jobs"]:
                     if j["id"] == doing["job"] and j["status"] == "planning":
-                        j["status"] = "working"
+                        state_transition(j, "working")
 
     # 에이전트 한 차례 실행. 진행상황을 activity로 흘리고 마지막 답을 돌려줌
     def run_agent(self, prompt, job, model_override=None):
+        with execution_lease(self, job) as lease:
+            self.save_checkpoint()
+            state_transition(lease, "running", scope="run")
+            atomic_json(sdir(self.sid) / f"{self.name}.run.json", lease)
+            return self._execute_agent(prompt, job, model_override)
+
+    def heartbeat_run(self):
+        lease = getattr(self, "run_lease", None)
+        if lease and lease["expires_at"] - time.time() < 60:
+            current = read_json_file(sdir(self.sid) / f"{self.name}.run.json", {})
+            if current.get("token") != lease["token"]:
+                raise UserError("실행 권한 변경 — 이전 실행을 정리하고 새 차례에서 이어가세요.")
+            lease["expires_at"] = time.time() + 90
+            atomic_json(sdir(self.sid) / f"{self.name}.run.json", lease)
+
+    def _execute_agent(self, prompt, job, model_override=None):
         raw = prompt.encode()
         if len(raw) > 100_000:   # 실행 인자 한 개는 128KB 를 넘으면 안 된다. 가운데를 줄여 에이전트가 뜨게 한다
             prompt = raw[:60_000].decode(errors="ignore") + "\n…(입력이 너무 길어 가운데를 생략했어. 작업판은 office board 로 확인해라)…\n" + raw[-35_000:].decode(errors="ignore")
@@ -2775,6 +2951,8 @@ class Worker:
         if self.interrupted_job != job:
             self.interrupted_job = None
         env = dict(os.environ, OFFICE_AS=self.name, OFFICE_DIR=str(ROOT), OFFICE_SESSION=self.sid)
+        if getattr(self, "run_token", None):
+            env.update(OFFICE_RUN_ID=self.active_run_id, OFFICE_RUN_TOKEN=self.run_token)
         env.pop("OFFICE_JOB", None)
         env.pop("OFFICE_DIRECT", None)
         env.pop("OFFICE_REPLY_TO", None)
@@ -2837,7 +3015,7 @@ class Worker:
             try:
                 identity, owner = process_identity(proc.pid), process_identity(os.getpid())
                 if identity and owner:
-                    atomic_json(self.process_file, dict(identity, pid=proc.pid, owner=os.getpid(), owner_start=owner["start"]), process_record_valid)
+                    atomic_json(self.process_file, dict(identity, pid=proc.pid, owner=os.getpid(), owner_start=owner["start"], run_id=getattr(self, "active_run_id", None)), process_record_valid)
             except Exception:
                 terminate_process(proc)
                 if proc.stdout:
@@ -2853,6 +3031,7 @@ class Worker:
                     if self.stop.is_set() or self.interrupted_job is not None or self.immediate_pause:
                         terminate_process(proc)
                         break
+                    self.heartbeat_run()
                     quiet = time.monotonic() - received
                     running_tool = bool(self.open_tools or self.subs)
                     self.watch_slow_tools()
@@ -3127,17 +3306,23 @@ class Worker:
                 self.codex_public_message(it)
                 return it.get("text", "")
 
+    def acknowledge_events(self, messages, job):
+        handled = getattr(self, "handled_events", set())
+        accepted = {m["id"] for m in messages if m.get("job") == job}
+        handled.update(event_identity(m, self.sid) for m in messages if m["id"] in accepted)
+        self.handled_events = handled
+        self.pending_events = [i for i in getattr(self, "pending_events", []) if i not in accepted]
+
     def next_turn(self, s):
         """이번에 할 일 있으면 (prompt 꼬리, job id, 설명, 새 메시지) 반환"""
         cancelled = {j["id"] for j in s["jobs"] if j.get("cancelled")}
-        new = [m for m in s["msgs"][self.read_upto:] if m.get("kind", "msg") == "msg"
-               and m.get("job") not in cancelled
-               and (m["from"] not in (self.name, "system") or m.get("wake") and m["to"] == self.name) and m["to"] in (self.name, "all")
-               and not (m["from"] != "user" and m["text"].strip() in IDLE_REPLIES)]
-        # 다른 요청 차례(기획·답장·검수)에 실려 지나간 깨우는 메시지는 한 번 더 싣는다
-        carried = [s["msgs"][i - 1] for i in getattr(self, "carry_msgs", []) if 0 < i <= len(s["msgs"])
-                   and s["msgs"][i - 1].get("job") not in cancelled and s["msgs"][i - 1] not in new]
-        new = carried + new
+        pending_ids = set(getattr(self, "pending_events", [])) | set(getattr(self, "carry_msgs", []))
+        handled = getattr(self, "handled_events", set())
+        new = [m for index, m in enumerate(s["msgs"]) if (index >= self.read_upto or m["id"] in pending_ids)
+               and m.get("job") not in cancelled and event_for_worker(m, self, s["jobs"])
+               and event_identity(m, self.sid) not in handled]
+        carried = [m for m in new if m["id"] in getattr(self, "carry_msgs", [])]
+        self.pending_events = sorted({m["id"] for m in new})
         body = "\n".join(f"- {m['from']}: {m['text']}" + (" (다른 요청 차례에 같이 왔던 메시지 — 이미 처리했으면 넘어가라)" if m in carried else "") for m in new)
         jobs = [j for j in s["jobs"] if j["status"] != "done"]
         mine_lead = [j for j in jobs if j.get("acting_lead", j["lead"]) == self.name]
@@ -3156,7 +3341,7 @@ class Worker:
             rj = next((j for j in jobs if j["id"] == retry.get("job")), None)
             natural = retry.get("kind") == "reply" or rj is not None and (
                 retry.get("kind") == "plan" and rj["status"] == "planning"
-                or retry.get("kind") == "review" and all(t["status"] == "done" or pending_user_request(t) for t in s["tasks"] if t.get("job") == rj["id"]))
+                or retry.get("kind") == "review" and not remaining_job_tasks(s["tasks"], rj["id"]))
             if not natural and (retry.get("job") is None or retry.get("job") in open_ids):
                 return "이전 차례가 일시 오류로 끊겼다. 이어서 해라." + (f"\n\n새로 온 메시지:\n{body}" if new else ""), retry.get("job"), retry.get("kind") or "work", new
         direct = [m for m in new if m["from"] == "user" and m["to"] == self.name and m.get("job") is None]
@@ -3170,7 +3355,7 @@ class Worker:
             if j["status"] == "planning":
                 return PLAN.format(jid=j["id"], text=j["text"]) + "\n지난 배분 교훈:\n" + lessons_text() + extra, j["id"], "plan", new
             jt = [t for t in s["tasks"] if t.get("job") == j["id"]]
-            if j["status"] in ("working", "review") and all(t["status"] == "done" or pending_user_request(t) for t in jt):
+            if j["status"] in ("working", "review") and not remaining_job_tasks(jt, j["id"]):
                 return REVIEW.format(jid=j["id"], text=j["text"]) + "\n이번 배분 측정:\n" + task_metrics(s, j["id"]) + '\n배분 관점 교훈 한 줄을 office lesson "..."으로 남겨라. 누락된 시각은 미측정이므로 0초 성과로 해석하지 마라.' + extra, j["id"], "review", new
         assigned = mine or free or waiting
         job = assigned[0].get("job") if assigned else (jobs[0]["id"] if jobs else None)
@@ -3311,25 +3496,15 @@ class Worker:
                 task = task or next((t for t in s["tasks"] if t.get("job") == job and t.get("owner") == self.name and t["status"] != "done" and not pending_user_request(t)), None)
                 if task is None:
                     s["seq"] += 1
-                    task = {"id": s["seq"], "job": job, "owner": self.name, "title": disp(self.name) + " 로그인 확인", "status": "todo", "created_at": time.time(), "auth_task": True}
+                    task = state_transition({"id": s["seq"], "job": job, "owner": self.name, "title": disp(self.name) + " 로그인 확인", "created_at": time.time(), "auth_task": True}, "todo")
                     s["tasks"].append(task)
                 task["user_request"] = {"status": "pending", "text": auth_help(self.name), "created_at": time.time(), "expires_at": None,
                                         "resolved_at": None, "resolution": None, "reply_to": None, "source": "agent_auth", "resume_status": (task.get("user_request") or {}).get("resume_status", task["status"])}
-                task.update(status="waiting", waiting_at=time.time(), wait_reason=auth_help(self.name))
+                state_transition(task, "waiting", waiting_at=time.time(), wait_reason=auth_help(self.name))
                 task.pop("wait_deadline", None)
             guide = "" if re.search(r"(?:다시 시도|재개|시작)(?:하세요|을 누르세요)\.?$", reason.strip()) else " 확인 후 재개 버튼으로 다시 시도하세요."
             post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason}{guide}"),
                  "event", job=job)
-
-    def transient_failure(self, why):
-        """잠깐 기다리면 풀릴 오류인지: 연결 끊김·시간 초과·혼잡·서버 5xx·결과 없이 끝난 실행"""
-        text = str(why or "")
-        kind = classify_agent_error(text, self.rc)
-        if kind in ("network", "timeout", "capacity"):
-            return True
-        if re.search(r"\b(?:500|502|503|504)\b|internal server error|bad gateway|service unavailable|overloaded", text, re.I):
-            return True
-        return not text or text.startswith("응답 없는 실행 종료")
 
     def terminate_agent(self):
         with self.proc_lock:
@@ -3502,7 +3677,7 @@ class Worker:
                 with state(True, sid) as s:
                     for j in s["jobs"]:
                         if j["id"] == job and j["status"] == "working":
-                            j["status"] = "review"
+                            state_transition(j, "review")
             previous_read = self.turn_read_start = self.read_upto
             self.read_upto = total
             previous_carry, self.carry_msgs = list(getattr(self, "carry_msgs", [])), []
@@ -3612,6 +3787,7 @@ class Worker:
                 self.interrupted_job = None
                 self.error_kind, self.resume_turn = None, None
                 self.notice, self.error = None, None
+                self.acknowledge_events(new, job)
                 self.save_checkpoint(processed=True)
                 self.act("end", "")
                 continue
@@ -3632,7 +3808,7 @@ class Worker:
                                and m.get("job") == job for m in s["msgs"][total:])
                 # 검수 후 finish 안 했으면 자동 마감. 단 검수 중 이 요청에 사용자 메시지가 왔으면 다음 차례에 처리하도록 남김
                 closing = next((j for j in s["jobs"] if j["id"] == job and j["status"] == "review" and desc == "review"
-                                and all(t["status"] == "done" for t in s["tasks"] if t.get("job") == job)
+                                and not remaining_job_tasks(s["tasks"], job)
                                 and not any(m["from"] == "user" and m.get("job") == job for m in s["msgs"][total:])), None)
                 report = None
                 if closing and not reported:   # 보고 없이 끝냈으면 사용자에게 결과를 대신 보고
@@ -3648,7 +3824,7 @@ class Worker:
                         s["msgs"][-1].pop("re", None)
                 for j in s["jobs"]:   # 기획만 하고 아무것도 안 했으면 진행으로 넘김
                     if j["id"] == job and j["status"] == "planning" and desc == "plan":
-                        j["status"] = "working"
+                        state_transition(j, "working")
                 planned = [t for t in s["tasks"] if t.get("job") == job and t["status"] != "done"] if desc == "plan" and job else []
                 told = any(m["from"] == self.name and m["to"] == "user" and m.get("kind") in ("progress", "msg") and m.get("job") == job for m in s["msgs"][total:])
                 if len(planned) >= 2 and not told:   # 리더가 계획 알림을 빠뜨려도 누가 무엇을 하는지 한 줄씩 보이게
@@ -3662,7 +3838,7 @@ class Worker:
                     self.bg_dropped = []
                 if closing:
                     summary = report or out
-                    closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary), completion=request_completion(s, job))
+                    state_transition(closing, "done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary), completion=request_completion(s, job))
                     save_score_lesson(s, job)
                     event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
                     if report:
@@ -3683,6 +3859,7 @@ class Worker:
                 self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
             if (self.notice or "").startswith("자동 재시도 대기"):
                 self.notice = None
+            self.acknowledge_events(new, job)
             self.save_checkpoint(processed=True)
             self.act("end", "")
         self.idle("paused" if self.paused else "idle")
@@ -4494,7 +4671,7 @@ class Office:
                 if t.get("handoffs") and t["handoffs"][-1].get("to") == source:
                     continue   # 일부러 넘겨받은 작업은 그대로 둔다
                 if now - t.get("created_at", now) >= LEAD_BUSY_TAKEOVER and held(workers.get(source), None) and free(workers.get(target)):
-                    t.update(owner=target, failover_from=source, failover_to=target, failover_at=now, failover_reason="busy")
+                    state_transition(t, t["status"], owner=target, failover_from=source, failover_to=target, failover_at=now, failover_reason="busy")
                     changes.append((t.get("job"), f"{disp(source)}가 다른 차례를 오래 잡고 있어 미착수 작업 #{t['id']}을 {disp(target)}에게 넘김"))
             return changes
         with state(sid=sid) as record:
@@ -4613,7 +4790,7 @@ class Office:
                 if flag in ("wait_ready", "wait_peer_seen"):
                     hint = f"\n결과를 이어받을 일이 있으면 `office claim {cur['id']}`로 다시 시작해라. 아직 기다릴 거면 그대로 두고 차례를 끝내라."
                 else:
-                    hint = f"\n확인한 뒤 `office claim {cur['id']}`로 이어가거나 끝났으면 `office done {cur['id']}`. 더 기다릴 거면 `office wait {cur['id']} \"사유\"`로 다시 걸어라."
+                    hint = f"\n확인한 뒤 `office claim {cur['id']}`로 이어가거나 끝났으면 `office done {cur['id']}`. 더 기다릴 거면 `office wait {cur['id']} \"사유\" --minutes 15`로 다시 걸어라."
                 body = head + (f"\n{'로그 끝:' if flag == 'wait_notified' else '끝낸 작업:'}\n{tail}" if tail else "") + hint
                 post(s, "system", cur["owner"], body, "msg", job=cur.get("job"))
                 s["msgs"][-1]["wake"] = True
@@ -4636,12 +4813,12 @@ class Office:
                 if task.get("failover_reason") == "busy":
                     continue
                 if original and original in healthy and task.get("owner") == task.get("failover_to"):
-                    task["owner"] = original
+                    state_transition(task, task["status"], owner=original)
                     task.pop("failover_from", None); task.pop("failover_to", None)
                     changes.append((task.get("job"), f"작업 #{task['id']} 원래 담당 {disp(original)} 복구"))
                 elif not original and task.get("owner") in failed and healthy and not (task.get("handoffs") and task["handoffs"][-1].get("to") == task["owner"]):
                     source = task["owner"]; target = next(n for n in AGENTS if n in healthy)
-                    task.update(owner=target, failover_from=source, failover_to=target, failover_at=time.time())
+                    state_transition(task, task["status"], owner=target, failover_from=source, failover_to=target, failover_at=time.time())
                     changes.append((task.get("job"), f"{disp(source)} 오류로 미착수 작업 #{task['id']}을 {disp(target)}에게 재배정"))
             for job in record["jobs"]:
                 if job["id"] not in active:
@@ -4746,7 +4923,7 @@ class Office:
                                     request = task.get("user_request") or {}
                                     if task.get("owner") == n and request.get("source") == "agent_auth" and pending_user_request(task):
                                         request.update(status="resolved", resolved_at=time.time(), resolution="로그인 성공을 확인했어요.")
-                                        task["status"] = "done" if task.get("auth_task") else request.get("resume_status", "doing")
+                                        state_transition(task, "done" if task.get("auth_task") else request.get("resume_status", "doing"))
                                         if task["status"] == "done":
                                             task["done_at"] = time.time()
                                         task.pop("wait_reason", None)
@@ -5228,9 +5405,7 @@ class Office:
             touch(sid, p["text"], request=True)
             with state(True, sid=sid) as s:
                 jid = len(s["jobs"]) + 1
-                s["jobs"].append({"id": jid, "text": p["text"], "lead": p.get("lead", "claude"),
-                                  "status": "planning", "summary": "", "started_at": time.time(),
-                                  "verification": p.get("verification", "standard")})
+                s["jobs"].append(state_transition({"id": jid, "text": p["text"], "lead": p.get("lead", "claude"), "summary": "", "started_at": time.time(), "verification": p.get("verification", "standard")}, "planning"))
                 post(s, "user", "all", p["text"], "request", job=jid)   # 리더만 PLAN으로 깨움, 다른 쪽은 안 깨움
                 event(s, f"요청 {jid} 접수 · 리더 {disp(p.get('lead', 'claude'))}", job=jid)
         elif act == "msg":
@@ -5291,10 +5466,10 @@ class Office:
                 background = [dict(t) for t in s["tasks"] if t.get("job") == p["id"] and t.get("wait_rc") and t.get("wait_cmd")]
                 for j in s["jobs"]:
                     if j["id"] == p["id"] and (j["status"] != "done" or any(t.get("job") == j["id"] and t["status"] != "done" for t in s["tasks"])):
-                        j["status"] = "done"; j["summary"] = "사용자가 취소함"; j["cancelled"] = True; j["finished_at"] = time.time()
+                        state_transition(j, "done"); j["summary"] = "사용자가 취소함"; j["cancelled"] = True; j["finished_at"] = time.time()
                         for t in s["tasks"]:
                             if t.get("job") == j["id"] and t["status"] != "done":
-                                t.update(status="done", note="취소됨", done_at=time.time())
+                                state_transition(t, "done", note="취소됨", done_at=time.time())
                         event(s, f"요청 {j['id']} 취소됨 · 이미 변경한 파일은 유지됩니다.", job=j["id"])
             for task in background:
                 terminate_bg_watch(task)
