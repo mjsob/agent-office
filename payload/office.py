@@ -913,6 +913,9 @@ def cmd_write(a):
 
 
 def cmd_add(a):
+    tag = getattr(a, "tag", None)
+    if tag is not None and (not tag.strip() or len(tag.strip()) > 40 or any(ord(c) < 32 for c in tag)):
+        raise UserError("작업 종류는 줄바꿈 없이 1~40자로 적으세요.")
     with state(True) as s:
         j = open_job(s)
         if j and j.get("cancelled"):
@@ -933,11 +936,24 @@ def cmd_add(a):
         existing = next((task for task in s["tasks"] if task.get("job") == (j and j["id"]) and task["status"] != "done" and " ".join(task["title"].split()).casefold() == normalized), None)
         if existing:
             return print(f"#{existing['id']} 기존 작업 유지 (중복 등록 생략)")
+        rework_id = getattr(a, "rework_of", None)
+        inferred = next((t for t in s["tasks"] if leading and t["id"] == refs[0] and t["status"] == "done"), None)
+        if rework_id is None and inferred and re.search(r"수정|보완|재작업|고치|고쳐", a.text):
+            rework_id = inferred["id"]
+        original = next((t for t in s["tasks"] if t["id"] == rework_id), None)
+        if rework_id is not None and (original is None or original["status"] != "done"):
+            raise UserError("재작업 대상은 이미 끝난 작업 번호로 지정하세요.")
         s["seq"] += 1
         s["tasks"].append({"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": a.to,
                            "status": "todo", "note": "", "created_at": time.time()})
+        added = s["tasks"][-1]
+        added["kind"] = tag.strip() if tag else (original or {}).get("kind", "일반")
+        if original is not None:
+            added["rework_of"] = original["id"]
+            original.setdefault("metrics", {})["rework"] = original.get("metrics", {}).get("rework", 0) + 1
+            original["metrics"].setdefault("owner", original.get("completed_by") or original.get("owner"))
         if getattr(a, "level", None):
-            s["tasks"][-1]["level"] = a.level
+            added["level"] = a.level
         if j:
             j.setdefault("started_at", time.time())
             if j["status"] in ("review", "done"):
@@ -1307,12 +1323,57 @@ def require_task_owner(task):
         raise UserError(f"작업 #{task['id']}는 {disp(task.get('owner'))} 담당이에요. 담당자만 완료하거나 넘길 수 있어요.")
 
 
+def parse_verdict(value):
+    if value is not None and not re.fullmatch(r"pass|fail|fixed:[1-9][0-9]{0,5}", value):
+        raise UserError("검수 결과는 pass, fail, fixed:수정개수로 적으세요. 수정 개수는 1~999999예요.")
+    return value
+
+
+def task_scores(record):
+    """검수 결과가 기록된 표본만 담당자·종류별로 집계해요."""
+    result = {name: {} for name in AGENTS}
+    for task in record.get("tasks", []):
+        metrics = task.get("metrics") or {}
+        owner = metrics.get("owner", task.get("completed_by") or task.get("owner"))
+        if owner not in AGENTS or not metrics:
+            continue
+        kind = task.get("kind") or "일반"
+        row = result[owner].setdefault(kind, dict(n=0, **{"pass": 0}, fixed=0, fail=0, rework=0,
+                                                corrections=0, speed_ratio=None, enough=False, defects=0))
+        verdict = metrics.get("verdict")
+        if isinstance(verdict, str) and re.fullmatch(r"pass|fail|fixed:[1-9][0-9]{0,5}", verdict):
+            key = "fixed" if verdict.startswith("fixed:") else verdict
+            row["n"] += 1; row[key] += 1
+            row["defects"] += int(verdict.split(":")[1]) if key == "fixed" else 0
+        row["rework"] += metrics.get("rework", 0)
+        row["enough"] = row["n"] >= 5
+    return result
+
+
+def cmd_scores(a):
+    with state() as record:
+        scores = task_scores(record)
+    print("현재 대화 검수 결과예요. 미기록 작업은 표본에 포함하지 않아요.")
+    print("담당 | 종류 | 검수 | 통과 | 수정 | 실패 | 수정 수 | 재작업 | 최초 통과율")
+    for owner, kinds in scores.items():
+        for kind, row in sorted(kinds.items()):
+            rate = f"{100 * row['pass'] / row['n']:.1f}%" if row["enough"] else "표본 부족"
+            print(f"{disp(owner)} | {kind} | {row['n']} | {row['pass']} | {row['fixed']} | {row['fail']} | {row['defects']} | {row['rework']} | {rate}")
+    if not any(scores.values()):
+        print("기록된 검수 결과가 없어요. 표본 부족이에요.")
+
+
 def cmd_done(a):
+    verdict = parse_verdict(getattr(a, "verdict", None))
     with state(True) as s:
         t = find(s, a.id)
         require_task_owner(t)
         if pending_user_request(t):
             raise UserError("사용자 확인 대기 — 필요한 자료나 답을 확인한 뒤 resolve-user로 해결하세요.")
+        if verdict is not None:
+            metrics = t.setdefault("metrics", {})
+            metrics.update(verdict=verdict, owner=t.get("owner"), reviewed_by=me(), reviewed_at=time.time())
+        t.setdefault("completed_by", t.get("owner"))
         t.update(status="done", note=a.text, done_at=time.time())
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
         print(f"#{a.id} 완료")
@@ -5485,7 +5546,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -5506,9 +5567,11 @@ def main():
     x = sp.add_parser("release"); x.add_argument("path"); x.set_defaults(f=cmd_release)
     x = sp.add_parser("write"); x.add_argument("path"); x.add_argument("--from", dest="source", required=True); x.set_defaults(f=cmd_write)
     x = sp.add_parser("add"); x.add_argument("text"); x.add_argument("--to", choices=AGENTS)
+    x.add_argument("--tag", help="작업 종류 태그"); x.add_argument("--rework-of", type=int, help="수정이 필요한 기존 완료 작업 번호")
     x.add_argument("--level", choices=LEVELS, help="작업 무게: light(문구·확인) normal heavy(장애 분석·큰 구현)"); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
-    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.set_defaults(f=cmd_done)
+    sp.add_parser("scores", help="현재 대화의 담당자·종류별 검수 결과").set_defaults(f=cmd_scores)
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
     x.add_argument("--minutes", type=float, help="기한(분). 지나면 깨움. 기본 15분, --pid 를 주면 기한 없음")
