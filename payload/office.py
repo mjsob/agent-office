@@ -1484,12 +1484,22 @@ def record_user_correction(tasks, message):
     return changed
 
 
+def screen_task_ids(record, text):
+    """화면 작업 번호 '요청-순번'(예: 119-3)을 실제 작업 번호로 바꿔요. 날짜·시각처럼 앞뒤에 숫자·구분자가 붙은 건 빼요."""
+    ids = set()
+    for jid, seq in re.findall(r"(?<![\d.:/-])(\d{1,6})-(\d{1,3})(?![\d.:/-])", text):
+        rows = [t for t in record.get("tasks", []) if t.get("job") == int(jid)]
+        if 1 <= int(seq) <= len(rows):
+            ids.add(rows[int(seq) - 1]["id"])
+    return ids
+
+
 def auto_user_correction(record, message):
     text = message.get("text", "")
     if not correction_instruction(text):
         return
     # 문제점 문서 번호와 구분하려고 '작업 #번호'를 명시한 지시만 자동 연결해요.
-    ids = {int(tid) for tid in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", text)}
+    ids = {int(tid) for tid in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", text)} | screen_task_ids(record, text)
     targets = [t for t in record.get("tasks", []) if t["id"] in ids and t["status"] == "done"
                and (t.get("completed_by") or t.get("owner")) in AGENTS]
     if targets:
@@ -1506,7 +1516,7 @@ def cmd_correction(a):
             tasks = [find(record, tid) for tid in dict.fromkeys(int(x.strip()) for x in a.targets.split(","))]
         except ValueError:
             raise UserError("정정 대상 작업 번호를 쉼표로 나눠 적으세요.")
-        refs = {int(x) for x in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", message["text"])}
+        refs = {int(x) for x in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", message["text"])} | screen_task_ids(record, message["text"])
         if any(t["id"] not in refs and (message.get("job") is None or message.get("job") != t.get("job")) for t in tasks):
             raise UserError("사용자 메시지와 같은 요청의 작업이나 메시지에 명시된 작업만 연결하세요.")
         changed = record_user_correction(tasks, message)
@@ -1557,6 +1567,9 @@ def task_scores(record):
     return result
 
 
+SCORE_LESSON_HEAD = "배분 점수 · "   # 자동 점수 줄은 교훈 목록에 가장 최근 한 줄만 남김(사람이 쓴 교훈을 밀어내지 않게)
+
+
 def score_lesson(record, jid):
     kinds = {t.get("kind") or "일반" for t in record["tasks"] if t.get("job") == jid}
     rows = []
@@ -1567,13 +1580,14 @@ def score_lesson(record, jid):
             quality = f"통과 {row['pass']}/{row['n']}" if row["enough"] else f"표본 부족({row['n']}건)"
             speed = f"속도 {row['speed_ratio']:.2f}배" if row["speed_ratio"] is not None else "속도 미측정"
             rows.append(f"{owner}/{kind}: {quality}, 재작업 {row['rework']}, 정정 {row['corrections']}, {speed}")
-    return "배분 점수 · " + " / ".join(rows) if rows else "배분 점수 · 독립 검수 표본이 없어 비교하지 않아요."
+    return SCORE_LESSON_HEAD + " / ".join(rows) if rows else SCORE_LESSON_HEAD + "독립 검수 표본이 없어 비교하지 않아요."
 
 
 def save_score_lesson(record, jid):
     text = score_lesson(record, jid)
     try:
-        save_lesson(text, jid)
+        if any(row["n"] for groups in task_scores(record).values() for row in groups.values()):   # 표본이 없으면 교훈 칸을 쓰지 않음
+            save_lesson(text, jid)
     except OSError as error:
         server_log("scores.lesson", error)
     job = next((j for j in record["jobs"] if j["id"] == jid), None)
@@ -1856,7 +1870,8 @@ def save_lesson(raw_text, jid):
     with (D / "lessons.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         lines = lessons_text(30).splitlines()
-        lines = [x for x in lines if x != "(아직 없음)" and x.split(" | ", 1)[-1] != text]
+        lines = [x for x in lines if x != "(아직 없음)" and x.split(" | ", 1)[-1] != text
+                 and not (text.startswith(SCORE_LESSON_HEAD) and x.split(" | ", 1)[-1].startswith(SCORE_LESSON_HEAD))]
         lines.append(f"{time.strftime('%Y-%m-%d')} 요청 {jid or '-'} | {text}")
         path = D / "lessons.md"
         temporary = None
