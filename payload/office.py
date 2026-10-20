@@ -14,7 +14,7 @@ GUI에서 '작업 요청'으로 보내면: 리더가 쪼개서 분배 → 둘이
 에이전트용 (OFFICE_AS 환경변수로 누가 하는지 자동 지정):
   office claim ID | done ID "요약" | wait ID "기다리는 것" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
 """
-import math, tomllib, hashlib, ssl
+import math, tomllib, hashlib, ssl, statistics
 import argparse, queue, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
 from collections import deque
 from contextlib import contextmanager
@@ -492,7 +492,8 @@ def progress_fingerprints(record):
         p, request, completion = t.get("progress") or {}, t.get("user_request") or {}, t.get("completion") or {}
         tasks.setdefault(t.get("job"), []).append((t["id"], t["status"], t.get("owner"), t.get("claimed_at"), t.get("done_at"),
             p.get("at"), request.get("status"), request.get("resolved_at"), completion.get("status"),
-            (t.get("metrics") or {}).get("reviewed_at")))
+            (t.get("metrics") or {}).get("reviewed_at"), (t.get("metrics") or {}).get("corrections"),
+            (t.get("metrics") or {}).get("rework")))
     return {j["id"]: (j["status"], j.get("cancelled"), j.get("removed"), tuple(tasks.get(j["id"], []))) for j in record.get("jobs", [])}
 
 
@@ -587,6 +588,8 @@ def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
     if reply_to is not None:
         row["re"] = reply_to
     s["msgs"].append(row)
+    if frm == "user" and kind in ("msg", "request"):
+        auto_user_correction(s, row)
     if job is not None and (frm == "user" or kind == "report"):
         bump_job_progress(s, job)
     if job is not None and frm in AGENTS and to == "user" and kind in ("progress", "msg", "report"):
@@ -977,7 +980,18 @@ def cmd_write(a):
     print(f"안전 저장 완료: {path}")
 
 
+AB_FORMULA = {"version": 1, "order": ["pass", "fixed (수정 개수가 적은 순서)", "fail"],
+              "tie_break": "같은 검수 결과면 측정된 완료 시간이 짧은 순서", "missing": "검수나 시간 근거가 없으면 비교하지 않아요."}
+
+
 def cmd_add(a):
+    ab, criteria = getattr(a, "ab", False), getattr(a, "criteria", None)
+    if ab and (getattr(a, "to", None) is not None or getattr(a, "level", None) not in (None, "light")):
+        raise UserError("A/B는 작은 작업을 두 담당자에게 배정해요. --to는 빼고 --level light를 사용하세요.")
+    if ab and (not criteria or not criteria.strip() or len(criteria) > 2000):
+        raise UserError("A/B는 --criteria에 두 결과를 같은 방법으로 확인할 기준을 1~2000자로 적으세요.")
+    if criteria is not None and not ab:
+        raise UserError("--criteria는 --ab와 함께 지정하세요.")
     tag = getattr(a, "tag", None)
     if tag is not None and (not tag.strip() or len(tag.strip()) > 40 or any(ord(c) < 32 for c in tag)):
         raise UserError("작업 종류는 줄바꿈 없이 1~40자로 적으세요.")
@@ -999,6 +1013,8 @@ def cmd_add(a):
             j = targets[0]
         normalized = " ".join(a.text.split()).casefold()
         existing = next((task for task in s["tasks"] if task.get("job") == (j and j["id"]) and task["status"] != "done" and " ".join(task["title"].split()).casefold() == normalized), None)
+        if existing and ab and (not existing.get("ab") or existing["ab"]["criteria"] != criteria.strip()):
+            raise UserError("같은 작업이 이미 있어요. 기준이 다른 비교는 별도 작업 이름으로 배정하세요.")
         if existing:
             return print(f"#{existing['id']} 기존 작업 유지 (중복 등록 생략)")
         rework_id = getattr(a, "rework_of", None)
@@ -1010,17 +1026,26 @@ def cmd_add(a):
         original = next((t for t in s["tasks"] if t["id"] == rework_id), None)
         if rework_id is not None and (original is None or original["status"] != "done"):
             raise UserError("재작업 대상은 이미 끝난 작업 번호로 지정하세요.")
-        s["seq"] += 1
-        s["tasks"].append({"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": a.to,
-                           "status": "todo", "note": "", "created_at": time.time()})
-        added = s["tasks"][-1]
-        added["kind"] = tag.strip() if tag else (original or {}).get("kind", "일반")
-        if original is not None:
-            added["rework_of"] = original["id"]
-            original.setdefault("metrics", {})["rework"] = original.get("metrics", {}).get("rework", 0) + 1
-            original["metrics"].setdefault("owner", original.get("completed_by") or original.get("owner"))
-        if getattr(a, "level", None):
-            added["level"] = a.level
+        if ab and original is not None:
+            raise UserError("A/B는 재작업과 분리해서 배정하세요. 두 결과는 별도 파일에서 작성하세요.")
+        pair = {"id": uuid.uuid4().hex, "criteria": criteria.strip(), "formula": copy.deepcopy(AB_FORMULA)} if ab else None
+        for owner in AGENTS if ab else (a.to,):
+            s["seq"] += 1
+            added = {"id": s["seq"], "job": j and j["id"], "title": a.text, "owner": owner,
+                     "status": "todo", "note": "", "created_at": time.time(),
+                     "kind": tag.strip() if tag else (original or {}).get("kind", "일반")}
+            if pair:
+                added.update(ab=copy.deepcopy(pair), level="light")
+            if original is not None:
+                added["rework_of"] = original["id"]
+                original.setdefault("metrics", {})["rework"] = original.get("metrics", {}).get("rework", 0) + 1
+                original["metrics"].setdefault("owner", original.get("completed_by") or original.get("owner"))
+            if getattr(a, "level", None):
+                added["level"] = a.level
+            s["tasks"].append(added)
+            event(s, f"작업 #{added['id']} 추가: {a.text}" + (f" (담당 {disp(owner)})" if owner else "")
+                  + (f" · A/B 기준: {pair['criteria']} · 결과는 별도 파일에 작성하세요." if pair else ""), me(), job=j and j["id"])
+            print(f"#{added['id']} 추가됨")
         if j:
             j.setdefault("started_at", time.time())
             if j["status"] in ("review", "done"):
@@ -1030,8 +1055,7 @@ def cmd_add(a):
                 event(s, f"요청 {j['id']} 후속 작업으로 다시 진행", me(), job=j["id"])
             j["status"] = "working"
             j.pop("finished_at", None)
-        event(s, f"작업 #{s['seq']} 추가: {a.text}" + (f" (담당 {disp(a.to)})" if a.to else ""), me(), job=j and j["id"])
-        print(f"#{s['seq']} 추가됨")
+
 
 
 def cmd_claim(a):
@@ -1431,38 +1455,168 @@ def cmd_verdict(a):
     print("검수 결과를 대상 작업 담당자에게 기록했어요.")
 
 
+CORRECTION_WORDS = r"되돌려|되돌리(?:세요|자)|(?:원복|롤백|재작업)(?:해|하(?:세요|자))|다시\s*(?:고쳐|수정해|해)|고쳐|수정해"
+
+
+def correction_instruction(text):
+    text = re.sub(r"```.*?```|`[^`]*`|(?m:^\s*>.*$)", "", text, flags=re.S)
+    return bool(re.search(CORRECTION_WORDS, text) and not re.search(r"하지\s*(?:마|말)|필요\s*없|안\s*해도", text))
+
+
+def record_user_correction(tasks, message):
+    changed = []
+    for task in tasks:
+        owner = task.get("completed_by") or task.get("owner")
+        if task["status"] != "done" or owner not in AGENTS:
+            raise UserError("사용자 정정은 담당자가 끝낸 작업에 연결하세요.")
+    for task in tasks:
+        metrics = task.setdefault("metrics", {})
+        recorded = metrics.setdefault("correction_messages", [])
+        if message["id"] not in recorded:
+            recorded.append(message["id"])
+            metrics.update(owner=task.get("completed_by") or task.get("owner"), corrections=len(recorded))
+            changed.append(task["id"])
+    return changed
+
+
+def auto_user_correction(record, message):
+    text = message.get("text", "")
+    if not correction_instruction(text):
+        return
+    # 문제점 문서 번호와 구분하려고 '작업 #번호'를 명시한 지시만 자동 연결해요.
+    ids = {int(tid) for tid in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", text)}
+    targets = [t for t in record.get("tasks", []) if t["id"] in ids and t["status"] == "done"
+               and (t.get("completed_by") or t.get("owner")) in AGENTS]
+    if targets:
+        changed = record_user_correction(targets, message)
+        message["corrected_tasks"] = list(dict.fromkeys(message.get("corrected_tasks", []) + changed))
+
+
+def cmd_correction(a):
+    with state(True) as record:
+        message = next((m for m in record["msgs"] if m["id"] == a.re and m.get("from") == "user"), None)
+        if message is None or not correction_instruction(message.get("text", "")):
+            raise UserError("--re에 되돌림·재작업 지시가 있는 사용자 메시지 번호를 지정하세요.")
+        try:
+            tasks = [find(record, tid) for tid in dict.fromkeys(int(x.strip()) for x in a.targets.split(","))]
+        except ValueError:
+            raise UserError("정정 대상 작업 번호를 쉼표로 나눠 적으세요.")
+        refs = {int(x) for x in re.findall(r"작업\s*#(\d+)(?![A-Za-z0-9_])", message["text"])}
+        if any(t["id"] not in refs and (message.get("job") is None or message.get("job") != t.get("job")) for t in tasks):
+            raise UserError("사용자 메시지와 같은 요청의 작업이나 메시지에 명시된 작업만 연결하세요.")
+        changed = record_user_correction(tasks, message)
+        message["corrected_tasks"] = list(dict.fromkeys(message.get("corrected_tasks", []) + changed))
+    print("사용자 정정을 원담당에게 기록했어요. 같은 메시지는 한 번만 세요.")
+
+
+def measured_task_seconds(task):
+    start, end = task.get("claimed_at"), task.get("done_at")
+    if (task.get("status") == "done" and type(start) in (int, float) and type(end) in (int, float)
+            and math.isfinite(start) and math.isfinite(end) and end > start):
+        duration = end - start
+        return duration if math.isfinite(duration) else None
+    return None
+
+
 def task_scores(record):
-    """검수 결과가 기록된 표본만 담당자·종류별로 집계해요."""
+    """독립 검수 표본만 집계해요. 속도는 같은 종류·무게의 측정된 완료 시간 중간값과 비교해요."""
     result = {name: {} for name in AGENTS}
+    baselines, samples = {}, []
     for task in record.get("tasks", []):
         metrics = task.get("metrics") or {}
         owner = metrics.get("owner", task.get("completed_by") or task.get("owner"))
         if owner not in AGENTS or not metrics:
             continue
-        kind = task.get("kind") or "일반"
+        kind, level = task.get("kind") or "일반", task.get("level") or "normal"
         row = result[owner].setdefault(kind, dict(n=0, **{"pass": 0}, fixed=0, fail=0, rework=0,
-                                                corrections=0, speed_ratio=None, enough=False, defects=0))
+                                                corrections=0, speed_ratio=None, enough=False, defects=0, speed_n=0))
         verdict = metrics.get("verdict")
         if isinstance(verdict, str) and re.fullmatch(r"pass|fail|fixed:[1-9][0-9]{0,5}", verdict):
             key = "fixed" if verdict.startswith("fixed:") else verdict
             row["n"] += 1; row[key] += 1
             row["defects"] += int(verdict.split(":")[1]) if key == "fixed" else 0
+            duration = measured_task_seconds(task)
+            if duration is not None:
+                baselines.setdefault((kind, level), []).append(duration)
+                samples.append((owner, kind, level, duration))
         row["rework"] += metrics.get("rework", 0)
+        row["corrections"] += metrics.get("corrections", 0)
         row["enough"] = row["n"] >= 5
+    ratios = {}
+    for owner, kind, level, duration in samples:
+        baseline = baselines[(kind, level)]
+        if len(baseline) >= 5:
+            ratios.setdefault((owner, kind), []).append(duration / statistics.median(baseline))
+    for (owner, kind), values in ratios.items():
+        result[owner][kind].update(speed_ratio=round(statistics.median(values), 3), speed_n=len(values))
     return result
+
+
+def score_lesson(record, jid):
+    kinds = {t.get("kind") or "일반" for t in record["tasks"] if t.get("job") == jid}
+    rows = []
+    for owner, groups in task_scores(record).items():
+        for kind, row in groups.items():
+            if kind not in kinds:
+                continue
+            quality = f"통과 {row['pass']}/{row['n']}" if row["enough"] else f"표본 부족({row['n']}건)"
+            speed = f"속도 {row['speed_ratio']:.2f}배" if row["speed_ratio"] is not None else "속도 미측정"
+            rows.append(f"{owner}/{kind}: {quality}, 재작업 {row['rework']}, 정정 {row['corrections']}, {speed}")
+    return "배분 점수 · " + " / ".join(rows) if rows else "배분 점수 · 독립 검수 표본이 없어 비교하지 않아요."
+
+
+def save_score_lesson(record, jid):
+    text = score_lesson(record, jid)
+    try:
+        save_lesson(text, jid)
+    except OSError as error:
+        server_log("scores.lesson", error)
+    job = next((j for j in record["jobs"] if j["id"] == jid), None)
+    if job is not None:
+        job["score_lesson"] = text
+
+
+def ab_comparisons(record):
+    groups = {}
+    for task in record["tasks"]:
+        if task.get("ab"):
+            groups.setdefault(task["ab"]["id"], []).append(task)
+    results = []
+    for pair_id, tasks in groups.items():
+        result = {"id": pair_id, "tasks": [t["id"] for t in tasks], "criteria": tasks[0]["ab"]["criteria"], "status": "pending", "winner": None}
+        ranked = []
+        for task in tasks:
+            metrics = task.get("metrics") or {}
+            verdict = metrics.get("verdict", "")
+            duration = measured_task_seconds(task)
+            if (metrics.get("reviewed_by") in (None, metrics.get("owner")) or duration is None
+                    or not isinstance(verdict, str) or not re.fullmatch(r"pass|fail|fixed:[1-9][0-9]{0,5}", verdict)):
+                break
+            rank = (0, 0) if verdict == "pass" else (2, 0) if verdict == "fail" else (1, int(verdict.split(":")[1]))
+            ranked.append(((*rank, duration), task["id"]))
+        if len(tasks) == 2 and len(ranked) == 2:
+            ranked.sort()
+            result.update(status="tie" if ranked[0][0] == ranked[1][0] else "compared", winner=ranked[0][1] if ranked[0][0] != ranked[1][0] else None)
+        results.append(result)
+    return results
 
 
 def cmd_scores(a):
     with state() as record:
-        scores = task_scores(record)
+        scores, comparisons = task_scores(record), ab_comparisons(record)
     print("현재 대화 검수 결과예요. 미기록 작업은 표본에 포함하지 않아요.")
-    print("담당 | 종류 | 검수 | 통과 | 수정 | 실패 | 수정 수 | 재작업 | 최초 통과율")
+    print("완료 시간에는 대기 시간이 포함돼요. 속도는 같은 종류·무게 중간값 대비 비율이며 작을수록 빨라요.")
+    print("담당 | 종류 | 검수 | 통과 | 수정 | 실패 | 수정 수 | 재작업 | 사용자 정정 | 완료 시간 비율 | 최초 통과율")
     for owner, kinds in scores.items():
         for kind, row in sorted(kinds.items()):
             rate = f"{100 * row['pass'] / row['n']:.1f}%" if row["enough"] else "표본 부족"
-            print(f"{disp(owner)} | {kind} | {row['n']} | {row['pass']} | {row['fixed']} | {row['fail']} | {row['defects']} | {row['rework']} | {rate}")
+            speed = f"{row['speed_ratio']:.2f}배" if row["speed_ratio"] is not None else "표본 부족·미측정"
+            print(f"{disp(owner)} | {kind} | {row['n']} | {row['pass']} | {row['fixed']} | {row['fail']} | {row['defects']} | {row['rework']} | {row['corrections']} | {speed} | {rate}")
     if not any(scores.values()):
         print("기록된 검수 결과가 없어요. 표본 부족이에요.")
+    for pair in comparisons:
+        outcome = f"작업 #{pair['winner']} 우선" if pair["status"] == "compared" else "동률" if pair["status"] == "tie" else "독립 검수·시간 기록을 기다려요."
+        print(f"A/B {','.join('#' + str(t) for t in pair['tasks'])} | {outcome} | 기준: {pair['criteria']}")
 
 
 def collect_completion_evidence(values):
@@ -1663,6 +1817,7 @@ def cmd_finish(a):
             text = (f"요청 {target['id']} 완료" if target is j else
                     f"요청 {target['id']} 완료 · 요청 {j['id']} 보고에 함께 답함")
             event(s, text, me(), job=target["id"])
+            save_score_lesson(s, target["id"])
         try:
             archive_old_turns(s, current_sid())
         except OSError as error:   # 옮기기 실패는 마감을 막지 않음(다음 마감 때 다시 시도)
@@ -1682,7 +1837,14 @@ def lessons_text(n=10):
 
 
 def cmd_lesson(a):
-    text = " ".join(a.text.split())[:300]
+    with state() as record:
+        jid = message_job(record)
+    save_lesson(a.text, jid)
+    print("배분 교훈 기록함")
+
+
+def save_lesson(raw_text, jid):
+    text = " ".join(raw_text.split())[:300]
     if not text:
         raise UserError("입력 내용 확인 — 교훈을 한 줄로 입력하세요.")
     D.mkdir(parents=True, exist_ok=True)
@@ -1690,8 +1852,6 @@ def cmd_lesson(a):
         fcntl.flock(lock, fcntl.LOCK_EX)
         lines = lessons_text(30).splitlines()
         lines = [x for x in lines if x != "(아직 없음)" and x.split(" | ", 1)[-1] != text]
-        with state() as record:
-            jid = message_job(record)
         lines.append(f"{time.strftime('%Y-%m-%d')} 요청 {jid or '-'} | {text}")
         path = D / "lessons.md"
         temporary = None
@@ -1704,7 +1864,7 @@ def cmd_lesson(a):
         finally:
             if temporary:
                 temporary.unlink(missing_ok=True)
-    print("배분 교훈 기록함")
+
 
 
 def task_metrics(record, jid):
@@ -1722,6 +1882,7 @@ def task_metrics(record, jid):
     unverified = request_completion(record, jid)["unverified_task_ids"]
     if unverified:
         rows.append("산출물 미확인 작업: " + ", ".join("#" + str(t) for t in unverified) + ". 실행 성공을 산출물 검수 통과로 간주하지 말고 확인한 범위를 보고하세요.")
+    rows.append(score_lesson(record, jid))
     return "\n".join(rows) + f"\n검수·완료 이후 작업 추가 {job.get('rework_count', 0)}회(후속작업 포함, 실패 횟수 아님)."
 
 
@@ -2021,6 +2182,11 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
   office add "할일" --to 이름       작업 만들어 배정 (리더가 일 쪼갤 때)
   office claim ID                  주인 없는 작업 가져가기
   office done ID "결과 요약" [--evidence 파일|check:검증결과]   실행 성공과 산출물 검증 근거를 따로 기록
+  office done 검수작업 "결과" --verdict pass|fixed:N|fail --for 대상작업   독립 검수 결과를 대상 담당에게 기록
+  office verdict 대상작업 pass|fixed:N|fail   별도 검수 작업이 없으면 끝난 동료 작업만 독립 채점
+  office correction 대상작업 --re 사용자메시지   되돌림·재작업 지시를 원담당에게 연결(같은 메시지는 한 번)
+  office scores                   종류별 표본·정정·완료 시간 비율 확인
+  office add "작은 비교 작업" --ab --criteria "같은 검증 기준"   두 담당자가 별도 파일에서 수행, 배정 때 고정한 품질 우선·시간 보조 기준으로 비교
   office wait ID "기다리는 것" [--on 작업번호] [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·기다리던 작업 완료·감시 프로세스 종료·기한 지나면 깨어남)
   office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
   office progress ID "지금 상태" [--done N --total M] [--resume-at 20:10] [--notify]   오래 도는 일의 진행을 화면에 남기기 (bg 명령 안에선 ID 생략)
@@ -2092,7 +2258,9 @@ REVIEW = """[리더 차례: 검수] 요청 {jid}: {text}
 문제가 있으면 `office add "수정할 것" --to 담당` 으로 다시 배정.
 문제없으면 대화 전체 요청 이력을 참고해 전체 주제를 아우르는 15자 내외 제목으로 `office title "제목"`을 갱신한 뒤
 `office finish "사용자에게 보낼 최종 보고 (뭘 했는지, 남은 이슈)"`.
-보고는 위 '사용자 보고 형식'(결론 한 줄, 문단 중심, 목록은 필요할 때만)을 따른다."""
+보고는 위 '사용자 보고 형식'(결론 한 줄, 문단 중심, 목록은 필요할 때만)을 따른다.
+독립 검수 결과는 office done 검수작업 "결과" --verdict pass|fixed:N|fail --for 대상작업으로 기록하세요. 별도 검수 작업이 없으면 office verdict 대상작업 결과를 사용하세요. 자기 작업은 채점하지 마세요.
+"""
 
 
 
@@ -3475,6 +3643,7 @@ class Worker:
                 if closing:
                     summary = report or out
                     closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary), completion=request_completion(s, job))
+                    save_score_lesson(s, job)
                     event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
                     if report:
                         post(s, self.name, "user", report, "report", job=job)
@@ -4761,6 +4930,7 @@ class Office:
         self.ensure_team(cur)
         cached, _, msgs_key = state_view_cached(cur)
         data = dict(cached)   # 겉복사: 아래에서 키를 더하고 jobs·tasks 는 복사해서 고쳐요
+        data["scores"] = task_scores(data)
         data["chat_options_supported"] = True
         data["chat_options"] = chat_options_view(data.get("chat_options"))
         data["tasks"] = [dict(t) for t in data.get("tasks", [])]
@@ -5750,7 +5920,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "correction", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -5772,10 +5942,12 @@ def main():
     x = sp.add_parser("write"); x.add_argument("path"); x.add_argument("--from", dest="source", required=True); x.set_defaults(f=cmd_write)
     x = sp.add_parser("add"); x.add_argument("text"); x.add_argument("--to", choices=AGENTS)
     x.add_argument("--tag", help="작업 종류 태그"); x.add_argument("--rework-of", type=int, help="수정이 필요한 기존 완료 작업 번호")
+    x.add_argument("--ab", action="store_true", help="동일한 작은 작업을 두 담당자에게 비교 배정"); x.add_argument("--criteria", help="A/B 검증 기준(배정 뒤 고정)")
     x.add_argument("--level", choices=LEVELS, help="작업 무게: light(문구·확인) normal heavy(장애 분석·큰 구현)"); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
     x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.add_argument("--for", dest="for_tasks", help="독립 검수 대상 작업 번호(쉼표로 구분)"); x.add_argument("--evidence", action="append", help="산출물 파일 경로 또는 check:검증결과(여러 번 지정 가능)"); x.set_defaults(f=cmd_done)
     x = sp.add_parser("verdict", help="동료가 완료한 작업의 독립 검수 결과"); x.add_argument("targets"); x.add_argument("verdict", type=parse_verdict); x.set_defaults(f=cmd_verdict)
+    x = sp.add_parser("correction", help="사용자 되돌림·재작업 지시를 원담당에게 기록"); x.add_argument("targets"); x.add_argument("--re", type=int, required=True); x.set_defaults(f=cmd_correction)
     sp.add_parser("scores", help="현재 대화의 담당자·종류별 검수 결과").set_defaults(f=cmd_scores)
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
