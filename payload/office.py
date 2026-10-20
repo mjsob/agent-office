@@ -411,12 +411,19 @@ def new_session(m, title="새 대화"):
     with state(True, sid) as saved:
         saved["chat_options"] = dict(CHAT_OPTION_DEFAULTS)
     m["sessions"].append({"id": sid, "title": title, "created": time.time(), "updated": time.time(), "deleted": False})
-    m["current"] = sid
+    set_current(m, sid)
     return sid
 
 
 META_QUEUE = queue.Queue()
 CURRENT_HINT = {"sid": None, "at": 0.0}
+
+
+def set_current(m, sid):
+    """현재 대화를 바로 정해요. 방금 누른 대화 표시(CURRENT_HINT)도 같이 바꿔야
+    대화를 누르고 30초 안에 새 대화·복원을 눌렀을 때 화면이 이전 대화에 남지 않아요."""
+    m["current"] = sid
+    CURRENT_HINT.update(sid=sid, at=time.time())
 
 
 def meta_later(change):
@@ -5330,12 +5337,14 @@ class Office:
             self.window_owner, self.window_seen = client, time.time()
             return msg
         if act == "new_session":
+            before = dict(CURRENT_HINT)
             with meta(True) as m:
                 created = new_session(m)
                 try:
                     self.ensure_team(created)
                 except Exception as error:
                     server_log("session.prepare", error)
+                    CURRENT_HINT.update(before)   # 저장하지 않은 새 대화 대신 원래 고른 대화를 계속 가리키게
                     try:
                         self.stop_team(created)
                         remove_worktree(created)
@@ -5345,8 +5354,8 @@ class Office:
                     raise UserError("새 대화 준비 실패 — 새 대화를 준비하지 못했습니다. 기존 대화는 유지됩니다.") from None
         elif act == "switch":
             CURRENT_HINT.update(sid=p["id"], at=time.time())
-            def save_current(m, sid=p["id"]):
-                if any(x["id"] == sid and not x["deleted"] for x in m["sessions"]):
+            def save_current(m, sid=p["id"]):   # 그 사이 다른 대화를 누르거나 새 대화를 만들었으면 옛 선택으로 되돌리지 않음
+                if CURRENT_HINT["sid"] == sid and any(x["id"] == sid and not x["deleted"] for x in m["sessions"]):
                     m["current"] = sid
             meta_later(save_current)
         elif act == "rename":
@@ -5371,7 +5380,7 @@ class Office:
                     if x["id"] == p["id"]:
                         x["deleted"] = act == "delete"; x["deleted_at"] = time.time()
                         if act == "restore":
-                            m["current"] = x["id"]
+                            set_current(m, x["id"])
             if act == "delete" and CURRENT_HINT["sid"] == p["id"]:
                 CURRENT_HINT.update(sid=None, at=0.0)   # 방금 고른 대화를 지우면 화면이 지운 대화를 계속 찾지 않게
         elif act == "purge":                    # 휴지통에 있는 것만 영구 삭제
