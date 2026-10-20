@@ -2022,7 +2022,7 @@ def login_ok(name):
     """로그인돼 있는지: claude auth status / codex login status 가 성공하면 됨"""
     try:
         return subprocess.run(["claude", "auth", "status"] if name == "claude" else ["codex", "login", "status"],
-                              capture_output=True, text=True, timeout=20).returncode == 0
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
@@ -3911,7 +3911,7 @@ def claude_usage_agent():
         executable = shutil.which("claude")
         version = Path(executable).resolve().name if executable else ""
         if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=3)
+            result = subprocess.run(["claude", "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3)
             match = re.search(r"\d+\.\d+\.\d+", result.stdout)
             version = match.group() if match else "unknown"
         # 설치 CLI getUserAgent()의 형식과 같은 버전/외부 CLI 표기.
@@ -4331,7 +4331,7 @@ REL = Path(".")     # 저장소 루트 기준 ROOT 위치 (하위 폴더에서 �
 
 def git(*args, cwd=None):
     try:
-        return subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True, text=True, timeout=30)
+        return subprocess.run(["git", *args], cwd=cwd or ROOT, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         raise UserError("Git 응답 시간 초과 — git 작업 응답 시간이 초과됐습니다. 저장소 상태를 확인하세요.") from None
 
@@ -4407,10 +4407,10 @@ def apply_resource_limits(cpu_percent, memory_high_gb):
     unit = resource_unit()
     # Start a harmless command once so the shared slice exists before setting its budget.
     command = ["systemd-run", "--user", "--quiet", "--wait", "--pipe", "--slice=" + unit, "/usr/bin/true"]
-    subprocess.run(command, capture_output=True, timeout=8, check=True)
+    subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=8, check=True)
     subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
                     f"CPUQuota={quota}%", "CPUAccounting=yes", "MemoryAccounting=yes", "MemoryHigh=" + memory],
-                   capture_output=True, timeout=5, check=True)
+                   stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=True)
 
 
 def resource_status(refresh=False):
@@ -4431,7 +4431,7 @@ def resource_status(refresh=False):
                 apply_resource_limits(**limits)
                 RESOURCE_CACHE["configured"] = (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"])
             result = subprocess.run(["systemctl", "--user", "show", resource_unit(), "--property=ControlGroup"],
-                                    capture_output=True, text=True, timeout=3, check=True)
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=True)
             group = result.stdout.strip().removeprefix("ControlGroup=")
             if not group.startswith("/") or ".." in group.split("/"):
                 raise ValueError("cgroup path")
@@ -4546,14 +4546,14 @@ def open_report_path(raw, sid):
     value = re.sub(r":\d+(?::\d+)?$", "", raw.strip())
     try:
         if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith("\\\\"):
-            result = subprocess.run(["wslpath", "-u", value], capture_output=True, text=True, timeout=5, check=True)
+            result = subprocess.run(["wslpath", "-u", value], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=True)
             path = Path(result.stdout.strip())
         else:
             path = Path(value).expanduser()
             if not path.is_absolute():
                 path = wdir(sid) / path
         path = path.resolve(strict=True)
-        result = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, timeout=5, check=True)
+        result = subprocess.run(["wslpath", "-w", str(path)], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=True)
         windows = result.stdout.strip()
         if not windows:
             raise ValueError("empty path")
@@ -5904,8 +5904,19 @@ def status_loop(office, port, opened, interactive):
             termios.tcsetattr(tty_fd, termios.TCSADRAIN, raw)
         except (ImportError, OSError, termios.error):
             tty_fd = tty_saved = None
+    def quiet_tty():
+        # 하위 명령이 터미널 설정을 바꿔 에코가 다시 켜졌으면 끈다
+        try:
+            now = termios.tcgetattr(tty_fd)
+            if now[3] & (termios.ECHO | termios.ICANON):
+                now[3] &= ~(termios.ECHO | termios.ICANON)
+                termios.tcsetattr(tty_fd, termios.TCSADRAIN, now)
+        except (OSError, termios.error):
+            pass
     try:
         while not office.stop.is_set():
+            if tty_fd is not None:
+                quiet_tty()
             lines, key = console_status(office, int(time.time() - start), i)
             if interactive:   # 여러 줄을 제자리에서 다시 그림: 앞서 그린 줄 수만큼 위로 올라가 한 줄씩 지우고 씀
                 up_ = f"\033[{drawn - 1}F" if drawn > 1 else "\r"
