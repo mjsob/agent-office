@@ -275,6 +275,7 @@ details.progress .steps .event { align-self: flex-start; text-align: left; }
 .tobottom { position: sticky; bottom: 8px; display: flex; width: max-content; margin: 8px auto 0; box-shadow: 0 4px 16px rgba(0,0,0,.14); border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
 .tobottom .newmark { display: none; color: var(--ok); font-weight: 600; }
 .tobottom.new .newmark { display: inline; }
+details.turn .archived-note { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 6px 0 0; }
 
 /* 요청 현황 */
@@ -1526,7 +1527,23 @@ const fold = (key, summary, body, cls = "") => {
   return `<details class="fold ${cls}" data-k="${key}" ${opened ? "open" : ""}>
     <summary>${icon("chevron", "sm")}${summary}</summary>${typeof body === "function" ? opened ? body() : `<div data-lazy-fold="${key}"></div>` : body}</details>`;
 };
+// 끝난 요청의 오래된 작업 기록은 서버가 따로 옮겨 두고 앞부분만 보내요. 펼칠 때 전체를 불러와요.
+const archivedTurns = new Map();
+const archivedTurnHtml = m => !m.archived ? `<pre>${esc(m.text)}</pre>`
+  : archivedTurns.has(m.id) ? `<pre>${esc(archivedTurns.get(m.id))}</pre>`
+  : `<pre data-archived-turn="${m.id}">${esc(m.text)}</pre><p class="archived-note">전체 기록을 불러오는 중이에요.</p>`;
+function loadArchivedTurns(root) {
+  root.querySelectorAll("pre[data-archived-turn]:not([data-loading])").forEach(pre => {
+    const id = Number(pre.dataset.archivedTurn);
+    pre.dataset.loading = "1";
+    fetch(`/api/turn?session=${encodeURIComponent(revSession || curSession || "")}&id=${id}`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => { archivedTurns.set(id, d.text); pre.textContent = d.text; pre.removeAttribute("data-archived-turn"); pre.nextElementSibling?.classList.contains("archived-note") && pre.nextElementSibling.remove(); })
+      .catch(() => { const note = pre.nextElementSibling; if (note?.classList.contains("archived-note")) note.textContent = "전체 기록을 불러오지 못했어요. 앞부분만 보여요."; });
+  });
+}
 function bindTimelineFolds(root) {
+  loadArchivedTurns(root);
   root.querySelectorAll("details.fold").forEach(d => d.ontoggle = () => {
     d.open ? openTurns.add(d.dataset.k) : openTurns.delete(d.dataset.k);
     const slot = d.querySelector(":scope > [data-lazy-fold]");
@@ -1562,7 +1579,7 @@ function msgHtml(m, compact) {
     return `<div class="event ${m.from}">${who}${esc(m.text)}<span>· ${esc(when(m))}</span></div>`;
   }
   if (m.kind === "turn") {
-    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${esc(when(m))}`, () => `<pre>${esc(m.text)}</pre>`, "turn");
+    if (m.job != null) return fold("t" + m.id, `${NAME[m.from]} 작업 기록 · ${esc(when(m))}`, () => archivedTurnHtml(m), "turn");
     // 단독 대화의 답변은 클릭 없이 본문으로 표시한다. 기존 기록에도 적용.
     m = {...m, kind: "msg", to: "user", job: null};
   }

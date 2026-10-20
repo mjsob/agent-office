@@ -573,6 +573,45 @@ def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
                 request.setdefault("first_user_notice_seconds", round(max(0, row["at"] - request["started_at"]), 3))
 
 
+TURN_ARCHIVE_KEEP = 300   # 최근 메시지 이만큼 안의 작업 기록은 상태 파일에 그대로 둠
+TURN_ARCHIVE_STUB = 300   # 옮긴 작업 기록은 상태 파일에 이 글자 수만 남김
+
+
+def archive_old_turns(s, sid):
+    """끝난 요청의 오래된 작업 기록(turn) 본문을 sessions/<id>/turns-archive.jsonl 로 옮기고 상태 파일엔 앞부분만 남겨요.
+    메시지 수·번호는 그대로라 읽은 위치가 어긋나지 않아요. 단독 대화 답변(job 없음)은 화면 본문이라 옮기지 않아요."""
+    done = {j["id"] for j in s["jobs"] if j.get("status") == "done"}
+    moved = [m for m in s["msgs"][:-TURN_ARCHIVE_KEEP] if m.get("kind") == "turn" and m.get("job") in done
+             and not m.get("archived") and len(m.get("text", "")) > TURN_ARCHIVE_STUB + 100]
+    if not moved:
+        return 0
+    with (sdir(sid) / "turns-archive.jsonl").open("a") as f:   # 본문을 먼저 안전하게 쓴 뒤에만 상태 파일 쪽을 줄임
+        for m in moved:
+            f.write(json.dumps({"id": m["id"], "text": m["text"]}, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    for m in moved:
+        m["text"], m["archived"] = m["text"][:TURN_ARCHIVE_STUB] + " …", True
+    return len(moved)
+
+
+def archived_turn(sid, mid):
+    """옮겨 둔 작업 기록 본문. 같은 번호가 여러 번 있으면(저장 도중 꺼졌다 다시 옮김) 마지막 것."""
+    found = None
+    try:
+        with (sdir(sid) / "turns-archive.jsonl").open() as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("id") == mid and isinstance(row.get("text"), str):
+                    found = row["text"]
+    except OSError:
+        return None
+    return found
+
+
 def event(s, text, actor="system", job: int | None = None):
     post(s, actor, "all", text, "event", job=job)
 
@@ -1318,7 +1357,11 @@ def cmd_bg(a):
     print(f"#{a.id} 백그라운드 시작 · pid {proc.pid} · 로그 {log}\n끝나면 서버가 깨워 줘요. 지금 차례는 끝내도 돼요.")
 
 
-def require_task_owner(task):
+def require_task_owner(task, s=None):
+    """담당자만 완료·넘기기. 넘기기는 그 요청의 리더(대행 포함)도 할 수 있어요(멈춘 동료 작업 넘겨받기)."""
+    job = next((j for j in (s or {}).get("jobs", []) if j["id"] == task.get("job")), None)
+    if job is not None and me() == job.get("acting_lead", job.get("lead")):
+        return
     if me() in AGENTS and task.get("owner") not in (None, me()):
         raise UserError(f"작업 #{task['id']}는 {disp(task.get('owner'))} 담당이에요. 담당자만 완료하거나 넘길 수 있어요.")
 
@@ -1387,7 +1430,7 @@ def cmd_done(a):
 def cmd_handoff(a):
     with state(True) as s:
         t = find(s, a.id)
-        require_task_owner(t)
+        require_task_owner(t, s)
         t.pop("failover_from", None)
         t.pop("failover_to", None)
         t.setdefault("handoffs", []).append({"from": t.get("owner"), "to": a.to, "at": time.time(), "claimed_at": t.get("claimed_at")})
@@ -1504,6 +1547,10 @@ def cmd_finish(a):
             text = (f"요청 {target['id']} 완료" if target is j else
                     f"요청 {target['id']} 완료 · 요청 {j['id']} 보고에 함께 답함")
             event(s, text, me(), job=target["id"])
+        try:
+            archive_old_turns(s, current_sid())
+        except OSError as error:   # 옮기기 실패는 마감을 막지 않음(다음 마감 때 다시 시도)
+            server_log("turn.archive", error)
         post(s, me(), "user", a.text, "report", job=j["id"])
         if also is not None:
             s["msgs"][-1]["jobs"] = [target["id"] for target in targets]
@@ -1881,6 +1928,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 파일 수정 전에 office reserve "파일"로 예약한다. 다른 담당/대화가 예약한 파일은 읽기·검수만 한다.
 - 원본 파일은 직접 Edit/Write/셸로 저장하지 말고 원본을 /tmp 임시 원고로 복사하고 원고만 부분 수정한 뒤 office write "파일" --from "임시 원고"로 저장한다. 끝나면 office release "파일".
 - 작업 추가 전에 같은 작업이 있는지 확인하고 기존 ID를 사용한다. 작은 수정은 한 명이 끝내고 분리 가능한 작업·독립 검수에만 둘을 쓴다.
+- 동료에게 넘길 결과가 10줄을 넘으면 `/tmp/req<요청번호>/<작업번호>.md`에 쓰고 메시지엔 그 경로와 한 줄 요약만 남겨라.
 - 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다. 반영·검수·확인 부탁이나 넘겨줄 결과처럼 상대가 이어받아야 하는 말은 --info로 보내지 마라.
 - 동료 작업 결과를 기다리면 `office wait ID "사유" --on 작업번호`로 그 작업을 걸어라. 끝나면 서버가 바로 깨운다. 요청 전체를 대표하는 작업(최종 검수·마감 등)을 기다림으로 걸어 두지 말고, 남은 일은 작은 작업으로 등록해라.
 - 기다리는 결과와 무관한 일은 먼저 해라. OCR 하나·동료 작업 하나에 전체를 묶어 보류하지 말고, 이미 끝난 부분부터 반영해라.
@@ -1910,6 +1958,8 @@ PLAN = """[리더 차례: 새 요청 접수] 요청 {jid}: {text}
 이 일을 끝까지 책임지는 리더는 너다. 필요하면 파일을 살펴본 뒤 작업으로 쪼개서
 `office add "..." --to claude|codex` 로 둘에게 나눠 배정해라 (너 자신 포함, 병렬로 할 수 있게, 같은 파일 겹치지 않게).
 쪼갤 필요 없는 작은 일이면 직접 처리하고 `office finish "보고"` 해도 된다.
+쪼개는 기준: 혼자 10분 안에 끝나거나 고칠 파일이 하나뿐이면 쪼개지 말고 혼자 끝내라(지난 기록 중간값: 혼자 35초, 둘로 나눔 572초). 서로 다른 파일에 10분 넘는 일이 둘 이상이거나, 독립 검수가 필요할 때만 나눈다.
+배정문 끝엔 결과 형식을 붙여라: `결과: 바뀐 파일·커밋 / 확인한 것 / 남은 일`.
 구현·조사·검증 등 실제 작업을 둘에게 고르게 나눠라. 리더가 계획·검수만을 이유로 구현까지 혼자 맡지 마라.
 독립적으로 진행할 작업은 먼저 동료에게 배정해 동시 진행하고, 단순 문구 변경처럼 나눌 필요 없는 작업만 직접 처리해라.
 배정 전 작업판에서 각자 아직 안 끝난 작업 수를 확인해 덜 바쁜 쪽에 먼저 준다. 단 한쪽이 확실히 더 잘하는 일(그 사람이 이미 손대는 파일 포함)이면 바빠도 그쪽에 준다.
@@ -3010,6 +3060,39 @@ class Worker:
         return (f"너는 '{self.name}'. 동료 '{self.other}'와 한 팀으로 이 저장소에서 일한다. 작업판·메신저 명령, 일하는 방식, 사용자 보고 형식은 "
                 f"이 세션 첫 차례에 받은 작업 지침(지침 {digest})에서 바뀐 게 없다. 그 지침을 그대로 따라라.")
 
+    def turn_context(self, key, text, full):
+        """이번 차례에 보낸 문맥을 남기고 지난 차례에 보낸 값을 돌려줘요. 전문을 보내는 차례거나 못 읽으면 None."""
+        path = sdir(self.sid) / f"{self.name}.{key}"
+        try:
+            before = None if full else path.read_text()
+        except OSError:
+            before = None
+        try:
+            path.write_text(text)
+        except OSError:
+            before = None
+        return before
+
+    def snapshot_delta(self, snap, full):
+        """같은 세션의 이어지는 차례엔 현재 상황 중 지난 차례 이후 바뀐 줄만 보내요.
+        요청 줄과 내가 맡은 안 끝난 작업 줄은 늘 보내고, 전문 차례(세션 시작·지침 변경·주기 재전송·재시도)엔 전부 보내요."""
+        before = self.turn_context("snap", snap, full)
+        if not before:
+            return snap
+        seen, out, section, dropped = set(before.splitlines()), [], "", 0
+        mine = f"[{self.name}]"
+        for line in snap.splitlines():
+            if line.startswith("== "):
+                section = line
+                out.append(line)
+            elif "요청(job)" in section or line not in seen or (mine in line and not line.startswith("✅")):
+                out.append(line)
+            else:
+                dropped += 1
+        if dropped:
+            out.append(f"(지난 차례에 보낸 것과 같은 줄 {dropped}개는 뺐다. 전체는 `office board`)")
+        return "\n".join(out)
+
     def rotate_session(self, job, desc):
         """세션이 길어지면 차례마다 이전 대화를 통째로 다시 읽어 느려지고 사용량도 많이 든다.
         새 요청을 처음 맡는 차례에서 컨텍스트가 ROTATE_CTX 토큰을 넘었으면 새 세션으로 시작한다(요청 도중엔 안 바꿈)"""
@@ -3128,7 +3211,8 @@ class Worker:
             head = self.protocol_head(protocol, rotated)
             if new:   # 깨움 요청(가장 최근 새 메시지)부터 차례 시작까지 걸린 시간 — 착수 지연 원인 계측
                 server_log(f"turn.start_lag {self.name} job={job} {max(0.0, time.time() - max(m.get('at', time.time()) for m in new)):.1f}s")
-            prompt = head + f"\n현재 상황:\n{snap}\n\n"
+            full_turn = head == protocol or bool(self.resume_turn)
+            prompt = head + f"\n현재 상황:\n{self.snapshot_delta(snap, full_turn)}\n\n"
             verification_scope = {"quick": "빠르게: 요청한 결과와 핵심 동작만 확인", "standard": "기본: 핵심 동작과 영향 받는 부분까지 확인", "thorough": "꼼꼼하게: 추가 사례·예외·독립 검수까지 확인"}.get(verification, "기본")
             prompt += f"이 요청의 검증 수준은 {verification_scope}이다. 통과한 같은 검증은 새 변경·실패 없이 반복하지 마라. 재시도는 입력·코드·설정이 그대로인 완료 결과를 확인해 재사용하고 실패한 부분부터 이어가라. 더 깊은 검증이 필요하면 이유와 추가 예상 시간을 먼저 알려라. 최종 보고에 선택 수준·실제 확인한 범위·확인 못 한 부분을 짧게 남겨라.\n"
             if rotated:
@@ -3147,7 +3231,10 @@ class Worker:
             peer = office.teams.get(sid, {}).get("w", {}).get(self.other) if hasattr(office, "teams") else None
             if peer is not None and peer.status == "idle" and not peer.paused and len(my_todo) > 1:
                 prompt += f"동료 {self.other}는 지금 쉬는 중이다. 네 몫 중 아직 시작 안 한 작업({', '.join('#' + str(x) for x in my_todo)})은 오래 걸릴 것 같으면 `office handoff ID --to {self.other}`로 넘겨라.\n"
-            prompt += f"{tail}\n\n대화 전체 요청 이력 (제목 요약 참고):\n{title_history}"
+            if self.turn_context("hist", title_history, full_turn) == title_history:
+                prompt += f"{tail}\n\n대화 전체 요청 이력은 지난 차례와 같다."
+            else:
+                prompt += f"{tail}\n\n대화 전체 요청 이력 (제목 요약 참고):\n{title_history}"
             turn_started = time.monotonic()
             tokens_before = self.tokens
             try:
@@ -5078,6 +5165,15 @@ def make_handler(office):
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
                     self.json_reply(200, snapshot)
+                elif path == "/api/turn":
+                    query = parse_qs(urlsplit(self.path).query)
+                    selected, mid = query.get("session", [""])[0], query.get("id", [""])[0]
+                    if not valid_sid(selected) or not mid.isascii() or not mid.isdigit() or len(mid) > 12:
+                        return self.json_reply(400, {"error": "기록 번호 확인 — 기록 번호가 올바르지 않습니다."})
+                    text = archived_turn(selected, int(mid))
+                    if text is None:
+                        return self.json_reply(404, {"error": "기록을 찾을 수 없음 — 옮겨 둔 작업 기록이 없습니다."})
+                    self.json_reply(200, {"id": int(mid), "text": text})
                 elif path == "/api/window":
                     self.json_reply(200, {"open": time.time() - getattr(office, "window_seen", 0) < 6})
                 else:

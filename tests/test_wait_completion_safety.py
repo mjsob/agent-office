@@ -20,7 +20,7 @@ class Safety(unittest.TestCase):
  def read(self):return json.loads(self.path.read_text())
  def test_done_handoff_reject_foreign_owner_atomically(self):
   for fn,args in [(self.o.cmd_done,dict(id=1,text='done')),(self.o.cmd_handoff,dict(id=1,to='codex',text='move'))]:
-   self.write([self.task(owner='claude')]);before=self.path.read_bytes()
+   self.write([self.task(owner='claude')],[dict(id=1,lead='claude',status='working',text='j1')]);before=self.path.read_bytes()   # 리더가 아닌 동료(codex)
    with self.assertRaises(self.o.UserError):fn(argparse.Namespace(**args))
    self.assertEqual(before,self.path.read_bytes())
  def test_own_and_unassigned_legacy_done_still_work(self):
