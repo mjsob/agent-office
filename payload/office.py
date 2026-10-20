@@ -1003,7 +1003,9 @@ def cmd_add(a):
             return print(f"#{existing['id']} 기존 작업 유지 (중복 등록 생략)")
         rework_id = getattr(a, "rework_of", None)
         inferred = next((t for t in s["tasks"] if leading and t["id"] == refs[0] and t["status"] == "done"), None)
-        if rework_id is None and inferred and re.search(r"수정|보완|재작업|고치|고쳐", a.text):
+        inferred_job = next((job for job in s["jobs"] if inferred and job["id"] == inferred.get("job")), None)
+        relevant = inferred and (inferred.get("job") == (j and j["id"]) or inferred_job and inferred_job["status"] != "done" and not inferred_job.get("cancelled"))
+        if rework_id is None and relevant and re.search(r"수정|보완|재작업|고치|고쳐", a.text):
             rework_id = inferred["id"]
         original = next((t for t in s["tasks"] if t["id"] == rework_id), None)
         if rework_id is not None and (original is None or original["status"] != "done"):
@@ -1398,6 +1400,37 @@ def parse_verdict(value):
     return value
 
 
+def verdict_targets(record, ids):
+    try:
+        targets = list(dict.fromkeys(int(value.strip()) for value in str(ids).split(",")))
+    except ValueError:
+        raise UserError("검수 대상은 작업 번호를 쉼표로 나눠 적으세요.")
+    tasks = [find(record, tid) for tid in targets]
+    for task in tasks:
+        owner = task.get("completed_by") or task.get("owner")
+        if task["status"] != "done" or owner not in AGENTS:
+            raise UserError("검수 대상은 담당자가 작업을 끝낸 뒤 지정하세요.")
+        if owner == me():
+            raise UserError("자기 작업은 스스로 채점할 수 없어요. 동료에게 독립 검수를 요청하세요.")
+    return tasks
+
+
+def record_verdict(tasks, verdict, review_task=None):
+    for task in tasks:
+        task.setdefault("metrics", {}).update(verdict=verdict, owner=task.get("completed_by") or task.get("owner"),
+            reviewed_by=me(), reviewed_at=time.time(), review_task=review_task)
+
+
+def cmd_verdict(a):
+    verdict = parse_verdict(a.verdict)
+    with state(True) as record:
+        targets = verdict_targets(record, a.targets)
+        record_verdict(targets, verdict)
+        for task in targets:
+            event(record, f"작업 #{task['id']} 독립 검수 · {verdict}", me(), job=task.get("job"))
+    print("검수 결과를 대상 작업 담당자에게 기록했어요.")
+
+
 def task_scores(record):
     """검수 결과가 기록된 표본만 담당자·종류별로 집계해요."""
     result = {name: {} for name in AGENTS}
@@ -1488,15 +1521,17 @@ def cmd_done(a):
         require_task_owner(t)
         if pending_user_request(t):
             raise UserError("사용자 확인 대기 — 필요한 자료나 답을 확인한 뒤 resolve-user로 해결하세요.")
+        target_ids = getattr(a, "for_tasks", None)
+        if target_ids is not None and verdict is None:
+            raise UserError("--for는 --verdict와 함께 지정하세요.")
+        targets = verdict_targets(s, target_ids if target_ids is not None else a.id) if verdict is not None else []
         evidence = collect_completion_evidence(getattr(a, "evidence", None))
         if evidence:
             t["completion"] = {"status": "verified", "evidence": evidence, "by": me(), "at": time.time()}
         elif not artifact_verified(t, recheck=True):
             t["completion"] = {"status": "unverified", "evidence": [], "at": time.time()}
         t["execution"] = {"status": "succeeded", "at": time.time()}
-        if verdict is not None:
-            metrics = t.setdefault("metrics", {})
-            metrics.update(verdict=verdict, owner=t.get("owner"), reviewed_by=me(), reviewed_at=time.time())
+        record_verdict(targets, verdict, review_task=a.id)
         t.setdefault("completed_by", t.get("owner"))
         t.update(status="done", note=a.text, done_at=time.time())
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
@@ -5715,7 +5750,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -5739,7 +5774,8 @@ def main():
     x.add_argument("--tag", help="작업 종류 태그"); x.add_argument("--rework-of", type=int, help="수정이 필요한 기존 완료 작업 번호")
     x.add_argument("--level", choices=LEVELS, help="작업 무게: light(문구·확인) normal heavy(장애 분석·큰 구현)"); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
-    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.add_argument("--evidence", action="append", help="산출물 파일 경로 또는 check:검증결과(여러 번 지정 가능)"); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.add_argument("--for", dest="for_tasks", help="독립 검수 대상 작업 번호(쉼표로 구분)"); x.add_argument("--evidence", action="append", help="산출물 파일 경로 또는 check:검증결과(여러 번 지정 가능)"); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("verdict", help="동료가 완료한 작업의 독립 검수 결과"); x.add_argument("targets"); x.add_argument("verdict", type=parse_verdict); x.set_defaults(f=cmd_verdict)
     sp.add_parser("scores", help="현재 대화의 담당자·종류별 검수 결과").set_defaults(f=cmd_scores)
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")

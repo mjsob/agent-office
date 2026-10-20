@@ -14,7 +14,13 @@ class Scores(unittest.TestCase):
  def task(self,i,**kw):return dict(id=i,job=1,title=f't{i}',owner='codex',status='doing',kind='수정',**kw)
  def write(self,tasks):self.o.atomic_json(self.path,dict(jobs=[dict(id=1,status='working',lead='codex',text='request')],tasks=tasks,msgs=[],seq=max((t['id'] for t in tasks),default=0)),self.o.state_valid)
  def read(self):return json.loads(self.path.read_text())
- def done(self,verdict=None):self.o.cmd_done(argparse.Namespace(id=1,text='결과',verdict=verdict))
+ def done(self,verdict=None):
+  if verdict is not None:self.o.parse_verdict(verdict)
+  self.o.cmd_done(argparse.Namespace(id=1,text='결과',verdict=None))
+  if verdict is not None:
+   os.environ['OFFICE_AS']='claude'
+   try:self.o.cmd_verdict(argparse.Namespace(targets='1',verdict=verdict))
+   finally:os.environ['OFFICE_AS']='codex' 
  def add(self,text,**kw):self.o.cmd_add(argparse.Namespace(text=text,to='claude',level=None,tag=None,rework_of=None,**kw))
  def test_legacy_done_without_verdict_is_unscored(self):
   self.done();self.assertNotIn('metrics',self.read()['tasks'][0]);self.assertFalse(any(self.o.task_scores(self.read()).values()))
@@ -56,7 +62,9 @@ class Scores(unittest.TestCase):
   with contextlib.redirect_stdout(out):self.o.cmd_scores(argparse.Namespace())
   self.assertIn('표본 부족',out.getvalue());self.assertIn('100.0%',out.getvalue());self.assertEqual(before,self.path.read_bytes())
  def test_cli_is_compatible_and_scores_never_launches_gui(self):
-  r=subprocess.run([sys.executable,str(SOURCE),'done','1','결과','--verdict','fixed:2'],env=os.environ.copy(),capture_output=True,text=True,timeout=10)
+  self.done()
+  reviewer=os.environ.copy();reviewer['OFFICE_AS']='claude'
+  r=subprocess.run([sys.executable,str(SOURCE),'verdict','1','fixed:2'],env=reviewer,capture_output=True,text=True,timeout=10)
   self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(self.read()['tasks'][0]['metrics']['verdict'],'fixed:2')
   r=subprocess.run([sys.executable,str(SOURCE),'scores'],env=os.environ.copy(),capture_output=True,text=True,timeout=10)
   self.assertEqual(r.returncode,0,r.stderr);self.assertIn('표본 부족',r.stdout)
@@ -64,4 +72,33 @@ class Scores(unittest.TestCase):
   for tag in ('','  ','x\ny','a'*41):
    with self.assertRaises(self.o.UserError):self.o.cmd_add(argparse.Namespace(text='種類',to='claude',level=None,tag=tag,rework_of=None))
   self.o.cmd_add(argparse.Namespace(text='문서 작성',to='claude',level=None,tag='문서',rework_of=None));self.assertEqual(self.read()['tasks'][-1]['kind'],'문서')
+ def test_review_task_attributes_to_targets_atomically(self):
+  self.write([dict(id=1,job=1,title='implementation',owner='codex',completed_by='codex',status='done',kind='수정'),dict(id=2,job=1,title='review',owner='claude',status='doing',kind='검수')]);os.environ['OFFICE_AS']='claude'
+  args=argparse.Namespace(id=2,text='독립 검수',verdict='fixed:2',for_tasks='1')
+  self.o.cmd_done(args);s=self.read();self.assertEqual(s['tasks'][0]['metrics']['owner'],'codex');self.assertEqual(s['tasks'][0]['metrics']['review_task'],2);self.assertNotIn('metrics',s['tasks'][1]);self.assertFalse(self.o.task_scores(s)['claude'])
+  before=self.path.read_bytes();args.for_tasks='1,2'
+  with self.assertRaises(self.o.UserError):self.o.cmd_done(args)
+  self.assertEqual(before,self.path.read_bytes())
+ def test_self_verdict_and_incomplete_target_rejected(self):
+  for target in ('1','1,x','999'):
+   before=self.path.read_bytes()
+   with self.assertRaises((self.o.UserError,SystemExit)):self.o.cmd_verdict(argparse.Namespace(targets=target,verdict='pass'))
+   self.assertEqual(before,self.path.read_bytes())
+  self.done();before=self.path.read_bytes()
+  with self.assertRaises(self.o.UserError):self.o.cmd_done(argparse.Namespace(id=1,text='self grade',verdict='pass'))
+  self.assertEqual(before,self.path.read_bytes())
+ def test_multiple_targets_and_cli_for(self):
+  self.write([dict(id=i,job=1,title='done',owner='codex',completed_by='codex',status='done') for i in (1,2)]+[dict(id=3,job=1,title='review',owner='claude',status='doing')]);env=os.environ.copy();env['OFFICE_AS']='claude'
+  r=subprocess.run([sys.executable,str(SOURCE),'done','3','reviewed','--verdict','pass','--for','1,2,1'],env=env,capture_output=True,text=True,timeout=10)
+  self.assertEqual(r.returncode,0,r.stderr);s=self.read();self.assertEqual(self.o.task_scores(s)['codex']['일반']['n'],2);self.assertNotIn('metrics',s['tasks'][2])
+ def test_rework_reference_does_not_use_unrelated_closed_job(self):
+  self.done('pass')
+  with self.o.state(True) as s:
+   s['jobs'][0]['status']='done';s['jobs'].append(dict(id=2,status='working',lead='codex',text='new'));os.environ['OFFICE_JOB']='2'
+  self.add('#1 수정 반영');self.assertEqual(self.read()['tasks'][0]['metrics'].get('rework',0),0)
+  self.o.cmd_add(argparse.Namespace(text='명시적 수정',to='claude',level=None,tag=None,rework_of=1));self.assertEqual(self.read()['tasks'][0]['metrics']['rework'],1)
+ def test_rework_reference_can_use_another_open_job(self):
+  self.done('pass')
+  with self.o.state(True) as s:s['jobs'].append(dict(id=2,status='working',lead='codex',text='new'))
+  os.environ['OFFICE_JOB']='2';self.add('#1 보완 반영');self.assertEqual(self.read()['tasks'][0]['metrics']['rework'],1)
 if __name__=='__main__':unittest.main()
