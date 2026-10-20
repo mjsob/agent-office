@@ -25,6 +25,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, parse_qs
 
 AGENTS = ("claude", "codex")
+PROTOCOL_REFRESH_TURNS = 8   # 이어지는 차례에서 작업 지침 전문을 다시 보내는 주기
 ROTATE_CTX = int(os.environ.get("OFFICE_ROTATE_CTX") or 150_000)   # 새 요청 시작 때 이보다 긴 세션은 새로 시작
 IDLE_RECHECK = 10      # 초: 할 일 없이 쉬는 동안 기록이 그대로여도 장애 전환·멈춤 점검은 이 간격으로 다시 해요
 POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반영
@@ -2879,6 +2880,27 @@ class Worker:
                     server_log("worker.error.persist", storage_error)
                 self.stop.wait(POLL)
 
+    def protocol_head(self, protocol, rotated):
+        """같은 세션의 이어지는 차례엔 작업 지침 전문(수천 자)을 다시 보내지 않아요.
+        세션을 새로 시작했거나·지침이 바뀌었거나·PROTOCOL_REFRESH_TURNS 차례가 지났으면 전문을 보내요(자동 압축으로 잊는 일 방지)."""
+        digest = hashlib.sha256(protocol.encode()).hexdigest()[:12]
+        path = sdir(self.sid) / f"{self.name}.proto"
+        try:
+            saved, _, count = path.read_text().strip().partition(":")
+            count = int(count or 0)
+        except (OSError, ValueError):
+            saved, count = "", 0
+        full = (rotated or not (sdir(self.sid) / f"{self.name}.sid").exists() or saved != digest
+                or count >= PROTOCOL_REFRESH_TURNS)
+        try:
+            path.write_text(f"{digest}:{0 if full else count + 1}\n")
+        except OSError:
+            full = True
+        if full:
+            return protocol
+        return (f"너는 '{self.name}'. 동료 '{self.other}'와 한 팀으로 이 저장소에서 일한다. 작업판·메신저 명령, 일하는 방식, 사용자 보고 형식은 "
+                f"이 세션 첫 차례에 받은 작업 지침(지침 {digest})에서 바뀐 게 없다. 그 지침을 그대로 따라라.")
+
     def rotate_session(self, job, desc):
         """세션이 길어지면 차례마다 이전 대화를 통째로 다시 읽어 느려지고 사용량도 많이 든다.
         새 요청을 처음 맡는 차례에서 컨텍스트가 ROTATE_CTX 토큰을 넘었으면 새 세션으로 시작한다(요청 도중엔 안 바꿈)"""
@@ -2993,7 +3015,11 @@ class Worker:
             self.save_checkpoint()   # 첫 차례 도중 서버가 꺼져도 재시작 후 이 메시지부터 다시 읽게 시작 위치를 남김
             self.act("start", f"{desc}|{job or ''}")
             rotated = self.rotate_session(job, desc)
-            prompt = PROTOCOL.format(me=self.name, other=self.other) + f"\n현재 상황:\n{snap}\n\n"
+            protocol = PROTOCOL.format(me=self.name, other=self.other)
+            head = self.protocol_head(protocol, rotated)
+            if new:   # 깨움 요청(가장 최근 새 메시지)부터 차례 시작까지 걸린 시간 — 착수 지연 원인 계측
+                server_log(f"turn.start_lag {self.name} job={job} {max(0.0, time.time() - max(m.get('at', time.time()) for m in new)):.1f}s")
+            prompt = head + f"\n현재 상황:\n{snap}\n\n"
             verification_scope = {"quick": "빠르게: 요청한 결과와 핵심 동작만 확인", "standard": "기본: 핵심 동작과 영향 받는 부분까지 확인", "thorough": "꼼꼼하게: 추가 사례·예외·독립 검수까지 확인"}.get(verification, "기본")
             prompt += f"이 요청의 검증 수준은 {verification_scope}이다. 통과한 같은 검증은 새 변경·실패 없이 반복하지 마라. 재시도는 입력·코드·설정이 그대로인 완료 결과를 확인해 재사용하고 실패한 부분부터 이어가라. 더 깊은 검증이 필요하면 이유와 추가 예상 시간을 먼저 알려라. 최종 보고에 선택 수준·실제 확인한 범위·확인 못 한 부분을 짧게 남겨라.\n"
             if rotated:
@@ -3026,7 +3052,7 @@ class Worker:
                 self.notice = "새 세션에서 재개 — 이전 세션을 찾지 못해 새 세션에서 작업을 이어갑니다."
                 server_log("agent.session_recovery")
                 try:
-                    out = self.run_agent(prompt + "\n이전 세션 기록이 없어 새 세션으로 재개한다. 작업판과 이미 수정한 파일을 확인하고 이어서 진행해라.", job)
+                    out = self.run_agent(protocol + prompt[len(head):] + "\n이전 세션 기록이 없어 새 세션으로 재개한다. 작업판과 이미 수정한 파일을 확인하고 이어서 진행해라.", job)
                 except Exception as error:
                     out, self.error = "", "새 세션 실행 실패 — 새 세션 실행 실패. 다시 시작 버튼으로 재개하세요."
                     server_log("agent.session_recovery.failed", error)
