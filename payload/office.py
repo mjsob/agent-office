@@ -478,6 +478,24 @@ def touch(sid, text=None, request=False):
 
 
 # ── 대화별 상태 저장소 (sessions/<id>/state.json, flock) ─────
+def bump_job_progress(record, jid):
+    job = next((j for j in record.get("jobs", []) if j["id"] == jid), None)
+    if job is not None:
+        revision = job.get("progress_revision", 0)
+        job["progress_revision"] = (revision if type(revision) is int and revision >= 0 else 0) + 1
+        job["progress_at"] = time.time()
+
+
+def progress_fingerprints(record):
+    tasks = {}
+    for t in record.get("tasks", []):
+        p, request, completion = t.get("progress") or {}, t.get("user_request") or {}, t.get("completion") or {}
+        tasks.setdefault(t.get("job"), []).append((t["id"], t["status"], t.get("owner"), t.get("claimed_at"), t.get("done_at"),
+            p.get("at"), request.get("status"), request.get("resolved_at"), completion.get("status"),
+            (t.get("metrics") or {}).get("reviewed_at")))
+    return {j["id"]: (j["status"], j.get("cancelled"), j.get("removed"), tuple(tasks.get(j["id"], []))) for j in record.get("jobs", [])}
+
+
 @contextmanager
 def state(write=False, sid=None):
     d = sdir(sid or current_sid())
@@ -489,8 +507,13 @@ def state(write=False, sid=None):
         for k in ("jobs", "tasks", "msgs"):
             s.setdefault(k, [])
         s.setdefault("seq", 0)
+        before = progress_fingerprints(s) if write else None
         yield s
         if write:
+            after = progress_fingerprints(s)
+            for job in s["jobs"]:
+                if before.get(job["id"]) != after[job["id"]]:
+                    bump_job_progress(s, job["id"])
             atomic_json(STATE, s, state_valid)
 
 
@@ -564,6 +587,8 @@ def post(s, frm, to, text, kind="msg", job: int | None = None, reply_to=None):
     if reply_to is not None:
         row["re"] = reply_to
     s["msgs"].append(row)
+    if job is not None and (frm == "user" or kind == "report"):
+        bump_job_progress(s, job)
     if job is not None and frm in AGENTS and to == "user" and kind in ("progress", "msg", "report"):
         request = next((j for j in s["jobs"] if j["id"] == job), None)
         if request:
@@ -946,6 +971,7 @@ def cmd_write(a):
     try:
         with state(True) as record:
             record["work_revision"] = record.get("work_revision", 0) + 1
+            bump_job_progress(record, message_job(record))
     except (OSError, StorageError) as error:
         server_log("write.progress", error)
     print(f"안전 저장 완료: {path}")
@@ -1406,6 +1432,55 @@ def cmd_scores(a):
         print("기록된 검수 결과가 없어요. 표본 부족이에요.")
 
 
+def collect_completion_evidence(values):
+    evidence = []
+    for value in values or []:
+        if value.startswith("check:"):
+            text = value[6:].strip()
+            if not text or len(text) > 2000:
+                raise UserError("검증 근거는 check: 뒤에 확인한 결과를 1~2000자로 적으세요.")
+            evidence.append({"kind": "check", "text": text})
+            continue
+        path = Path(value[5:] if value.startswith("file:") else value).expanduser()
+        path = (path if path.is_absolute() else wdir(current_sid()) / path).resolve()
+        if not path.is_file():
+            raise UserError(f"완료 근거 파일을 찾을 수 없어요: {path}")
+        before = path.stat()
+        digest = file_digest(path) if before.st_size <= 8 * 1024 * 1024 else None
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise UserError("완료 근거 파일이 확인 중 바뀌었어요. 저장이 끝난 뒤 다시 완료하세요.")
+        evidence.append({"kind": "file", "path": str(path), "size": after.st_size, "mtime_ns": after.st_mtime_ns, "sha256": digest})
+    return evidence
+
+
+def artifact_verified(task, recheck=False):
+    completion = task.get("completion") or {}
+    proof = completion.get("evidence") or []
+    if completion.get("status") != "verified" or not proof:
+        return False
+    if recheck:
+        for item in proof:
+            if item.get("kind") == "file":
+                try:
+                    path = Path(item["path"]);stat = path.stat()
+                    if not path.is_file() or stat.st_size != item.get("size") or stat.st_mtime_ns != item.get("mtime_ns"):
+                        return False
+                    if item.get("sha256") and file_digest(path) != item["sha256"]:
+                        return False
+                except OSError:
+                    return False
+    return True
+
+
+def request_completion(record, jid):
+    tasks = [t for t in record["tasks"] if t.get("job") == jid]
+    unverified = [t["id"] for t in tasks if t["status"] == "done" and not artifact_verified(t, recheck=True)]
+    return {"status": "unverified" if unverified else "verified" if tasks else "not_applicable",
+            "unverified_task_ids": unverified,
+            "needs_user_task_ids": [t["id"] for t in tasks if pending_user_request(t)], "at": time.time()}
+
+
 def cmd_done(a):
     verdict = parse_verdict(getattr(a, "verdict", None))
     with state(True) as s:
@@ -1413,13 +1488,19 @@ def cmd_done(a):
         require_task_owner(t)
         if pending_user_request(t):
             raise UserError("사용자 확인 대기 — 필요한 자료나 답을 확인한 뒤 resolve-user로 해결하세요.")
+        evidence = collect_completion_evidence(getattr(a, "evidence", None))
+        if evidence:
+            t["completion"] = {"status": "verified", "evidence": evidence, "by": me(), "at": time.time()}
+        elif not artifact_verified(t, recheck=True):
+            t["completion"] = {"status": "unverified", "evidence": [], "at": time.time()}
+        t["execution"] = {"status": "succeeded", "at": time.time()}
         if verdict is not None:
             metrics = t.setdefault("metrics", {})
             metrics.update(verdict=verdict, owner=t.get("owner"), reviewed_by=me(), reviewed_at=time.time())
         t.setdefault("completed_by", t.get("owner"))
         t.update(status="done", note=a.text, done_at=time.time())
         event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
-        print(f"#{a.id} 완료")
+        print(f"#{a.id} 실행 성공 · " + ("산출물 검증 근거 기록" if t["completion"]["status"] == "verified" else "산출물 미확인(--evidence로 근거를 남기세요)"))
         released_job = t.get("job")
         remaining = any(x.get("job") == released_job and x.get("owner") == me() and x["status"] != "done" for x in s["tasks"])
     # 같은 담당의 병렬 작업 예약까지 풀지 않는다. 개별 파일은 release, 차례 종료 때는 전체 정리한다.
@@ -1543,7 +1624,7 @@ def cmd_finish(a):
         finished_at = time.time()
         for target in targets:
             target.update(status="done", finished_by=me(), finished_at=finished_at,
-                          summary=a.text, brief=report_brief(a.text))
+                          summary=a.text, brief=report_brief(a.text), completion=request_completion(s, target["id"]))
             text = (f"요청 {target['id']} 완료" if target is j else
                     f"요청 {target['id']} 완료 · 요청 {j['id']} 보고에 함께 답함")
             event(s, text, me(), job=target["id"])
@@ -1603,6 +1684,9 @@ def task_metrics(record, jid):
     job = next((j for j in record["jobs"] if j["id"] == jid), {})
     for actor, metrics in job.get("execution_metrics", {}).items():
         rows.append(f"{actor} 실행 {metrics['turns']}회·단순대기답변 {metrics['waiting_replies']}회·실행 {metrics['seconds']}초·새 토큰 {metrics['tokens']}")
+    unverified = request_completion(record, jid)["unverified_task_ids"]
+    if unverified:
+        rows.append("산출물 미확인 작업: " + ", ".join("#" + str(t) for t in unverified) + ". 실행 성공을 산출물 검수 통과로 간주하지 말고 확인한 범위를 보고하세요.")
     return "\n".join(rows) + f"\n검수·완료 이후 작업 추가 {job.get('rework_count', 0)}회(후속작업 포함, 실패 횟수 아님)."
 
 
@@ -1901,7 +1985,7 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 작업판·메신저는 `office` 셸 명령으로만 다룬다 (네 이름은 자동으로 붙음):
   office add "할일" --to 이름       작업 만들어 배정 (리더가 일 쪼갤 때)
   office claim ID                  주인 없는 작업 가져가기
-  office done ID "결과 요약"        끝냄
+  office done ID "결과 요약" [--evidence 파일|check:검증결과]   실행 성공과 산출물 검증 근거를 따로 기록
   office wait ID "기다리는 것" [--on 작업번호] [--pid N] [--log 파일] [--minutes M]   외부 결과를 기다리는 동안 열어 두기 (재촉 안 받음, 새 메시지·기다리던 작업 완료·감시 프로세스 종료·기한 지나면 깨어남)
   office bg ID "설명" "명령" [--log 파일]   몇 분 넘는 명령을 Office가 관리하는 백그라운드로 실행 (차례 끝나도 안 죽고, 끝나면 담당을 깨움)
   office progress ID "지금 상태" [--done N --total M] [--resume-at 20:10] [--notify]   오래 도는 일의 진행을 화면에 남기기 (bg 명령 안에선 ID 생략)
@@ -2953,6 +3037,32 @@ class Worker:
                          "attempt": attempt, "limit": len(AUTO_RETRY_DELAYS), "at": time.time(), "retry_at": retry_at}
 
 
+    def schedule_retry(self, reason, job):
+        """실행 오류·응답 없는 종료가 같은 횟수와 지연 정책을 사용해요."""
+        kind = classify_agent_error(reason, self.rc)
+        retry_key = "direct" if job is None else str(job)
+        retries = self.retry_counts.get(retry_key, 0)
+        interrupted = getattr(self, "interrupted_job", None)
+        if (kind not in ("crash", "unknown", "network", "timeout", "capacity")
+                or retries >= len(AUTO_RETRY_DELAYS) or self.stop.is_set() or self.immediate_pause
+                or getattr(self, "manual_pause", False) or interrupted is not None and interrupted == job):
+            return False
+        delay = AUTO_RETRY_DELAYS[retries]
+        self.retry_counts[retry_key] = retries + 1
+        self.auto_retries, self.retry_job = retries + 1, job
+        self.retry_at, self.retry_due = time.time() + delay, None
+        self.resume_turn = self.doing if isinstance(self.doing, dict) else getattr(self, "resume_turn", None)
+        self.read_upto = getattr(self, "turn_read_start", self.read_upto)
+        self.restart_reported, self.paused = True, False
+        self.set_recovery("recovering", reason, retries + 1, self.retry_at)
+        self.notice = f"자동 복구 중 — {delay}초 뒤 중단된 차례를 확인하고 이어가요."
+        self.error, self.error_kind = None, None
+        self.idle(); self.save_checkpoint()
+        with state(True, self.sid) as record:
+            event(record, f"{disp(self.name)} 자동 복구 · {retries + 1}/{len(AUTO_RETRY_DELAYS)}회 · {delay}초 뒤 재개를 확인해요. 원인: {safe_agent_diagnostic(reason)[:200]}", job=job)
+        server_log("agent.auto_retry." + self.name)
+        return True
+
     def pause_with_error(self, reason, job):
         self.error_kind = classify_agent_error(reason, self.rc)
         self.resume_turn = self.doing if isinstance(self.doing, dict) else getattr(self, "resume_turn", None)
@@ -2962,25 +3072,10 @@ class Worker:
         self.fail_count = self.fail_count + 1 if self.failure_key == key else 1
         self.failure_key = key
         self.set_recovery("diagnosing", reason)
+        if self.schedule_retry(reason, job):
+            return
         retry_key = "direct" if job is None else str(job)
         retries = self.retry_counts.get(retry_key, 0)
-        # The previous process is already reaped by run_agent. Keep the same cursor and resume turn.
-        if self.error_kind in ("crash", "unknown", "network", "timeout", "capacity") and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not self.immediate_pause and not getattr(self, "manual_pause", False):
-            delay = AUTO_RETRY_DELAYS[retries]
-            self.retry_counts[retry_key] = retries + 1
-            self.auto_retries, self.retry_job = retries + 1, job
-            self.retry_at = time.time() + delay
-            self.retry_due = None
-            self.read_upto = getattr(self, "turn_read_start", self.read_upto)
-            self.paused = False
-            self.set_recovery("recovering", reason, retries + 1, self.retry_at)
-            self.notice = f"자동 복구 중 — {delay}초 뒤 중단된 차례를 확인하고 이어가요."
-            self.error, self.error_kind = None, None
-            self.idle()
-            self.save_checkpoint()
-            with state(True, self.sid) as s:
-                event(s, f"{disp(self.name)} 자동 복구 · {retries + 1}/{len(AUTO_RETRY_DELAYS)}회 · {delay}초 뒤 재개를 확인해요. 원인: {reason[:200]}", job=job)
-            return
         self.paused = True
         self.set_recovery("needs_user" if self.error_kind in ("auth", "limit") else "failed", reason, retries)
         self.idle("paused")
@@ -3304,26 +3399,6 @@ class Worker:
                     why = f"현재 차례가 종료 코드 {self.rc}로 끝났어요. 현재 오류 출력이 없어 원인을 확인하지 못했어요."
                 self.read_upto = previous_read
                 self.carry_msgs = previous_carry
-                retry_key = "direct" if job is None else str(job)
-                retries = self.retry_counts.get(retry_key, 0)
-                if self.transient_failure(why) and retries < len(AUTO_RETRY_DELAYS) and not self.stop.is_set() and not getattr(self, "manual_pause", False):
-                    delay = AUTO_RETRY_DELAYS[retries]
-                    self.auto_retries = retries + 1
-                    self.retry_counts[retry_key] = retries + 1
-                    self.retry_job = job
-                    self.retry_at = time.time() + delay
-                    self.set_recovery("recovering", why or "응답 없이 실행이 끝났어요.", retries + 1, self.retry_at)
-                    self.resume_turn = self.doing if isinstance(self.doing, dict) else self.resume_turn
-                    self.restart_reported = True
-                    self.error, self.error_kind = None, None
-                    self.notice = f"자동 재시도 대기 — 일시 오류로 {delay}초 뒤 다시 시도합니다."
-                    self.idle()
-                    self.save_checkpoint()
-                    with state(True, sid) as s:
-                        reason = re.sub(r"\s*(?:재개 버튼으로 다시 시도하세요|확인 후 재개 버튼으로 다시 시도하세요)\.?$", "", safe_agent_diagnostic(why or "응답 없이 실행이 끝났습니다.").strip())
-                        event(s, f"{disp(self.name)} 일시 오류 · {delay}초 뒤 자동으로 다시 시도합니다 ({retries + 1}/{len(AUTO_RETRY_DELAYS)}) — {reason[:160]}", job=job)
-                    server_log("agent.auto_retry." + self.name)
-                    self.act("end", ""); continue
                 self.pause_with_error(why or "응답 없는 실행 종료 — 응답 없이 실행이 끝났습니다.", job)
                 self.act("end", ""); continue
             with state(True, sid) as s:
@@ -3364,7 +3439,7 @@ class Worker:
                     self.bg_dropped = []
                 if closing:
                     summary = report or out
-                    closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary))
+                    closing.update(status="done", finished_by=self.name, finished_at=time.time(), summary=summary, brief=report_brief(summary), completion=request_completion(s, job))
                     event(s, f"요청 {job} 완료 (검수 보고로 마감)", self.name, job=job)
                     if report:
                         post(s, self.name, "user", report, "report", job=job)
@@ -4527,9 +4602,7 @@ class Office:
         for j in jobs:
             jid = j["id"]
             left = [t for t in tasks if t.get("job") == jid]
-            signature = (tuple((t["id"], t["status"], t["owner"], (t.get("progress") or {}).get("at")) for t in left),
-                         tuple(m["id"] for m in s["msgs"] if m.get("job") == jid
-                               and not (m.get("from") == "system" and "진행 멈춤" in m.get("text", ""))))
+            signature = j.get("progress_revision", 0)
             busy = any((w.status == "working" or getattr(w, "retry_at", 0) > now)
                        and ((getattr(w, "doing", None) or {}).get("job") == jid or getattr(w, "retry_job", None) == jid
                             or len(jobs) == 1 and not getattr(w, "doing", None)) for w in workers.values())
@@ -5666,7 +5739,7 @@ def main():
     x.add_argument("--tag", help="작업 종류 태그"); x.add_argument("--rework-of", type=int, help="수정이 필요한 기존 완료 작업 번호")
     x.add_argument("--level", choices=LEVELS, help="작업 무게: light(문구·확인) normal heavy(장애 분석·큰 구현)"); x.set_defaults(f=cmd_add)
     x = sp.add_parser("claim"); x.add_argument("id", type=int); x.set_defaults(f=cmd_claim)
-    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("done"); x.add_argument("id", type=int); x.add_argument("text", nargs="?", default=""); x.add_argument("--verdict", type=parse_verdict, help="검수 결과: pass | fixed:N | fail"); x.add_argument("--evidence", action="append", help="산출물 파일 경로 또는 check:검증결과(여러 번 지정 가능)"); x.set_defaults(f=cmd_done)
     sp.add_parser("scores", help="현재 대화의 담당자·종류별 검수 결과").set_defaults(f=cmd_scores)
     x = sp.add_parser("wait", help="작업을 기다림으로 두기"); x.add_argument("id", type=int); x.add_argument("text")
     x.add_argument("--pid", type=int, help="감시할 프로세스 (끝나면 깨움)"); x.add_argument("--log", help="진행 로그 파일 (오래 안 바뀌면 깨움)")
