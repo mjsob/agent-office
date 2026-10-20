@@ -67,4 +67,11 @@ with tempfile.TemporaryDirectory(prefix="office-turn-context-") as tmp:
         assert not m3.get("archived") and not m4.get("archived") and not st["msgs"][-1].get("archived")
     assert o.archived_turn("test", 1) == long
     assert o.archived_turn("test", 2) is None and o.archived_turn("nope", 1) is None
+    # 지난 저장이 줄 중간에서 끊긴 보관 파일 뒤에 이어 써도 새 본문을 읽을 수 있음
+    archive = o.sdir("test") / "turns-archive.jsonl"
+    archive.write_text(archive.read_text() + '{"id": 99, "text": "끊긴')
+    with o.state(True, "test") as st:
+        st["jobs"][1]["status"] = "done"
+        assert o.archive_old_turns(st, "test") == 1                   # 열린 요청이었던 #2 기록
+    assert o.archived_turn("test", 2) == long and o.archived_turn("test", 1) == long
     print("turn context ok")

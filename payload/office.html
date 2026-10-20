@@ -176,6 +176,19 @@ h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 .agent details.more-info { border-top: 1px solid var(--line); }
 .agent details.more-info > summary { padding: 6px 12px; font-size: 12px; }
 .side h2 + #agents { margin-bottom: 18px; }
+details.scores { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+details.scores > summary { padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; gap: 6px; align-items: center; list-style: none; }
+details.scores > summary::-webkit-details-marker { display: none; }
+details.scores > summary svg { transition: transform .15s; }
+details.scores[open] > summary svg { transform: rotate(90deg); }
+#scores { padding: 0 12px 10px; font-size: 12px; }
+#scores h3 { margin: 10px 0 4px; font-size: 12.5px; }
+#scores table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#scores th, #scores td { padding: 4px 4px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+#scores th:first-child, #scores td:first-child { text-align: left; white-space: normal; word-break: keep-all; }
+#scores th { color: var(--muted); font-weight: 600; }
+#scores .few { color: var(--faint); }
+#scores .empty, #scores .hint { margin: 8px 0 0; color: var(--muted); word-break: keep-all; text-wrap: pretty; }
 .feed { border-top: 1px solid var(--line); max-height: 300px; overflow: auto; padding: 6px 12px; font-size: 12px; }
 .feed .row { display: flex; gap: 8px; padding: 3px 0; align-items: flex-start; }
 .feed .row svg { margin-top: 2px; color: var(--muted); }
@@ -653,7 +666,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <section id="tlsec" onscroll="onTimelineScroll()"><div id="timeline"></div><div id="typing" hidden></div>
     <button class="tobottom" id="toBottom" hidden onclick="const s=$('#tlsec');s.scrollTop=s.scrollHeight">↓ 맨 아래로<span class="newmark">새 메시지</span></button></section>
   <section class="side"><h2>에이전트</h2><div id="agents"></div>
-    <div id="gitbox"></div><h2>요청 현황</h2><div id="board"></div></section>
+    <div id="gitbox"></div><h2>요청 현황</h2><div id="board"></div>
+    <details class="scores" id="scoresBox" hidden><summary><svg class="i sm"><use href="#i-chevron"/></svg>성적표</summary><div id="scores"></div></details></section>
 </main>
 
 <footer>
@@ -1529,16 +1543,20 @@ const fold = (key, summary, body, cls = "") => {
 };
 // 끝난 요청의 오래된 작업 기록은 서버가 따로 옮겨 두고 앞부분만 보내요. 펼칠 때 전체를 불러와요.
 const archivedTurns = new Map();
-const archivedTurnHtml = m => !m.archived ? `<pre>${esc(m.text)}</pre>`
-  : archivedTurns.has(m.id) ? `<pre>${esc(archivedTurns.get(m.id))}</pre>`
-  : `<pre data-archived-turn="${m.id}">${esc(m.text)}</pre><p class="archived-note">전체 기록을 불러오는 중이에요.</p>`;
+const archivedKey = (session, id) => `${session || ""}:${id}`;   // 대화마다 메시지 번호가 겹쳐서 대화와 번호를 함께 씀
+const archivedTurnHtml = m => {
+  if (!m.archived) return `<pre>${esc(m.text)}</pre>`;
+  const session = revSession || curSession || "", key = archivedKey(session, m.id);
+  return archivedTurns.has(key) ? `<pre>${esc(archivedTurns.get(key))}</pre>`
+    : `<pre data-archived-turn="${m.id}" data-session="${esc(session)}">${esc(m.text)}</pre><p class="archived-note">전체 기록을 불러오는 중이에요.</p>`;
+};
 function loadArchivedTurns(root) {
   root.querySelectorAll("pre[data-archived-turn]:not([data-loading])").forEach(pre => {
-    const id = Number(pre.dataset.archivedTurn);
+    const id = Number(pre.dataset.archivedTurn), session = pre.dataset.session || "";
     pre.dataset.loading = "1";
-    fetch(`/api/turn?session=${encodeURIComponent(revSession || curSession || "")}&id=${id}`)
+    fetch(`/api/turn?session=${encodeURIComponent(session)}&id=${id}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(d => { archivedTurns.set(id, d.text); pre.textContent = d.text; pre.removeAttribute("data-archived-turn"); pre.nextElementSibling?.classList.contains("archived-note") && pre.nextElementSibling.remove(); })
+      .then(d => { archivedTurns.set(archivedKey(session, id), d.text); pre.textContent = d.text; pre.removeAttribute("data-archived-turn"); pre.nextElementSibling?.classList.contains("archived-note") && pre.nextElementSibling.remove(); })
       .catch(() => { const note = pre.nextElementSibling; if (note?.classList.contains("archived-note")) note.textContent = "전체 기록을 불러오지 못했어요. 앞부분만 보여요."; });
   });
 }
@@ -1843,6 +1861,23 @@ function taskProgressHtml(t) {
   if (!text) return "";
   const p = t.progress, ratio = typeof p.done === "number" && Number.isFinite(p.done) && p.done >= 0 && typeof p.total === "number" && Number.isFinite(p.total) && p.total > 0;
   return `<span class="task-progress" data-progress-task="${t.id}" title="${esc(taskProgressTip(t))}"><span class="progress-text">${esc(text)}</span>${ratio ? `<progress max="${p.total}" value="${Math.min(p.done, p.total)}" aria-label="처리한 항목 비율"></progress>` : ""}${typeof p.at === "number" && p.at > 0 ? `<span class="freshness">진행 정보 갱신 ${esc(ago(p.at))}</span>` : ""}</span>`;
+}
+// 성적표: 서버가 담당·종류별로 모은 검수 결과(scores). 표본 5건 미만은 비율 대신 '표본 부족'
+function renderScores(scores) {
+  const box = $("#scores");
+  if (!box) return;
+  $("#scoresBox").hidden = false;
+  const agents = Object.entries(scores || {}).filter(([, kinds]) => kinds && Object.keys(kinds).length);
+  if (!agents.length) return setHtmlIfChanged(box, `<p class="empty">아직 검수 기록이 없어요. 작업을 검수하면 여기에 쌓여요.</p>`);
+  const pct = (a, n) => n ? `${Math.round(100 * a / n)}%` : "-";
+  const speed = r => typeof r === "number" && isFinite(r) ? `${r.toFixed(1)}배` : "-";
+  setHtmlIfChanged(box, agents.map(([name, kinds]) => `<h3>${nm(name)}</h3>
+    <table><thead><tr><th scope="col">종류</th><th scope="col">건수</th><th scope="col">첫 통과</th><th scope="col">고침</th><th scope="col">재작업</th><th scope="col">정정</th><th scope="col">속도</th></tr></thead>
+    <tbody>${Object.entries(kinds).sort(([a], [b]) => a.localeCompare(b, "ko")).map(([kind, r]) => `<tr>
+      <th scope="row">${esc(kind)}</th><td>${r.n || 0}</td>
+      <td${r.enough ? "" : ' class="few"'}>${r.enough ? pct(r.pass || 0, r.n) : "표본 부족"}</td>
+      <td>${r.fixed || 0}</td><td>${r.rework || 0}</td><td>${r.corrections || 0}</td><td>${speed(r.speed_ratio)}</td></tr>`).join("")}</tbody></table>`).join("")
+    + `<p class="hint">속도는 같은 종류 중간값 대비예요. 1배보다 작으면 더 빨라요.</p>`);
 }
 function renderBoard(jobs, tasks, resv = [], cur = "") {
   jobs = jobs.filter(j => !j.removed);   // 대화에서 지운 요청은 끝난 요청 목록에도 안 보임
@@ -2203,6 +2238,7 @@ async function doRefresh() {
     const bsig = JSON.stringify(jobs) + JSON.stringify(tasks) + JSON.stringify(resv);   // 작업 상태와 예약이 바뀌면 현황판도 갱신해요.
     safe("askbar", () => renderAskBar(jobs));
     if (bsig !== lastBoardSig && safe("board", () => renderBoard(jobs, tasks, resv, s.session))) lastBoardSig = bsig;
+    if ("scores" in s) safe("scores", () => renderScores(s.scores));
     safe("livebars", () => updateLiveBars(s.agents));
     safe("typing", () => updateTyping(s.agents));
   }

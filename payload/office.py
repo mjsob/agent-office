@@ -613,9 +613,14 @@ def archive_old_turns(s, sid):
              and not m.get("archived") and len(m.get("text", "")) > TURN_ARCHIVE_STUB + 100]
     if not moved:
         return 0
-    with (sdir(sid) / "turns-archive.jsonl").open("a") as f:   # 본문을 먼저 안전하게 쓴 뒤에만 상태 파일 쪽을 줄임
+    with (sdir(sid) / "turns-archive.jsonl").open("ab+") as f:   # 본문을 먼저 안전하게 쓴 뒤에만 상태 파일 쪽을 줄임
+        f.seek(0, os.SEEK_END)
+        if f.tell():   # 지난번 저장이 줄 중간에서 끊겼으면 새 줄부터 써서 다음 행이 붙지 않게
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
         for m in moved:
-            f.write(json.dumps({"id": m["id"], "text": m["text"]}, ensure_ascii=False) + "\n")
+            f.write((json.dumps({"id": m["id"], "text": m["text"]}, ensure_ascii=False) + "\n").encode())
         f.flush()
         os.fsync(f.fileno())
     for m in moved:
@@ -3506,7 +3511,7 @@ class Worker:
             self.act("start", f"{desc}|{job or ''}")
             rotated = self.rotate_session(job, desc)
             protocol = PROTOCOL.format(me=self.name, other=self.other)
-            head = self.protocol_head(protocol, rotated)
+            head = self.protocol_head(protocol, rotated or bool(self.resume_turn))   # 중단된 차례를 다시 할 땐 지침 전문도 같이
             if new:   # 깨움 요청(가장 최근 새 메시지)부터 차례 시작까지 걸린 시간 — 착수 지연 원인 계측
                 server_log(f"turn.start_lag {self.name} job={job} {max(0.0, time.time() - max(m.get('at', time.time()) for m in new)):.1f}s")
             full_turn = head == protocol or bool(self.resume_turn)
