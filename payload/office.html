@@ -2082,8 +2082,10 @@ function renderAskBar(jobs) {
     + (asks.length > 3 ? `<div class="more">외 ${asks.length - 3}건</div>` : "");
 }
 function jumpToAsk(id) {
+  const sid = curSession, gen = followGen;
   jumpTo(id);
   setTimeout(() => {
+    if (curSession !== sid || followGen !== gen) return;
     const card = document.querySelector(`#ans-${id} .user-action, #th-${id} .user-action`);
     if (card) { card.scrollIntoView({behavior: "smooth", block: "center"}); card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1200); }
   }, 450);
@@ -2097,12 +2099,13 @@ function jumpToAnswer(id) {
   el.scrollIntoView({behavior: "smooth", block: el === box ? "start" : "center"});
   el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200);
 }
-function jumpTo(id, again) {
+function jumpTo(id, again, sid = curSession, gen = followGen) {
+  if (curSession !== sid || followGen !== gen) return;
   const el = document.getElementById("th-" + id);
   if (!el) {   // 압축된 이전 요청이면 펼친 뒤 다시 이동
     if (again) return toast("대화창에서 이 요청을 찾지 못했습니다.");
     expandedOld.add(id); openTurns.add("old"); lastSig = "";
-    return refresh().then(() => jumpTo(id, true));
+    return refresh().then(() => jumpTo(id, true, sid, gen));
   }
   document.body.classList.remove("show-side");
   el.scrollIntoView({behavior: "smooth", block: "start"});
