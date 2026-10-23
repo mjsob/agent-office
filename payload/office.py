@@ -4502,7 +4502,9 @@ def limited_command(command):
 
 
 def focus_explorer_path(windows, is_folder):
-    """눌러서 연 경로의 탐색기만 복원하고 앞으로 가져와요."""
+    """눌러서 연 경로의 탐색기를 복원하고 앞으로 가져와요.
+    판정은 마지막에 맨 앞 창이 그 경로를 연 탐색기인지로만 해요(누가 앞으로 가져왔는지는 안 따져요).
+    돌려주는 값: focused(앞에 옴) / behind(창은 찾았는데 다른 창이 앞) / unknown(확인 못 함)"""
     import base64
     target = base64.b64encode(windows.encode("utf-8")).decode("ascii")
     script = r'''
@@ -4515,40 +4517,65 @@ public class OfficeFocus {
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);
  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
- [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);
  [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
 }
 '@
 $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TARGET__'))
 $folder = __FOLDER__
 function Normalize($p) { ($p -replace '\\+', '\').TrimEnd('\') }
+$want = Normalize $target
+$parent = if ($folder) { $null } else { Normalize ([IO.Path]::GetDirectoryName($target)) }
 $shell = New-Object -ComObject Shell.Application
-for ($i=0; $i -lt 25; $i++) {
+function Find-Windows {
+ # 파일은 선택 항목이 늦게 잡힐 수 있어서, 선택이 안 맞으면 그 파일이 든 폴더 창으로 판정해요
+ $exact = @(); $near = @()
  foreach ($w in @($shell.Windows())) {
   try {
-   $match = if ($folder) { (Normalize $w.Document.Folder.Self.Path) -eq (Normalize $target) }
-            else { @($w.Document.SelectedItems() | ForEach-Object { Normalize $_.Path }) -contains (Normalize $target) }
-   if (!$match) { continue }
+   $path = Normalize $w.Document.Folder.Self.Path
    $h = [IntPtr]([long]$w.HWND)
-   if ([OfficeFocus]::IsIconic($h)) { [void][OfficeFocus]::ShowWindowAsync($h,9) }
-   [OfficeFocus]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
-   [OfficeFocus]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
-   [void][OfficeFocus]::SetForegroundWindow($h)
-   Start-Sleep -Milliseconds 60
-   if ([OfficeFocus]::GetForegroundWindow() -eq $h) { Write-Output 'focused'; exit 0 }
+   if ($folder) { if ($path -eq $want) { $exact += $h } }
+   elseif (@($w.Document.SelectedItems() | ForEach-Object { Normalize $_.Path }) -contains $want) { $exact += $h }
+   elseif ($path -eq $parent) { $near += $h }
   } catch { }
+ }
+ if ($exact.Count) { return ,$exact } else { return ,$near }
+}
+$tries = 0
+for ($i=0; $i -lt 25; $i++) {
+ $hs = Find-Windows
+ if ($hs.Count) {
+  if ($hs -contains [OfficeFocus]::GetForegroundWindow()) { Write-Output 'focused'; exit 0 }
+  if ($tries -ge 3) { break }
+  $tries++
+  $h = $hs[0]
+  if ([OfficeFocus]::IsIconic($h)) { [void][OfficeFocus]::ShowWindowAsync($h,9) }
+  [OfficeFocus]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
+  [OfficeFocus]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
+  [void][OfficeFocus]::SetForegroundWindow($h)
  }
  Start-Sleep -Milliseconds 100
 }
-exit 1
+Start-Sleep -Milliseconds 200
+$hs = Find-Windows
+if ($hs.Count -and ($hs -contains [OfficeFocus]::GetForegroundWindow())) { Write-Output 'focused' }
+elseif ($hs.Count) { Write-Output 'behind' }
+else { Write-Output 'no-match' }
 '''.replace("__TARGET__", target).replace("__FOLDER__", "$true" if is_folder else "$false")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=10, cwd="/mnt/c")
-        return result.returncode == 0 and b"focused" in result.stdout
+    except subprocess.TimeoutExpired:
+        reason = "timeout"
     except (OSError, subprocess.SubprocessError):
-        return False
+        reason = "oserror"
+    else:
+        words = result.stdout.decode("utf-8", "replace").split()
+        reason = words[-1] if words and words[-1] in ("focused", "behind", "no-match") else "error"
+    if reason == "focused":
+        return "focused"
+    server_log("explorer.focus." + reason)
+    return "behind" if reason == "behind" else "unknown"
 
 
 def open_report_path(raw, sid):
@@ -4573,7 +4600,8 @@ def open_report_path(raw, sid):
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")
     except (OSError, ValueError, subprocess.SubprocessError):
         raise UserError("경로를 열지 못했어요. 경로와 WSL 연결을 확인하거나 경로를 복사하세요.") from None
-    if not focus_explorer_path(windows, path.is_dir()):
+    # 확인했는데 다른 창이 앞에 있을 때만 안내해요. 확인 못 한 경우는 탐색기가 스스로 앞에 왔을 수 있어서 조용히 넘어가요.
+    if focus_explorer_path(windows, path.is_dir()) == "behind":
         raise UserError("탐색기는 열렸지만 창을 앞으로 가져오지 못했어요. 작업 표시줄에서 탐색기를 선택하세요.")
     return {"ok": "탐색기에서 경로를 열었어요."}
 
