@@ -2787,6 +2787,11 @@ class Worker:
         self.failure_key = saved.get("failure_key")
         if self.error_kind == "auth":
             self.error = auth_help(self.name)
+        # 업데이트 전에 한도로 멈춘 기록도 자동 재개를 예약해요. 새 기록의 재시도 종료 상태는 유지해요.
+        if self.paused and self.error_kind == "limit" and "limit_resume_at" not in saved:
+            job = self.resume_turn.get("job") if isinstance(self.resume_turn, dict) else None
+            if self.schedule_limit_resume(self.error, job):
+                self.set_recovery("limit_wait", self.error, retry_at=self.limit_resume_at)
         try:
             with state(sid=sid) as s:
                 count = len(s["msgs"])
@@ -3579,7 +3584,7 @@ class Worker:
         self.retry_due = dict(self.resume_turn) if isinstance(self.resume_turn, dict) else None
         self.save_checkpoint()
         with state(True, self.sid) as record:
-            event(record, f"{disp(self.name)} 사용 한도가 초기화돼서 자동으로 다시 시작했어요.", job=job)
+            event(record, f"{disp(self.name)} 사용 한도 대기를 마치고 자동으로 다시 시도해요.", job=job)
         server_log("agent.limit_resume." + self.name)
 
     def pause_with_error(self, reason, job):
@@ -5643,6 +5648,8 @@ class Office:
                     if getattr(worker, "resume_turn", None) and worker.resume_turn.get("job") == p["id"]:
                         worker.error, worker.error_kind, worker.resume_turn = None, None, None
                         worker.retry_at, worker.retry_due = 0, None   # 취소한 요청의 자동 재시도 예약도 버림
+                        worker.limit_resume_at, worker.limit_tries = 0, 0
+                        worker.recovery = None
                         worker.retry_counts.pop(str(p["id"]), None)
                         if getattr(worker, "retry_job", None) == p["id"]:
                             worker.auto_retries, worker.retry_job = 0, None

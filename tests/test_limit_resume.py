@@ -71,7 +71,7 @@ class LimitResume(unittest.TestCase):
         w.resume_after_limit()
         self.assertFalse(w.paused); self.assertIsNone(w.error); self.assertIsNone(w.error_kind); self.assertEqual(w.limit_resume_at, 0)
         self.assertEqual(w.retry_due, {"job": 1, "kind": "work"})
-        self.assertIn("자동으로 다시 시작했어요", [m["text"] for m in json.loads(self.path.read_text())["msgs"]][-1])
+        self.assertIn("자동으로 다시 시도해요", [m["text"] for m in json.loads(self.path.read_text())["msgs"]][-1])
         w.resume_turn = {"job": 1, "kind": "work"}   # 또 막히면 새 시각으로 다시 예약
         w.pause_with_error("You've hit your limit|%d" % (time.time() + 7200), 1)
         self.assertTrue(w.paused and w.limit_resume_at > time.time() + 7000)
@@ -96,6 +96,40 @@ class LimitResume(unittest.TestCase):
             self.assertEqual(w.limit_resume_at, 0, (why, flag))
             if flag in ("manual_pause", "immediate_pause", "stop", "interrupted_job"):
                 self.assertTrue(w.paused, (why, flag))
+
+    def test_existing_limit_checkpoint_gets_schedule(self):
+        base = dict(read_upto=1, carry_msgs=[], pending_events=[], handled_events=[], paused=True,
+                    error="You've hit your limit|%d" % (time.time() + 600), error_kind="limit",
+                    interrupted_turn={"job": 1, "kind": "work"})
+        path = self.o.sdir("test") / "claude.worker.json"
+        self.o.atomic_json(path, base, self.o.checkpoint_valid)
+        w = self.o.Worker("claude", "test", threading.Event())
+        self.assertGreater(w.limit_resume_at, time.time() + 600)
+        self.assertEqual(w.recovery["phase"], "limit_wait")
+        w.save_checkpoint()
+        again = self.o.Worker("claude", "test", threading.Event())
+        self.assertEqual(again.limit_resume_at, w.limit_resume_at)
+        # 명시적인 사용자 정지나 재확인 횟수 소진 기록은 다시 예약하지 않아요.
+        for extra in ({"manual_pause": True}, {"limit_resume_at": 0, "limit_tries": self.o.LIMIT_RESUME_TRIES}):
+            self.o.atomic_json(path, dict(base, **extra), self.o.checkpoint_valid)
+            stopped = self.o.Worker("claude", "test", threading.Event())
+            self.assertEqual(stopped.limit_resume_at, 0)
+
+    def test_actual_loop_resumes_when_deadline_passes(self):
+        w = self.worker(limit_resume_at=time.time()-1, error_kind="limit", paused=True,
+                        resume_turn={"job":1,"kind":"work"})
+        w.state_mark = lambda: None
+        w.idle_mark = None
+        resumed = []
+        original = w.resume_after_limit
+        def resume():
+            original(); resumed.append(True); w.stop.set()
+        w.resume_after_limit = resume
+        office = type("OfficeStub", (), {"stop":threading.Event()})()
+        w._loop(office)
+        self.assertEqual(resumed, [True])
+        self.assertFalse(w.paused)
+        self.assertEqual(w.retry_due, {"job":1,"kind":"work"})
 
     def test_checkpoint_accepts_new_fields_and_label(self):
         base = {"read_upto": 1, "carry_msgs": [], "pending_events": [], "handled_events": [], "paused": True, "limit_resume_at": time.time() + 5, "limit_tries": 2, "limit_resume_exact": True}
