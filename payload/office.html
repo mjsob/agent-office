@@ -1337,6 +1337,12 @@ const KIND_HELP = {
     const windows = Object.values(a?.limits || {}).filter(w => w && typeof w === "object" && Number.isFinite(w.resets) && w.resets * 1000 > Date.now());
     const spent = windows.filter(w => w.used >= 100);
     const resets = (spent.length ? spent : windows).map(w => w.resets);
+    if (a?.limit_resume_at) {
+      const at = new Date(a.limit_resume_at * 1000), today = new Date().toDateString() === at.toDateString();
+      const when = (today ? "" : `${at.getMonth() + 1}월 ${at.getDate()}일 `) + `${at.getHours()}시${at.getMinutes() ? ` ${String(at.getMinutes()).padStart(2, "0")}분` : ""}`;
+      return a.limit_resume_exact ? `한도가 초기화되는 ${when}쯤 자동으로 다시 시작해요. 그 전에 [다시 시도]를 눌러도 돼요.`
+        : `초기화 시각을 알 수 없어서 30분마다 다시 확인해요. 다음 확인은 ${when}이에요. 그 전에 [다시 시도]를 눌러도 돼요.`;
+    }
     const until = resets.length ? resetIn(Math.max(...resets)) + " 뒤" : "사용 한도가 초기화된 뒤";
     return `${until} [다시 시도]를 누르세요. 기다리는 동안 다른 쪽에 맡길 수도 있어요.`;
   }},
@@ -1412,9 +1418,9 @@ function renderAgents(agents) {
     const [wk, L] = [["five_hour", "5시간"], ["seven_day", "7일"]].map(([k, lbl]) => [lbl, a.limits?.[k]])
       .filter(([, w]) => w && w.used != null).sort((x, y) => y[1].used - x[1].used)[0] || [];
     const hot = L && L.used >= 80 ? `<span class="hot" title="${resetIn(L.resets)}">한도 ${L.used}%</span>` : "";
-    const RPH = {diagnosing: "원인을 살피는 중", recovering: "복구하는 중", verifying: "복구 확인 중", recovered: "복구됐어요", needs_user: "확인이 필요해요", failed: "복구하지 못했어요"};
+    const RPH = {diagnosing: "원인을 살피는 중", recovering: "복구하는 중", verifying: "복구 확인 중", recovered: "복구됐어요", needs_user: "확인이 필요해요", limit_wait: "한도 초기화를 기다려요", failed: "복구하지 못했어요"};
     const rc = a.recovery;
-    const rtag = rc && RPH[rc.phase] ? `<span class="hot" title="${esc(rc.reason || "")}">${RPH[rc.phase]}${rc.attempt && rc.limit && !["recovered", "needs_user"].includes(rc.phase) ? ` ${rc.attempt}/${rc.limit}` : ""}</span>` : "";
+    const rtag = rc && RPH[rc.phase] ? `<span class="hot" title="${esc(rc.reason || "")}">${RPH[rc.phase]}${rc.attempt && rc.limit && !["recovered", "needs_user", "limit_wait"].includes(rc.phase) ? ` ${rc.attempt}/${rc.limit}` : ""}</span>` : "";
     return `<div class="agent">
       <div class="top">
         <div class="avatar" style="background:var(--${n}-soft);color:var(--${n})">${{claude: "CL", codex: "CX"}[n]}</div>

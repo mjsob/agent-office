@@ -14,7 +14,7 @@ GUI에서 '작업 요청'으로 보내면: 리더가 쪼개서 분배 → 둘이
 에이전트용 (OFFICE_AS 환경변수로 누가 하는지 자동 지정):
   office claim ID | done ID "요약" | wait ID "기다리는 것" | handoff ID --to X "사유" | say --to X "말" | add "할일" [--to X] | finish "보고" | title "대화 요약 제목"
 """
-import math, tomllib, hashlib, ssl, statistics
+import math, tomllib, hashlib, ssl, statistics, zoneinfo
 import argparse, queue, copy, datetime, fcntl, json, os, re, shlex, shutil, signal, socket, subprocess, sys, selectors, threading, time, tempfile, unicodedata, uuid
 from collections import deque
 from contextlib import contextmanager
@@ -32,6 +32,10 @@ POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반
 MODEL_FALLBACKS = {"codex": ["gpt-6-sol", "gpt-6-luna"], "claude": ["sonnet", "opus"]}
 MAX_CONT = 2          # 하던 일 남았는데 조용할 때 "이어서 해" 재촉 횟수
 MAX_CHATTER = 4       # 작업 변화 없이 둘이 말만 주고받는 연속 횟수 → 넘으면 사용자 호출
+LIMIT_RESUME_PAD = 90        # 초: 사용 한도 초기화 시각 뒤 이만큼 더 기다렸다 다시 시작해요(시계 오차 대비)
+LIMIT_RESUME_RECHECK = 1800  # 초: 초기화 시각을 모르면 이 간격으로 다시 시도해요
+LIMIT_RESUME_TRIES = 24      # 시각을 몰라 다시 시도하는 최대 횟수(넘으면 사용자 확인으로 남겨요)
+LIMIT_RESUME_FAR = 8 * 86400 # 초: 이보다 먼 초기화 시각은 잘못 읽은 값으로 보고 무시해요
 AUTO_RETRY_DELAYS = (15, 60, 180)   # 초: 연결 끊김·서버 오류 같은 일시 오류는 이 간격으로 자동 재시도 후에야 멈춤
 STALL_NOTICE = 180    # 초: 열린 요청이 이 시간 동안 아무 진척 없이 멈춰 있으면 사용자에게 알리고 리더에게 점검 차례를 줌
 EDGE = "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
@@ -2404,6 +2408,62 @@ def classify_agent_error(reason, rc=0):
     return "unknown"
 
 
+def limit_reset_time(reason, name, now=None):
+    """한도 오류 원문이나 관측한 한도 창에서 초기화 시각(epoch)을 구해요. 알 수 없으면 None."""
+    now = time.time() if now is None else now
+    text = str(reason or "")
+    found = None
+    m = re.search(r"limit(?: reached)?\|(\d{10,13})\b", text, re.I)
+    if m:
+        value = int(m.group(1))
+        found = value / 1000 if value > 1e11 else value
+    if found is None:
+        m = re.search(r"(?:resets?|try again|retry|available again|renews?)\s+in\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?)+)", text, re.I)
+        if m:
+            unit = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+            found = now + sum(int(n) * unit[u[0].lower()] for n, u in re.findall(r"(\d+)\s*([a-z]+)", m.group(1), re.I))
+    if found is None:
+        m = re.search(r"(?:resets?|try again|retry|available again|renews?)\s*(?:at|on)?\s*(?:(?:([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?)[,\s]+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?(?:\s*\(([A-Za-z_]+(?:/[A-Za-z_+\-0-9]+)*)\))?", text, re.I)
+        if m:
+            month, day, hour, minute, ap, zone = m.groups()
+            try:
+                tz = zoneinfo.ZoneInfo(zone) if zone else None
+            except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+                tz = None
+            hour_ok = 1 <= int(hour) <= 12
+            hour = int(hour) % 12 + (12 if ap.lower() == "p" else 0)
+            if hour_ok and int(minute or 0) < 60:
+                local = datetime.datetime.fromtimestamp(now, tz)
+                try:
+                    if month:
+                        number = datetime.datetime.strptime(month[:3].title(), "%b").month
+                        target = local.replace(month=number, day=int(day), hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+                        if target.timestamp() <= now:
+                            target = target.replace(year=target.year + 1)
+                    else:
+                        target = local.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+                        if target.timestamp() <= now:
+                            target += datetime.timedelta(days=1)
+                    found = target.timestamp()
+                except ValueError:
+                    found = None
+    if found is None:
+        windows = limits_for(name) or {}
+        spent = [w["resets"] for k, w in windows.items() if isinstance(w, dict) and w.get("used", 0) >= 100 and w.get("resets")]
+        found = max(spent) if spent else None
+    if found is None or not now < found <= now + LIMIT_RESUME_FAR:
+        return None
+    return found
+
+
+def limit_resume_label(at, now=None):
+    """화면 안내용 시각 문구예요. 오늘이면 시·분만, 아니면 날짜를 붙여요."""
+    now = time.time() if now is None else now
+    when, today = datetime.datetime.fromtimestamp(at), datetime.datetime.fromtimestamp(now)
+    clock = f"{when.hour}시 {when.minute:02d}분" if when.minute else f"{when.hour}시"
+    return clock if when.date() == today.date() else f"{when.month}월 {when.day}일 {clock}"
+
+
 def missing_claude_session(reason):
     return bool(re.search(r"no (?:conversation|session) found|session[^\n]{0,100}(?:not found|does not exist)", str(reason or ""), re.I))
 
@@ -2450,7 +2510,10 @@ def checkpoint_valid(value):
             and all(isinstance(k, str) and (k == "direct" or k.isdecimal() and int(k) > 0)
                     and type(v) is int and v >= 0 for k, v in value.get("retry_counts", {}).items())
             and (value.get("retry_job") is None or type(value.get("retry_job")) is int and value["retry_job"] > 0)
-            and type(value.get("retry_at", 0)) in (int, float) and math.isfinite(value.get("retry_at", 0)) and value.get("retry_at", 0) >= 0)
+            and type(value.get("retry_at", 0)) in (int, float) and math.isfinite(value.get("retry_at", 0)) and value.get("retry_at", 0) >= 0
+            and type(value.get("limit_resume_at", 0)) in (int, float) and math.isfinite(value.get("limit_resume_at", 0)) and value.get("limit_resume_at", 0) >= 0
+            and type(value.get("limit_tries", 0)) is int and value.get("limit_tries", 0) >= 0
+            and isinstance(value.get("limit_resume_exact", False), bool))
 
 
 def usage_valid(value):
@@ -2716,6 +2779,9 @@ class Worker:
             self.retry_counts.setdefault("direct" if self.retry_job is None else str(self.retry_job), self.auto_retries)
         self.recovery = saved.get("recovery")
         self.retry_at = saved.get("retry_at", 0)
+        self.limit_resume_at = 0 if self.manual_pause or self.error_kind != "limit" else saved.get("limit_resume_at", 0)
+        self.limit_tries = saved.get("limit_tries", 0)
+        self.limit_resume_exact = bool(saved.get("limit_resume_exact", False))
         self.retry_due = dict(self.resume_turn) if self.resume_turn and not self.paused and not self.retry_at else None
         self.fail_count = saved.get("fail_count", 0)
         self.failure_key = saved.get("failure_key")
@@ -2763,7 +2829,8 @@ class Worker:
             atomic_json(self.checkpoint, {"read_upto": cursor, "carry_msgs": carry, "pending_events": list(getattr(self, "pending_events", [])), "handled_events": sorted(getattr(self, "handled_events", set())), "run_id": getattr(self, "active_run_id", None) or getattr(self, "previous_run_id", None), "execution_phase": "processed" if processed else "executing" if self.status == "working" else self.status, "paused": self.paused, "manual_pause": getattr(self, "manual_pause", False), "error": self.error, "error_kind": getattr(self, "error_kind", None), "interrupted_turn": interrupted, "fail_count": getattr(self, "fail_count", 0), "failure_key": getattr(self, "failure_key", None),
                          "auto_retries": getattr(self, "auto_retries", 0), "retry_job": getattr(self, "retry_job", None),
                          "retry_counts": dict(getattr(self, "retry_counts", {})),
-                         "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None)}, checkpoint_valid)
+                         "retry_at": getattr(self, "retry_at", 0), "recovery": getattr(self, "recovery", None),
+                         "limit_resume_at": getattr(self, "limit_resume_at", 0), "limit_tries": getattr(self, "limit_tries", 0), "limit_resume_exact": bool(getattr(self, "limit_resume_exact", False))}, checkpoint_valid)
 
     def add_tokens(self, n, cached=0):
         # 두 Worker가 동시에 쓰므로 usage.json 읽기·수정·저장을 잠금으로 보호.
@@ -3483,6 +3550,38 @@ class Worker:
         server_log("agent.auto_retry." + self.name)
         return True
 
+    def schedule_limit_resume(self, reason, job):
+        """사용 한도를 다 쓴 멈춤은 초기화 시각 뒤 스스로 다시 시작하게 시각을 정해 둬요. 사용자 정지·종료 중이면 안 해요."""
+        if (self.stop.is_set() or self.immediate_pause or getattr(self, "manual_pause", False)
+                or getattr(self, "interrupted_job", None) is not None and self.interrupted_job == job):
+            return False
+        now = time.time()
+        reset = limit_reset_time(reason, self.name, now)
+        tries = getattr(self, "limit_tries", 0)
+        if reset is None and tries >= LIMIT_RESUME_TRIES:
+            return False
+        self.limit_tries = tries + 1
+        self.limit_resume_at = (reset + LIMIT_RESUME_PAD) if reset else now + LIMIT_RESUME_RECHECK
+        self.limit_resume_exact = bool(reset)
+        return True
+
+    def resume_after_limit(self):
+        """한도 초기화 시각이 지났으니 멈춘 차례를 다시 시작해요. 또 막히면 pause_with_error 가 다시 예약해요."""
+        job = self.resume_turn.get("job") if isinstance(self.resume_turn, dict) else None
+        self.paused, self.manual_pause = False, False
+        self.error = self.error_kind = self.recovery = None
+        self.limit_resume_at = 0
+        self.notice = None
+        self.cont = self.chatter = 0
+        self.nudge_state = {}
+        self.retry_counts.pop("direct" if job is None else str(job), None)
+        self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
+        self.retry_due = dict(self.resume_turn) if isinstance(self.resume_turn, dict) else None
+        self.save_checkpoint()
+        with state(True, self.sid) as record:
+            event(record, f"{disp(self.name)} 사용 한도가 초기화돼서 자동으로 다시 시작했어요.", job=job)
+        server_log("agent.limit_resume." + self.name)
+
     def pause_with_error(self, reason, job):
         self.error_kind = classify_agent_error(reason, self.rc)
         self.resume_turn = self.doing if isinstance(self.doing, dict) else getattr(self, "resume_turn", None)
@@ -3497,7 +3596,12 @@ class Worker:
         retry_key = "direct" if job is None else str(job)
         retries = self.retry_counts.get(retry_key, 0)
         self.paused = True
-        self.set_recovery("needs_user" if self.error_kind in ("auth", "limit") else "failed", reason, retries)
+        limit_wait = self.error_kind == "limit" and self.schedule_limit_resume(reason, job)
+        if limit_wait:
+            self.set_recovery("limit_wait", reason, retries, self.limit_resume_at)
+        else:
+            self.limit_resume_at = 0
+            self.set_recovery("needs_user" if self.error_kind in ("auth", "limit") else "failed", reason, retries)
         self.idle("paused")
         self.save_checkpoint()
         if self.error_kind == "auth" and LOGIN_HOOK:
@@ -3515,6 +3619,10 @@ class Worker:
                 state_transition(task, "waiting", waiting_at=time.time(), wait_reason=auth_help(self.name))
                 task.pop("wait_deadline", None)
             guide = "" if re.search(r"(?:다시 시도|재개|시작)(?:하세요|을 누르세요)\.?$", reason.strip()) else " 확인 후 재개 버튼으로 다시 시도하세요."
+            if limit_wait:
+                when = limit_resume_label(self.limit_resume_at)
+                guide = (f"\n사용 한도가 초기화되는 {when}쯤 자동으로 다시 시작해요." if self.limit_resume_exact
+                         else f"\n초기화 시각을 알 수 없어서 {LIMIT_RESUME_RECHECK // 60}분마다 다시 확인해요. 다음 확인은 {when}이에요.")
             post(s, "system", "user", ui_notice(f"{disp(self.name)} 일시정지", f"{reason}{guide}"),
                  "event", job=job)
 
@@ -3648,6 +3756,9 @@ class Worker:
             if hasattr(office, "check_stall"):
                 office.check_stall(sid)
             if self.paused:
+                if (getattr(self, "limit_resume_at", 0) and self.error_kind == "limit" and not getattr(self, "manual_pause", False)
+                        and not self.immediate_pause and time.time() >= self.limit_resume_at):
+                    self.resume_after_limit(); continue
                 self.idle("paused"); time.sleep(1); continue
             if getattr(self, "retry_at", 0) > time.time():   # 일시 오류 자동 재시도 대기
                 self.idle(); self.stop.wait(POLL); continue
@@ -3861,6 +3972,7 @@ class Worker:
                     event(recovered, f"{disp(self.name)} 자동 복구 완료 · 중단된 차례가 정상으로 끝났어요.", job=job)
             self.resume_turn = None
             self.fail_count, self.failure_key = 0, None
+            self.limit_tries = 0
             # 차례는 한 요청을 골라 돈다: 다른 요청의 깨우는 메시지는 다음 차례에 다시 싣는다(한 번만)
             self.carry_msgs = [m["id"] for m in new if m["from"] != "user" and m.get("job") != job and m["id"] not in previous_carry]
             with state(sid=sid) as record:
@@ -5223,7 +5335,7 @@ class Office:
                 w.update_codex_usage()
         reservations = read_json_file(Path.home()/".office"/"reservations.json", {}, reservations_valid)   # 화면용: 잠금·정리 없이 읽기만
         data["file_reservations"] = [{k: value[k] for k in ("path","owner","session","job","since")} for value in reservations.values() if Path(value["path"]).is_relative_to(ROOT)]
-        data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "recovery": getattr(w, "recovery", None), "notice": w.notice or getattr(w, "model_notice", None),
+        data["agents"] = {n: {"status": w.status, "since": w.since, "doing": w.doing, "paused": w.paused, "error": w.error, "error_kind": getattr(w, "error_kind", None), "fail_count": getattr(w, "fail_count", 0), "recovery": getattr(w, "recovery", None), "limit_resume_at": getattr(w, "limit_resume_at", 0) or None, "limit_resume_exact": bool(getattr(w, "limit_resume_exact", False)), "notice": w.notice or getattr(w, "model_notice", None),
                               "model": getattr(w, "primary_model", None) or configured_model(n),
                               "effort": getattr(w, "turn_effort", None) if w.status == "working" else None,
                               "level": getattr(w, "turn_level", None) if w.status == "working" else None,
@@ -5467,6 +5579,7 @@ class Office:
             worker.paused = True
             worker.manual_pause = True
             worker.recovery = None
+            worker.limit_resume_at = 0
             worker.retry_at, worker.retry_due = 0, None
             if worker.status == "working":
                 worker.immediate_pause = True
@@ -5489,6 +5602,7 @@ class Office:
             w.paused = p.get("paused", not w.paused)
             w.manual_pause = w.paused
             w.recovery = None
+            w.limit_resume_at, w.limit_tries = 0, 0
             if w.paused:
                 w.retry_at, w.retry_due = 0, None
             msg = "일시정지함" if w.paused else "재개함"
