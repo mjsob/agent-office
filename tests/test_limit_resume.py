@@ -1,8 +1,9 @@
 """사용 한도 소진 멈춤이 초기화 시각 뒤 자동으로 다시 시작되는지 확인해요.
 실행: python3 -I tests/test_limit_resume.py [payload/office.py 경로]
 서버를 실행하지 않고 임시 상태 폴더만 사용해요."""
-import datetime, importlib.util, json, os, sys, tempfile, threading, time, unittest, zoneinfo
+import datetime, importlib.util, json, os, subprocess, sys, tempfile, threading, time, unittest, zoneinfo
 from pathlib import Path
+from unittest.mock import patch
 SOURCE = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 and sys.argv[1].endswith(".py") else Path(__file__).resolve().parents[1] / "payload/office.py"
 
 
@@ -25,7 +26,8 @@ class LimitResume(unittest.TestCase):
         w = self.o.Worker.__new__(self.o.Worker)
         base = dict(name="claude", sid="test", rc=0, doing={"job": 1, "kind": "work"}, resume_turn=None, fail_count=0, failure_key=None, retry_counts={},
                     stop=threading.Event(), immediate_pause=False, manual_pause=False, interrupted_job=None, read_upto=3, turn_read_start=1,
-                    paused=False, retry_at=0, limit_resume_at=0, limit_tries=0, error=None, error_kind=None, recovery=None, notice=None)
+                    paused=False, retry_at=0, limit_resume_at=0, limit_tries=0, error=None, error_kind=None, recovery=None, notice=None,
+                    control_lock=threading.RLock())
         base.update(extra)
         for key, value in base.items():
             setattr(w, key, value)
@@ -68,7 +70,10 @@ class LimitResume(unittest.TestCase):
         notice = [m["text"] for m in json.loads(self.path.read_text())["msgs"]][-1]
         self.assertIn("자동으로 다시 시작해요", notice)
         w.resume_turn = {"job": 1, "kind": "work"}
-        w.resume_after_limit()
+        self.assertFalse(w.resume_after_limit())   # 초기화 시각 전에는 그대로 멈춰 있어요
+        self.assertTrue(w.paused)
+        w.limit_resume_at = time.time() - 1
+        self.assertTrue(w.resume_after_limit())
         self.assertFalse(w.paused); self.assertIsNone(w.error); self.assertIsNone(w.error_kind); self.assertEqual(w.limit_resume_at, 0)
         self.assertEqual(w.retry_due, {"job": 1, "kind": "work"})
         self.assertIn("자동으로 다시 시도해요", [m["text"] for m in json.loads(self.path.read_text())["msgs"]][-1])
@@ -139,6 +144,38 @@ class LimitResume(unittest.TestCase):
         at = datetime.datetime(2026, 10, 27, 15, 0).timestamp(); now = datetime.datetime(2026, 10, 27, 9, 0).timestamp()
         self.assertEqual(self.o.limit_resume_label(at, now), "15시")
         self.assertEqual(self.o.limit_resume_label(at + 1800 + 86400, now), "10월 28일 15시 30분")
+
+    def test_manual_pause_between_deadline_check_and_resume_wins(self):
+        o = self.o
+        w = self.worker(limit_resume_at=time.time() - 1, error_kind="limit", paused=True, resume_turn={"job": 1, "kind": "work"})
+        w.state_mark = lambda: None; w.idle_mark = None
+        office = o.Office.__new__(o.Office); office.stop = threading.Event(); office.teams = {"test": {"w": {"claude": w}}}
+        office.ensure_team = lambda sid: None; office.reconcile_failover = lambda sid: None; office.check_stall = lambda sid: None
+        real = w.resume_after_limit
+        def boundary():
+            with patch.object(o, "meta_view", return_value={"sessions": [{"id": "test", "deleted": False}]}):
+                o.Office.handle(office, {"action": "pause", "session": "test", "agent": "claude", "paused": True})
+            resumed = real(); w.stop.set(); return resumed
+        w.resume_after_limit = boundary; w._loop(office)
+        self.assertTrue(w.manual_pause and w.paused)
+
+    def test_old_checkpoint_migration_keeps_same_deadline_across_restarts(self):
+        o = self.o; path = o.sdir("test") / "claude.worker.json"
+        saved = {"read_upto": 0, "paused": True, "manual_pause": False, "error_kind": "limit", "error": "usage limit exceeded", "interrupted_turn": {"job": 1, "kind": "work"}}
+        o.atomic_json(path, saved, o.checkpoint_valid); now = time.time()
+        with patch.object(o.time, "time", return_value=now): first = o.Worker("claude", "test", threading.Event())
+        with patch.object(o.time, "time", return_value=now + 600): second = o.Worker("claude", "test", threading.Event())
+        self.assertEqual(first.limit_resume_at, second.limit_resume_at)
+        self.assertEqual(first.limit_tries, second.limit_tries)
+
+    def test_failed_powershell_check_stays_quiet(self):
+        o = self.o
+        result = subprocess.CompletedProcess(["powershell.exe"], 1, stdout=b"behind\n", stderr=b"script error")
+        with patch.object(o.subprocess, "run", return_value=result):
+            self.assertEqual(o.focus_explorer_path("C:\\Temp", True), "unknown")
+        values = [subprocess.CompletedProcess([], 0, stdout="C:\\Temp", stderr=""), result]
+        with patch.object(o.subprocess, "run", side_effect=values), patch.object(o.subprocess, "Popen"):
+            self.assertEqual(o.open_report_path(self.tmp.name, "test"), {"ok": "탐색기에서 경로를 열었어요."})
 
 
 if __name__ == "__main__":

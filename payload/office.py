@@ -2755,6 +2755,7 @@ class Worker:
         self.activity = deque(maxlen=60)
         self.checkpoint = sdir(sid) / f"{name}.worker.json"
         self.checkpoint_lock = threading.Lock()
+        self.control_lock = threading.RLock()   # 사용자 멈춤·재개와 한도 자동 재개가 서로 덮어쓰지 않게 해요
         try:
             saved = read_json_file(self.checkpoint, {}, checkpoint_valid)
         except StorageError as error:
@@ -2788,10 +2789,12 @@ class Worker:
         if self.error_kind == "auth":
             self.error = auth_help(self.name)
         # 업데이트 전에 한도로 멈춘 기록도 자동 재개를 예약해요. 새 기록의 재시도 종료 상태는 유지해요.
+        migrated_limit = False
         if self.paused and self.error_kind == "limit" and "limit_resume_at" not in saved:
             job = self.resume_turn.get("job") if isinstance(self.resume_turn, dict) else None
             if self.schedule_limit_resume(self.error, job):
                 self.set_recovery("limit_wait", self.error, retry_at=self.limit_resume_at)
+                migrated_limit = True
         try:
             with state(sid=sid) as s:
                 count = len(s["msgs"])
@@ -2802,6 +2805,9 @@ class Worker:
             server_log("worker.initialize", error)
         if self.paused:
             self.status = "paused"
+        if migrated_limit:
+            # 이관한 예약을 바로 저장해요. 안 그러면 서버를 다시 켤 때마다 예약 시각이 뒤로 밀려요.
+            self.save_checkpoint()
         if recovered:
             self.notice = "중단된 작업 재개 — 이전 서버에서 남은 실행을 정리했습니다. 중단된 작업을 이어갑니다."
         if self.retry_at and self.resume_turn:
@@ -3571,21 +3577,28 @@ class Worker:
         return True
 
     def resume_after_limit(self):
-        """한도 초기화 시각이 지났으니 멈춘 차례를 다시 시작해요. 또 막히면 pause_with_error 가 다시 예약해요."""
-        job = self.resume_turn.get("job") if isinstance(self.resume_turn, dict) else None
-        self.paused, self.manual_pause = False, False
-        self.error = self.error_kind = self.recovery = None
-        self.limit_resume_at = 0
-        self.notice = None
-        self.cont = self.chatter = 0
-        self.nudge_state = {}
-        self.retry_counts.pop("direct" if job is None else str(job), None)
-        self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
-        self.retry_due = dict(self.resume_turn) if isinstance(self.resume_turn, dict) else None
-        self.save_checkpoint()
+        """한도 초기화 시각이 지났으면 멈춘 차례를 다시 시작해요. 또 막히면 pause_with_error 가 다시 예약해요.
+        조건 확인과 상태 변경을 제어 잠금 안에서 한 번에 해서, 그 사이 사용자가 멈춘 걸 덮어쓰지 않아요. 재개했으면 True."""
+        with self.control_lock:
+            if not (self.paused and getattr(self, "limit_resume_at", 0) and self.error_kind == "limit"
+                    and not getattr(self, "manual_pause", False) and not self.immediate_pause
+                    and time.time() >= self.limit_resume_at):
+                return False
+            job = self.resume_turn.get("job") if isinstance(self.resume_turn, dict) else None
+            self.paused, self.manual_pause = False, False
+            self.error = self.error_kind = self.recovery = None
+            self.limit_resume_at = 0
+            self.notice = None
+            self.cont = self.chatter = 0
+            self.nudge_state = {}
+            self.retry_counts.pop("direct" if job is None else str(job), None)
+            self.auto_retries, self.retry_at, self.retry_job = 0, 0, None
+            self.retry_due = dict(self.resume_turn) if isinstance(self.resume_turn, dict) else None
+            self.save_checkpoint()
         with state(True, self.sid) as record:
             event(record, f"{disp(self.name)} 사용 한도 대기를 마치고 자동으로 다시 시도해요.", job=job)
         server_log("agent.limit_resume." + self.name)
+        return True
 
     def pause_with_error(self, reason, job):
         self.error_kind = classify_agent_error(reason, self.rc)
@@ -3761,9 +3774,8 @@ class Worker:
             if hasattr(office, "check_stall"):
                 office.check_stall(sid)
             if self.paused:
-                if (getattr(self, "limit_resume_at", 0) and self.error_kind == "limit" and not getattr(self, "manual_pause", False)
-                        and not self.immediate_pause and time.time() >= self.limit_resume_at):
-                    self.resume_after_limit(); continue
+                if self.resume_after_limit():
+                    continue
                 self.idle("paused"); time.sleep(1); continue
             if getattr(self, "retry_at", 0) > time.time():   # 일시 오류 자동 재시도 대기
                 self.idle(); self.stop.wait(POLL); continue
@@ -4688,7 +4700,8 @@ else { Write-Output 'no-match' }
         reason = "oserror"
     else:
         words = result.stdout.decode("utf-8", "replace").split()
-        reason = words[-1] if words and words[-1] in ("focused", "behind", "no-match") else "error"
+        # 비정상 종료면 중간까지 찍힌 출력은 믿지 않아요
+        reason = words[-1] if result.returncode == 0 and words and words[-1] in ("focused", "behind", "no-match") else "error"
     if reason == "focused":
         return "focused"
     server_log("explorer.focus." + reason)
@@ -5581,17 +5594,18 @@ class Office:
                 raise UserError("에이전트 선택 확인 — 에이전트를 다시 선택하세요.")
             self.ensure_team(sid)
             worker = self.teams[sid]["w"][p["agent"]]
-            worker.paused = True
-            worker.manual_pause = True
-            worker.recovery = None
-            worker.limit_resume_at = 0
-            worker.retry_at, worker.retry_due = 0, None
-            if worker.status == "working":
-                worker.immediate_pause = True
-                worker.terminate_agent()
-            else:
-                worker.idle("paused")
-            worker.save_checkpoint()
+            with worker.control_lock:
+                worker.paused = True
+                worker.manual_pause = True
+                worker.recovery = None
+                worker.limit_resume_at = 0
+                worker.retry_at, worker.retry_due = 0, None
+                if worker.status == "working":
+                    worker.immediate_pause = True
+                    worker.terminate_agent()
+                else:
+                    worker.idle("paused")
+                worker.save_checkpoint()
             with state(True, sid) as record:
                 event(record, f"{disp(worker.name)} 지금 중단 · 이미 변경한 파일은 유지됩니다. 다시 시작하면 이어서 진행합니다.", job=worker.doing.get("job") if isinstance(worker.doing, dict) else None)
             msg = "작업을 중단했습니다."
@@ -5600,28 +5614,29 @@ class Office:
                 raise UserError("에이전트 선택 확인 — 에이전트를 다시 선택하세요.")
             self.ensure_team(sid)
             w = self.teams[sid]["w"][p["agent"]]
-            if "paused" in p and type(p["paused"]) is not bool:
-                raise UserError("멈춤 설정 확인 — 멈춤 상태는 참 또는 거짓이어야 합니다.")
-            if not p.get("paused", not w.paused) and getattr(w, "immediate_pause", False):
-                raise UserError("중단한 프로세스 정리 중 — 중단한 프로세스를 정리 중입니다. 잠시 후 다시 시작하세요.")
-            w.paused = p.get("paused", not w.paused)
-            w.manual_pause = w.paused
-            w.recovery = None
-            w.limit_resume_at, w.limit_tries = 0, 0
-            if w.paused:
-                w.retry_at, w.retry_due = 0, None
-            msg = "일시정지함" if w.paused else "재개함"
-            if not w.paused:
-                w.error = None
-                w.error_kind = None
-                w.cont = w.chatter = 0
-                w.nudge_state = {}
-                if isinstance(w.resume_turn, dict):
-                    resumed_job = w.resume_turn.get("job")
-                    w.retry_counts.pop("direct" if resumed_job is None else str(resumed_job), None)
-                w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
-                w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
-            w.save_checkpoint()
+            with w.control_lock:
+                if "paused" in p and type(p["paused"]) is not bool:
+                    raise UserError("멈춤 설정 확인 — 멈춤 상태는 참 또는 거짓이어야 합니다.")
+                if not p.get("paused", not w.paused) and getattr(w, "immediate_pause", False):
+                    raise UserError("중단한 프로세스 정리 중 — 중단한 프로세스를 정리 중입니다. 잠시 후 다시 시작하세요.")
+                w.paused = p.get("paused", not w.paused)
+                w.manual_pause = w.paused
+                w.recovery = None
+                w.limit_resume_at, w.limit_tries = 0, 0
+                if w.paused:
+                    w.retry_at, w.retry_due = 0, None
+                msg = "일시정지함" if w.paused else "재개함"
+                if not w.paused:
+                    w.error = None
+                    w.error_kind = None
+                    w.cont = w.chatter = 0
+                    w.nudge_state = {}
+                    if isinstance(w.resume_turn, dict):
+                        resumed_job = w.resume_turn.get("job")
+                        w.retry_counts.pop("direct" if resumed_job is None else str(resumed_job), None)
+                    w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
+                    w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
+                w.save_checkpoint()
         elif act == "cancel_job":
             background = []
             with state(True, sid=sid) as s:
