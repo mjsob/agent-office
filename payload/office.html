@@ -54,7 +54,7 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; pa
 .storage-notice .storage-run:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--panel)); }
 .storage-notice .storage-run:active:not(:disabled) { box-shadow: none; }
 .storage-notice .storage-run:disabled { opacity: .5; cursor: default; box-shadow: none; }
-.storage-dismiss > summary { color: var(--text); background: var(--panel); border-color: color-mix(in srgb, var(--muted) 45%, var(--line)); box-shadow: 0 1px 2px #0000000a; list-style: none; font-weight: 600; }
+.storage-dismiss > summary { cursor: pointer; color: var(--text); background: var(--panel); border-color: color-mix(in srgb, var(--muted) 45%, var(--line)); box-shadow: 0 1px 2px #0000000a; list-style: none; font-weight: 600; }
 .storage-dismiss > summary::-webkit-details-marker { display: none; }
 .storage-dismiss > summary:hover { background: var(--chip); border-color: var(--muted); }
 .storage-dismiss[open] > summary { color: var(--codex); background: var(--codex-soft); border-color: var(--codex); box-shadow: 0 0 0 1px var(--codex); }
