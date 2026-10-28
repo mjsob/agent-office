@@ -6181,6 +6181,94 @@ def running():
     return info
 
 
+def configure_taskbar_icon():
+    """작업 표시줄이 Chrome의 확대된 16px favicon 대신 원본 ICO를 읽게 해요.
+    창의 아이콘 리소스 경로만 바꿔요. 창을 활성화하거나 브라우저 프로필을 바꾸지 않아요."""
+    import base64
+    script = r'''$ErrorActionPreference = 'Stop'
+$icon = Join-Path $env:LOCALAPPDATA 'Office\office.ico'
+if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { Write-Output 'missing-icon'; exit 0 }
+Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential)] public struct OfficeIconKey { public Guid fmtid; public uint pid; }
+[StructLayout(LayoutKind.Explicit, Size=24)] public struct OfficeIconValue {
+ [FieldOffset(0)] public ushort vt;
+ [FieldOffset(8)] public IntPtr value;
+}
+[ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface OfficeIconStore {
+ [PreserveSig] int GetCount(out uint n);
+ [PreserveSig] int GetAt(uint n, out OfficeIconKey key);
+ [PreserveSig] int GetValue(ref OfficeIconKey key, out OfficeIconValue value);
+ [PreserveSig] int SetValue(ref OfficeIconKey key, ref OfficeIconValue value);
+ [PreserveSig] int Commit();
+}
+public static class OfficeTaskbarIcon {
+ public delegate bool WindowCallback(IntPtr window, IntPtr unused);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(WindowCallback callback, IntPtr unused);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
+ [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr window, ref Guid iid, out OfficeIconStore store);
+ [DllImport("ole32.dll")] static extern int PropVariantClear(ref OfficeIconValue value);
+ static OfficeIconKey Key(uint pid) {
+  return new OfficeIconKey { fmtid=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid=pid };
+ }
+ static string Read(OfficeIconStore store, uint pid) {
+  OfficeIconKey key=Key(pid); OfficeIconValue value;
+  if (store.GetValue(ref key, out value)<0) return "";
+  try { return value.vt==31 ? Marshal.PtrToStringUni(value.value) : ""; }
+  finally { PropVariantClear(ref value); }
+ }
+ public static int Update(string resource) {
+  int changed=0;
+  EnumWindows(delegate(IntPtr window, IntPtr unused) {
+   StringBuilder title=new StringBuilder(1024); GetWindowText(window,title,title.Capacity);
+   string caption=title.ToString();
+   if (caption!="Office" && !caption.EndsWith("\u2014 Office",StringComparison.Ordinal)) return true;
+   OfficeIconStore store; Guid iid=typeof(OfficeIconStore).GUID;
+   if (SHGetPropertyStoreForWindow(window,ref iid,out store)<0) return true;
+   try {
+    string id=Read(store,5);
+    if (!(id.StartsWith("Chrome.localhost_/",StringComparison.Ordinal) || id.StartsWith("MSEdge.localhost_/",StringComparison.Ordinal))) return true;
+    if (Read(store,3)==resource) return true;
+    OfficeIconKey key=Key(3);
+    OfficeIconValue value=new OfficeIconValue { vt=31, value=Marshal.StringToCoTaskMemUni(resource) };
+    try {
+     Marshal.ThrowExceptionForHR(store.SetValue(ref key,ref value));
+     Marshal.ThrowExceptionForHR(store.Commit()); changed++;
+    } finally { PropVariantClear(ref value); }
+   } finally { Marshal.ReleaseComObject(store); }
+   return true;
+  },IntPtr.Zero);
+  return changed;
+ }
+}
+'@
+# Store a resource path, not an HICON owned by this short-lived PowerShell process.
+# https://learn.microsoft.com/windows/win32/properties/props-system-appusermodel-relaunchiconresource
+$changed = 0
+for ($i=0; $i -lt 10; $i++) {
+ $changed += [OfficeTaskbarIcon]::Update($icon + ',0')
+ Start-Sleep -Milliseconds 200
+}
+Write-Output "updated:$changed"
+'''
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    try:
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12, cwd="/mnt/c")
+        if result.returncode:
+            server_log("taskbar.icon.failed", f"exit={result.returncode}")
+            return False
+        outcome = result.stdout.decode("utf-8", "replace").strip()
+        server_log("taskbar.icon", outcome)
+        return outcome.startswith("updated:")
+    except (OSError, subprocess.SubprocessError) as error:
+        server_log("taskbar.icon.failed", type(error).__name__)
+        return False
+
+
 def open_window(port, app_only=False):
     url = f"http://localhost:{port}/"
     for exe in (CHROME, EDGE):
@@ -6188,6 +6276,10 @@ def open_window(port, app_only=False):
             try:
                 subprocess.Popen([exe, f"--app={url}", "--window-size=1500,920"],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")
+                try:
+                    threading.Thread(target=configure_taskbar_icon, name="office-taskbar-icon", daemon=True).start()
+                except RuntimeError as error:
+                    server_log("taskbar.icon.failed", type(error).__name__)
                 return True
             except OSError:
                 continue
