@@ -2436,7 +2436,9 @@ function storageActionMessage(action) {
     awaiting_admin: "관리자 권한 확인을 기다려요. 작업 표시줄에 깜빡이는 창이 있으면 눌러서 [예]를 선택하세요." + elapsed,
     countdown: "곧 WSL이 꺼져요. 멈추려면 Windows 실행 창에서 [중단하기]를 누르세요.",
     stopping: "WSL을 끄고 있어요." + elapsed,
-    running: `디스크를 줄이고 있어요${percent ? ` (${percent.trim()})` : ""}. 몇 분 걸려요. 창을 닫지 마세요.${elapsed}`,
+    running: action.phase === "finalizing" || action.percent >= 100
+      ? `줄이기를 마무리하고 있어요. 결과를 확인하는 중이니 창을 닫지 마세요.${elapsed}`
+      : `디스크를 줄이고 있어요${percent ? ` (${percent.trim()})` : ""}. 몇 분 걸려요. 창을 닫지 마세요.${elapsed}`,
     cancelling: "취소하고 있어요. WSL을 다시 켤 수 있게 정리해요." + elapsed,
     completed: Number.isFinite(action.reclaimed_gb) ? `디스크를 ${action.reclaimed_gb}GB 줄였어요. Office를 다시 켜세요.` : "디스크 줄이기가 끝났어요. Office를 다시 켜세요.",
     cancelled: "실행을 취소했어요." + recovery,
