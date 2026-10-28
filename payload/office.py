@@ -6248,7 +6248,7 @@ public static class OfficeTaskbarIcon {
 # Store a resource path, not an HICON owned by this short-lived PowerShell process.
 # https://learn.microsoft.com/windows/win32/properties/props-system-appusermodel-relaunchiconresource
 $changed = 0
-for ($i=0; $i -lt 10; $i++) {
+for ($i=0; $i -lt 30; $i++) {
  $changed += [OfficeTaskbarIcon]::Update($icon + ',0')
  Start-Sleep -Milliseconds 200
 }
@@ -6257,15 +6257,15 @@ Write-Output "updated:$changed"
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12, cwd="/mnt/c")
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, cwd="/mnt/c")
         if result.returncode:
-            server_log("taskbar.icon.failed", f"exit={result.returncode}")
+            server_log(f"taskbar.icon.failed.exit={result.returncode}")
             return False
         outcome = result.stdout.decode("utf-8", "replace").strip()
-        server_log("taskbar.icon", outcome)
+        server_log("taskbar.icon." + (outcome if re.fullmatch(r"updated:\d+|missing-icon", outcome) else "unexpected-output"))
         return outcome.startswith("updated:")
     except (OSError, subprocess.SubprocessError) as error:
-        server_log("taskbar.icon.failed", type(error).__name__)
+        server_log("taskbar.icon.failed", error)
         return False
 
 
@@ -6279,7 +6279,7 @@ def open_window(port, app_only=False):
                 try:
                     threading.Thread(target=configure_taskbar_icon, name="office-taskbar-icon", daemon=True).start()
                 except RuntimeError as error:
-                    server_log("taskbar.icon.failed", type(error).__name__)
+                    server_log("taskbar.icon.failed", error)
                 return True
             except OSError:
                 continue

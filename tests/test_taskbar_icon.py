@@ -18,7 +18,7 @@ class TaskbarIcon(unittest.TestCase):
   self.assertIn('Read(store,5)',script);self.assertIn('Key(3)',script);self.assertIn('caption.EndsWith',script)
   self.assertIn('Chrome.localhost_/',script);self.assertIn('MSEdge.localhost_/',script)
   self.assertNotIn('WM_SETICON',script);self.assertNotIn('SetForegroundWindow',script)
-  self.assertEqual(kw['stdin'],subprocess.DEVNULL);self.assertEqual(kw['timeout'],12)
+  self.assertEqual(kw['stdin'],subprocess.DEVNULL);self.assertEqual(kw['timeout'],15)
  def test_missing_icon_is_nonfatal(self):
   with patch.object(self.o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=b'missing-icon\r\n',stderr=b'')):
    self.assertFalse(self.o.configure_taskbar_icon())
@@ -28,6 +28,15 @@ class TaskbarIcon(unittest.TestCase):
  def test_unavailable_powershell_and_timeout_are_nonfatal(self):
   for err in (OSError('missing'),subprocess.TimeoutExpired([],12)):
    with self.subTest(error=type(err)),patch.object(self.o.subprocess,'run',side_effect=err):self.assertFalse(self.o.configure_taskbar_icon())
+ def test_diagnostic_events_keep_result_and_exit(self):
+  for rc,outcome,event in ((0,b'updated:2','taskbar.icon.updated:2'),(0,b'private garbage','taskbar.icon.unexpected-output'),(1,b'updated:1','taskbar.icon.failed.exit=1')):
+   with self.subTest(rc=rc,outcome=outcome),patch.object(self.o,'server_log') as log,patch.object(self.o.subprocess,'run',return_value=subprocess.CompletedProcess([],rc,stdout=outcome,stderr=b'')):
+    self.o.configure_taskbar_icon();log.assert_called_once_with(event)
+ def test_detection_allows_slow_browser_start(self):
+  with patch.object(self.o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=b'updated:0',stderr=b'')) as run:
+   self.o.configure_taskbar_icon()
+  script=base64.b64decode(run.call_args.args[0][-1]).decode('utf-16-le')
+  self.assertIn('$i -lt 30;',script)
  def test_browser_open_starts_bounded_icon_worker(self):
   created=[]
   def make_thread(*args,**kwargs):
