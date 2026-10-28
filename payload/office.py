@@ -4802,7 +4802,7 @@ def start_storage_compact(confirmed):
             try:
                 with (folder / "office-launch.log").open("w") as output:
                     result = subprocess.run(["bash", str(STORAGE_COMPACT_SCRIPT)], cwd=str(STORAGE_COMPACT_SCRIPT.parent),
-                                            env={**os.environ, "WSL_COMPACT_REQUEST_ID": record["request_id"]},
+                                            env={**os.environ, "WSL_COMPACT_REQUEST_ID": record["request_id"], "WSL_COMPACT_WORKSPACE": str(ROOT)},
                                             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=120)
                 status = "launched" if result.returncode in (0, 3) else "failed"
             except subprocess.TimeoutExpired as error:
