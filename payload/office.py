@@ -4650,7 +4650,7 @@ STORAGE_COMPACT_SCRIPT = Path.home() / "projects/wsl-compact/src/run-compact.sh"
 STORAGE_COMPACT_DIR = Path.home() / ".local/state/wsl-compact"
 STORAGE_COMPACT_LOCK = threading.RLock()
 STORAGE_COMPACT_PROBE = {}
-STORAGE_COMPACT_ACTIVE = {"preparing", "launched", "countdown", "running", "uncertain"}
+STORAGE_COMPACT_ACTIVE = {"preparing", "launched", "awaiting_admin", "countdown", "stopping", "running", "cancelling", "uncertain"}
 
 
 def compact_record(path):
@@ -4684,6 +4684,33 @@ def probe_storage_compact(request_id):
         STORAGE_COMPACT_PROBE.update(request_id=request_id, at=time.time(), running=running)
 
 
+def compact_progress(value):
+    """Windows 가 남긴 진행 정보 중 화면에 쓸 값만 형식을 확인해 통과시켜요."""
+    out = {}
+    if isinstance(value.get("phase"), str) and re.fullmatch(r"[a-z_]{1,32}", value["phase"]):
+        out["phase"] = value["phase"]
+    if isinstance(value.get("message"), str):
+        out["message"] = value["message"][:200]
+    for key, high in (("percent", 100), ("before_gb", 100000), ("after_gb", 100000), ("reclaimed_gb", 100000)):
+        n = value.get(key)
+        if type(n) in (int, float) and math.isfinite(n) and 0 <= n <= high:
+            out[key] = round(n, 1)
+    for key in ("can_cancel", "wsl_ready", "recovery_required"):
+        if type(value.get(key)) is bool:
+            out[key] = value[key]
+    for key in ("shutdown_at", "started_at"):
+        n = value.get(key)
+        if type(n) in (int, float) and math.isfinite(n) and n > 0 and (key == "shutdown_at" or n <= time.time() + 300):
+            out[key] = n
+    if value.get("status") in STORAGE_COMPACT_ACTIVE:
+        begin = out.get("started_at")
+        if begin is None and type(value.get("elapsed_seconds")) in (int, float) and math.isfinite(value["elapsed_seconds"]) and value["elapsed_seconds"] >= 0:
+            out["elapsed_seconds"] = int(value["elapsed_seconds"])
+        elif begin is not None:
+            out["elapsed_seconds"] = max(0, int(time.time() - begin))
+    return out
+
+
 def storage_compact_view():
     """창만 조회해도 실행되지 않아요. Windows가 남긴 진행 상태를 읽어요."""
     available = bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file()
@@ -4706,14 +4733,29 @@ def storage_compact_view():
         if available and needs_probe:
             if probe.get("request_id") == rid and probe.get("at", 0) > value.get("updated_at", 0) and time.time() - probe.get("at", 0) < 30:
                 if probe.get("running") is False:
-                    value["status"] = "cancelled"
+                    if "phase" not in value and value["status"] == "running":
+                        # 예전 방식 기록은 읽기 전용 연결이 남았을 수 있어서 취소로 단정하지 않아요.
+                        value["status"] = "uncertain"
+                        value["recovery_required"] = True
+                    elif "phase" not in value or value.get("wsl_ready") is True:
+                        value["status"] = "cancelled"
+                    else:
+                        # 디스크 핸들을 풀기 전에 끊겼으면 복구가 필요해요.
+                        value["status"] = "uncertain"
+                        value["recovery_required"] = True
             if probe.get("request_id") != rid or time.time() - probe.get("at", 0) >= 15:
                 refresh_later("storage_compact", lambda: probe_storage_compact(rid))
         if value["status"] in STORAGE_COMPACT_ACTIVE and age > 3600:
             value["status"] = "uncertain"
-        return {"available": available, "status": value["status"],
+        view = {"available": available, "status": value["status"],
                 "updated_at": value.get("updated_at"),
                 "can_start": available and value["status"] not in STORAGE_COMPACT_ACTIVE}
+        view.update(compact_progress(value))
+        if value.get("recovery_required") is True:
+            view["recovery_required"] = True
+        if isinstance(rid, str) and re.fullmatch(r"[0-9a-f]{32}", rid):
+            view["request_id"] = rid
+        return view
 
 
 def start_storage_compact(confirmed):
@@ -4755,6 +4797,26 @@ def start_storage_compact(confirmed):
         except RuntimeError:
             atomic_json(folder / "office-launch.json", {**record, "status": "failed", "updated_at": time.time()})
             raise UserError("실행을 준비하지 못했어요. 다시 시도하세요.") from None
+    return {"storage_compact": storage_compact_view()}
+
+
+def cancel_storage_compact():
+    """Windows 진행창에 취소를 요청해요. 취소가 끝났는지는 상태 기록으로 확인해요."""
+    with STORAGE_COMPACT_LOCK:
+        view = storage_compact_view()
+    if not view["available"]:
+        raise UserError("이 PC의 디스크 줄이기 스크립트를 찾지 못했어요. 설치 상태를 확인하세요.")
+    if view["status"] not in STORAGE_COMPACT_ACTIVE or view.get("can_cancel") is not True:
+        raise UserError("지금은 취소할 수 없어요. Windows 실행 창의 안내를 확인하세요.")
+    try:
+        env = {**os.environ, "WSL_COMPACT_REQUEST_ID": view.get("request_id", "")}
+        result = subprocess.run(["bash", str(STORAGE_COMPACT_SCRIPT), "--cancel"], stdin=subprocess.DEVNULL, env=env,
+                                capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        server_log("storage.cancel", error)
+        raise UserError("취소 요청을 보내지 못했어요. Windows 실행 창에서 직접 취소하세요.") from None
+    if result.returncode != 0:
+        raise UserError("취소 요청이 받아들여지지 않았어요. Windows 실행 창에서 직접 취소하세요.")
     return {"storage_compact": storage_compact_view()}
 
 
@@ -5621,9 +5683,11 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "chat_options", "ui_settings", "storage_notice_preferences"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences"}
         if act == "storage_compact":
             return start_storage_compact(p.get("confirmed"))
+        if act == "storage_compact_cancel":
+            return cancel_storage_compact()
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):

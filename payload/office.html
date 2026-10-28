@@ -673,9 +673,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div class="storage-text"><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span>
-    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details></div></div>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 안내를 확인하세요. Windows 창이 열리고 관리자 권한 창이 떠요. [예]를 누르면 45초 뒤 WSL이 꺼지고 디스크를 줄여요. [중단하기]를 누르면 취소가 끝날 때까지 기다려요.</p></details></div></div>
     <div class="storage-actions">
       <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
+      <button id="storageCancel" class="storage-cancel" onclick="cancelStorageCompact()" hidden>취소</button>
       <details id="storageDismiss" class="storage-dismiss"><summary aria-controls="storageDismissMenu"><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span>알림 숨기기</span><svg class="i storage-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></summary><div id="storageDismissMenu" class="storage-dismiss-menu" role="group" aria-labelledby="storageDismissHeading"><p id="storageDismissHeading" class="storage-dismiss-heading">알림을 숨길 기간을 고르세요.</p>
         <button id="storageHideToday" onclick="setStorageNoticePreference('today')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span class="storage-dismiss-copy"><span class="storage-dismiss-label">오늘 다시 보지 않기</span><span class="storage-dismiss-description">내일부터 다시 표시해요.</span></span></button>
         <button id="storageHideNever" onclick="setStorageNoticePreference('never')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span class="storage-dismiss-copy"><span class="storage-dismiss-label">다시 보지 않기</span><span class="storage-dismiss-description">직접 다시 열 때까지 숨겨요.</span></span></button>
@@ -2398,7 +2399,7 @@ async function setStorageNoticePreference(mode) {
 }
 async function startStorageCompact() {
   if (storageStarting || !lastStorageAction?.can_start) return;
-  if (!confirm("디스크를 줄일까요?\n\n45초 뒤 WSL이 꺼져요. Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\nWindows 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 눌러야 진행돼요. 끝나면 Office를 직접 다시 켜세요.")) return;
+  if (!confirm("디스크를 줄일까요?\n\n먼저 관리자 권한 창에서 [예]를 눌러야 해요. 그 뒤 45초가 지나면 WSL이 꺼져요. Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\n멈추려면 Windows 창의 [중단하기]를 누르세요. 끝나면 Office를 직접 다시 켜세요.")) return;
   storageStarting = true;
   renderStorageNotice(lastStorageNotice, lastStorageAction);
   try {
@@ -2409,6 +2410,41 @@ async function startStorageCompact() {
     renderStorageNotice(lastStorageNotice, lastStorageAction);
   }
 }
+let storageCancelling = false;
+async function cancelStorageCompact() {
+  if (storageCancelling || lastStorageAction?.can_cancel !== true) return;
+  if (!confirm("디스크 줄이기를 취소할까요?\n\n정리가 끝날 때까지 몇 초 걸려요. 끝나면 WSL을 다시 켤 수 있어요.")) return;
+  storageCancelling = true;
+  renderStorageNotice(lastStorageNotice, lastStorageAction);
+  try {
+    const result = await api({action: "storage_compact_cancel"});
+    if (result?.storage_compact) lastStorageAction = result.storage_compact;
+  } finally {
+    storageCancelling = false;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+  }
+}
+function storageActionMessage(action) {
+  const status = action?.status;
+  if (!status || status === "idle") return "";
+  const elapsed = Number.isFinite(action.elapsed_seconds) ? ` · ${Math.floor(action.elapsed_seconds / 60)}분 ${String(action.elapsed_seconds % 60).padStart(2, "0")}초째` : "";
+  const percent = Number.isFinite(action.percent) ? ` ${Math.round(action.percent)}%` : "";
+  const recovery = action.recovery_required ? " WSL이 안 켜지면 Windows 시작 메뉴의 [Office 디스크 복구]를 실행하세요." : "";
+  const messages = {
+    preparing: "Windows 실행 창을 준비하고 있어요.",
+    launched: "Windows 실행 창을 확인하세요. 곧 시작해요.",
+    awaiting_admin: "관리자 권한 확인을 기다려요. 작업 표시줄에 깜빡이는 창이 있으면 눌러서 [예]를 선택하세요." + elapsed,
+    countdown: "곧 WSL이 꺼져요. 멈추려면 Windows 실행 창에서 [중단하기]를 누르세요.",
+    stopping: "WSL을 끄고 있어요." + elapsed,
+    running: `디스크를 줄이고 있어요${percent ? ` (${percent.trim()})` : ""}. 몇 분 걸려요. 창을 닫지 마세요.${elapsed}`,
+    cancelling: "취소하고 있어요. WSL을 다시 켤 수 있게 정리해요." + elapsed,
+    completed: Number.isFinite(action.reclaimed_gb) ? `디스크를 ${action.reclaimed_gb}GB 줄였어요. Office를 다시 켜세요.` : "디스크 줄이기가 끝났어요. Office를 다시 켜세요.",
+    cancelled: "실행을 취소했어요." + recovery,
+    failed: (typeof action.message === "string" && action.message ? action.message : "디스크를 줄이지 못했어요.") + (action.recovery_required ? " WSL이 안 켜지면 Windows 시작 메뉴의 [Office 디스크 복구]를 실행하세요." : ""),
+    uncertain: "실행 상태를 확인하지 못했어요. 다시 누르기 전에 Windows 실행 창을 확인하세요." + recovery
+  };
+  return messages[status] || "";
+}
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
   if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
@@ -2418,24 +2454,17 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
     : preference.hidden ? preference.mode === "today" ? "오늘은 숨겨요. 내일부터 알림을 표시해요." : "알림을 숨겼어요. [다시 열기]를 누르면 표시해요."
     : "새 디스크 알림이 있으면 창 위쪽에 표시해요.";
   const button = $("#storageRun"), actionText = $("#storageActionStatus");
-  const actionMessages = {
-    preparing: "Windows 실행 창을 준비하고 있어요.",
-    launched: "Windows 실행 창을 확인하세요. 45초 뒤 WSL이 꺼져요. 창을 닫으면 취소돼요.",
-    countdown: "Windows 실행 창에서 기다리고 있어요. 45초 뒤 WSL이 꺼져요. 창을 닫으면 취소돼요.",
-    running: "디스크를 줄이고 있어요. Windows 창에서 결과를 확인하세요.",
-    completed: "디스크 줄이기가 끝났어요. 새 용량은 다음 점검에 반영돼요.",
-    cancelled: "실행을 취소했어요.",
-    failed: "실행하지 못했어요. Windows 창과 실행 기록을 확인한 뒤 다시 시도하세요.",
-    uncertain: "실행 상태를 확인하지 못했어요. 다시 누르기 전에 Windows 실행 창을 확인하세요."
-  };
-  actionText.textContent = storageStarting ? actionMessages.preparing : actionMessages[action?.status] || "";
+  actionText.textContent = storageStarting ? "Windows 실행 창을 준비하고 있어요." : storageActionMessage(action);
   button.hidden = notice?.status !== "suggested" || !action?.available;
   button.disabled = storageStarting || !action?.can_start;
+  const cancel = $("#storageCancel");
+  cancel.hidden = action?.can_cancel !== true || ["completed", "cancelled", "failed"].includes(action?.status);
+  cancel.disabled = storageCancelling;
   $("#storageRunLabel").textContent = storageStarting || action?.status === "preparing" ? "실행 준비 중이에요" : "디스크 줄이기";
   const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
   const status = notice?.status;
   const visible = ["suggested", "stale", "unavailable"].includes(status) || Boolean(actionText.textContent);
-  const activeWork = ["preparing", "launched", "countdown", "running", "uncertain"].includes(action?.status) || storageStarting;
+  const activeWork = ["preparing", "launched", "awaiting_admin", "countdown", "stopping", "running", "cancelling", "uncertain"].includes(action?.status) || storageStarting;
   const suppressed = preference?.hidden === true;
   box.hidden = !visible || (suppressed && !activeWork);
   $("#storageDismiss").hidden = suppressed;
