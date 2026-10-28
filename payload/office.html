@@ -36,7 +36,7 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 svg.sm { width: 14px; height: 14px; }
 
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-.storage-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center; flex: 1 0 100%; min-width: 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line)); border-radius: 9px; background: var(--warn-soft); font-size: 12px; line-height: 1.6; }
+.storage-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; align-items: center; flex: 1 0 100%; min-width: 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--warn) 18%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--warn-soft) 55%, var(--panel)); font-size: 12px; line-height: 1.6; }
 .storage-notice .storage-line { display: flex; align-items: flex-start; gap: 8px; }
 .storage-notice .storage-line > svg { color: var(--warn); margin-top: 3px; }
 .storage-notice strong { font-weight: 600; }
@@ -45,12 +45,24 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 .storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
-.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; grid-column: 2; grid-row: 1; justify-self: end; }
+.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; grid-column: 2; grid-row: 1; justify-self: end; }
 .storage-notice .storage-dismiss { position: relative; grid-column: auto; margin: 0; }
-.storage-dismiss > summary { padding: 5px 8px; border-radius: 6px; }
-.storage-dismiss > summary:hover { background: var(--chip); }
-.storage-dismiss-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; width: 190px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, .16); }
-.storage-dismiss-menu button { display: block; width: 100%; text-align: left; white-space: normal; }
+.storage-notice .storage-run, .storage-dismiss > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; transition: background .15s, border-color .15s, box-shadow .15s; }
+.storage-notice .storage-run { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 1px 2px #00000012; }
+.storage-notice .storage-run:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--panel)); }
+.storage-notice .storage-run:active:not(:disabled) { box-shadow: none; }
+.storage-notice .storage-run:disabled { opacity: .5; cursor: default; box-shadow: none; }
+.storage-dismiss > summary { color: var(--muted); list-style: none; font-weight: 500; }
+.storage-dismiss > summary::-webkit-details-marker { display: none; }
+.storage-dismiss > summary:hover, .storage-dismiss[open] > summary { color: var(--text); background: color-mix(in srgb, var(--panel) 75%, transparent); border-color: var(--line); }
+.storage-dismiss .storage-chevron { width: 12px; height: 12px; }
+.storage-dismiss[open] .storage-chevron { transform: rotate(180deg); }
+.storage-dismiss-menu { position: absolute; top: calc(100% + 7px); right: 0; z-index: 30; width: 214px; max-width: calc(100vw - 48px); padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 32px #0000001a, 0 2px 6px #0000000a; }
+.storage-dismiss-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 12px; text-align: left; white-space: normal; }
+.storage-dismiss-menu button:hover:not(:disabled) { background: var(--chip); }
+.storage-dismiss-menu button svg { color: var(--muted); }
+.storage-dismiss-menu button:disabled { opacity: .5; cursor: default; }
+.storage-notice .storage-run:focus-visible, .storage-dismiss > summary:focus-visible, .storage-dismiss-menu button:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 #storagePreferenceStatus { margin: -2px 0 12px; color: var(--muted); font-size: 12px; }
 #storageActionStatus { grid-column: 1 / -1; margin-left: 22px; color: var(--muted); }
 #storageActionStatus:empty { display: none; }
@@ -58,7 +70,10 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 @media (max-width: 700px) {
   .storage-notice .storage-line { grid-column: 1 / -1; }
   .storage-notice .storage-metrics { display: block; margin-left: 0; }
-  .storage-actions { grid-column: 1 / -1; grid-row: auto; margin-top: 6px; }
+  .storage-actions { grid-column: 1 / -1; grid-row: auto; margin-top: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .storage-notice .storage-run, .storage-dismiss > summary { transition: none; }
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
 .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
@@ -652,10 +667,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
     <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
     <div class="storage-actions">
-      <button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button>
-      <details id="storageDismiss" class="storage-dismiss"><summary>알림 숨기기</summary><div class="storage-dismiss-menu" role="group" aria-label="디스크 알림 숨기기">
-        <button id="storageHideToday" class="ghost" onclick="setStorageNoticePreference('today')">오늘 다시 보지 않기</button>
-        <button id="storageHideNever" class="ghost" onclick="setStorageNoticePreference('never')">다시 보지 않기</button>
+      <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
+      <details id="storageDismiss" class="storage-dismiss"><summary><span>알림 숨기기</span><svg class="i storage-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></summary><div class="storage-dismiss-menu" role="group" aria-label="디스크 알림 숨기기">
+        <button id="storageHideToday" onclick="setStorageNoticePreference('today')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span>오늘 다시 보지 않기</span></button>
+        <button id="storageHideNever" onclick="setStorageNoticePreference('never')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span>다시 보지 않기</span></button>
       </div></details>
     </div>
     <span id="storageActionStatus"></span>
@@ -2390,7 +2405,7 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
   actionText.textContent = storageStarting ? actionMessages.preparing : actionMessages[action?.status] || "";
   button.hidden = notice?.status !== "suggested" || !action?.available;
   button.disabled = storageStarting || !action?.can_start;
-  button.textContent = storageStarting || action?.status === "preparing" ? "실행 준비 중이에요" : "디스크 줄이기";
+  $("#storageRunLabel").textContent = storageStarting || action?.status === "preparing" ? "실행 준비 중이에요" : "디스크 줄이기";
   const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
   const status = notice?.status;
   const visible = ["suggested", "stale", "unavailable"].includes(status) || Boolean(actionText.textContent);
