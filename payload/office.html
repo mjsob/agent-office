@@ -35,7 +35,18 @@ body { background: var(--bg); color: var(--text); font: 14px/1.55 "Pretendard", 
 svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
 svg.sm { width: 14px; height: 14px; }
 
-header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.storage-notice { flex: 1 0 100%; min-width: 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line)); border-radius: 9px; background: var(--warn-soft); font-size: 12px; line-height: 1.6; }
+.storage-notice .storage-line { display: flex; align-items: flex-start; gap: 8px; }
+.storage-notice .storage-line > svg { color: var(--warn); margin-top: 3px; }
+.storage-notice strong { font-weight: 600; }
+.storage-notice .storage-metrics { color: var(--muted); margin-left: 8px; }
+.storage-notice details { margin-left: 22px; }
+.storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.storage-notice p { margin: 5px 0; }
+.storage-notice code { overflow-wrap: anywhere; }
+.storage-notice.unavailable { background: var(--chip); border-color: var(--line); }
+@media (max-width: 700px) { .storage-notice .storage-metrics { display: block; margin-left: 0; } }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
 .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
 .version { background: none; border: 0; padding: 2px 4px; position: relative; text-decoration: none; text-underline-offset: 3px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
@@ -624,6 +635,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button class="narrow-only" onclick="document.body.classList.remove('show-sessions');document.body.classList.toggle('show-side')">에이전트·현황</button>
   <button id="settingsBtn" class="ghost" aria-controls="settings" aria-expanded="false" onclick="toggleSettings()">설정</button>
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
+  <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
+    <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>WSL 터미널에서 <code>~/projects/wsl-compact/src/run-compact.sh</code>를 실행하세요. 자동으로 실행하지는 않아요.</p></details>
+  </aside>
 </header>
 
 <section id="settings" class="settings-panel" aria-label="설정" hidden>
@@ -2205,6 +2220,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
+  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice));
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
@@ -2287,6 +2303,23 @@ async function doRefresh() {
 }
 // 리소스 한도: 새로 시작하는 작업부터 적용. 입력 중엔 다시 그리지 않음
 let lastResSig = "";
+function renderStorageNotice(notice) {
+  const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
+  const status = notice?.status;
+  const visible = ["suggested", "stale", "unavailable"].includes(status);
+  box.hidden = !visible;
+  if (!visible) { details.open = false; return; }
+  const suggested = status === "suggested";
+  box.classList.toggle("unavailable", !suggested);
+  title.textContent = suggested
+    ? notice.urgent ? "디스크 여유가 부족해요. 가상디스크 축소를 제안해요." : "가상디스크를 줄여 공간을 확보할 수 있어요."
+    : status === "stale" ? "디스크 정보를 다시 확인해야 해요." : "디스크 용량을 확인하지 못했어요.";
+  metrics.textContent = suggested
+    ? `${notice.drive} 여유 ${Number(notice.free_gib).toFixed(1)}GiB · 회수 후보 최대 약 ${Number(notice.reclaim_gib).toFixed(1)}GiB`
+    : "다음 점검에서 다시 확인해요.";
+  details.hidden = !suggested;
+  if (!suggested) details.open = false;
+}
 function renderResources(r) {
   const box = $("#resbox");
   if (!r) { box.hidden = true; return; }

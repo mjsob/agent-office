@@ -4589,6 +4589,49 @@ def resource_status(refresh=False):
         return dict(data)
 
 
+STORAGE_NOTICE_FILE = Path.home() / "resource-watch" / "compact-notice.json"
+STORAGE_NOTICE_MAX_AGE = 2 * 3600
+
+
+def storage_notice_view(path=None, now=None):
+    """용량 감시가 쓴 최신 상태만 표시해요. 측정이나 축소는 실행하지 않아요."""
+    now = time.time() if now is None else now
+    try:
+        with Path(path or STORAGE_NOTICE_FILE).open("rb") as source:
+            raw = source.read(16385)
+        if len(raw) > 16384:
+            return None
+        notice = json.loads(raw)
+        if not isinstance(notice, dict) or type(notice.get("schema_version")) is not int or notice["schema_version"] != 1:
+            return None
+        checked = notice.get("checked_at")
+        if type(checked) not in (int, float) or not math.isfinite(checked) or checked <= 0 or checked > now + 300:
+            return None
+        status = notice.get("status")
+        if status not in ("suggested", "ok", "unavailable"):
+            return None
+        if now - checked > STORAGE_NOTICE_MAX_AGE:
+            return {"status": "stale", "checked_at": checked}
+        if status in ("ok", "unavailable"):
+            return {"status": status, "checked_at": checked}
+        disk = notice.get("disk")
+        if not isinstance(disk, dict):
+            return None
+        values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb")]
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values):
+            return None
+        reclaim = max(0, values[0] - values[1])
+        if reclaim < 20 and not (values[2] < 30 and reclaim >= 10):
+            return {"status": "ok", "checked_at": checked}
+        drive = disk.get("drive", "")
+        if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
+            drive = "디스크"
+        return {"status": "suggested", "checked_at": checked, "free_gib": values[2],
+                "reclaim_gib": round(reclaim, 1), "drive": drive, "urgent": values[2] < 15}
+    except (OSError, ValueError, TypeError, OverflowError):
+        return None
+
+
 def resource_view():
     """화면용: systemctl 을 기다리지 않게 마지막 값을 바로 돌려주고, 3초 지났으면 뒤에서 다시 구해요.
     값이 아직 없는 서버 시작 직후 한 번만 직접 구해요(없다고 잘못 보이지 않게)"""
@@ -5842,6 +5885,7 @@ def make_handler(office):
                     saved_ui = read_json_file(D / "ui-settings.json", {})
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
+                    snapshot["storage_notice"] = storage_notice_view()
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":
                     query = parse_qs(urlsplit(self.path).query)
