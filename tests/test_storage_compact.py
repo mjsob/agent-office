@@ -158,6 +158,12 @@ class StorageCompact(unittest.TestCase):
             (self.o.STORAGE_COMPACT_DIR / 'office-launch.json').write_text(json.dumps(data))
             self.o.STORAGE_COMPACT_PROBE.update(request_id='sample', at=time.time(), running=False)
             view = self.o.storage_compact_view()
+            if status == 'running':
+                # phase 없는 예전 running 기록은 읽기 전용 연결이 남았을 수 있어 취소로 단정하지 않아요.
+                self.assertEqual(view['status'], 'uncertain')
+                self.assertTrue(view['recovery_required'])
+                self.assertFalse(view['can_start'])
+                continue
             self.assertEqual(view['status'], 'cancelled')
             self.assertTrue(view['can_start'])
 
