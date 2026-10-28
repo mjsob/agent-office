@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix="office-new-session-") as tmp:
     assert o.current_sid() == b
 
     # 3. A 를 누르고 바로 휴지통의 대화를 복원: 복원한 대화가 현재 대화예요
+    office.handle({"action": "rename", "id": created, "title": "복원할 대화", "session": b})   # 빈 대화는 바로 지워지니 이름을 붙여 휴지통으로 보내요
     office.handle({"action": "delete", "id": created, "session": b})
     office.handle({"action": "switch", "id": a, "session": b})
     office.handle({"action": "restore", "id": created, "session": a})

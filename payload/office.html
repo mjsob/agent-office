@@ -1016,7 +1016,7 @@ const SWITCH_ACTIONS = ["switch", "new_session", "restore", "delete", "purge", "
 let switchPending = 0, carryInput = null;   // 새 대화를 누를 때 입력창에 있던 글(누르지 않았으면 null)
 let lastApiError = "";
 async function api(body) {
-  let ok = false;
+  let ok = false, result = {};
   const isSwitch = SWITCH_ACTIONS.includes(body.action);
   if (isSwitch) { switchPending++; if (body.action === "new_session") carryInput = $("#input").value; }   // 누른 뒤 친 글만 새 대화로 가져가요
   try {
@@ -1026,7 +1026,7 @@ async function api(body) {
     const r = await res.json().catch(() => ({}));   // 서버가 처리했는데 본문만 깨진 경우 '실패'로 오인해 중복 전송하지 않게
     lastApiError = "";
     if (!res.ok || r.error) toast(lastApiError = r.error || `처리하지 못했습니다 (서버 오류 ${res.status}).`);
-    else { ok = true; if (r.ok) toast(r.ok); if (isSwitch) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
+    else { ok = true; result = r; if (r.ok) toast(r.ok); if (isSwitch) followGen++; }   // 보던 대화를 지워도 서버가 고른 다음 대화로 바로 넘어가게
   } catch (e) {
     if (body.action === "quit" && e.name === "TypeError") return true;   // 종료 직후 연결이 끊길 수 있음. 시간 초과는 성공으로 간주하지 않음
     toast(e.name === "TimeoutError" ? "서버 응답이 너무 늦습니다. 잠시 뒤 다시 시도하세요. 쓴 내용은 그대로 남아 있습니다."
@@ -1037,7 +1037,7 @@ async function api(body) {
     try { await refreshed; } catch {}
     switchPending--; carryInput = null;
   }
-  return ok;
+  return ok && result;   // 성공하면 서버 응답(참), 실패하면 false
 }
 // 서버가 받았을 때만 입력창을 비움 — 통신 실패 시 쓴 내용 보존, 전송 중 중복 전송 막음
 let sending = false, forceBottom = false;
@@ -1096,7 +1096,7 @@ function sessionAct(action, id) {
   } else if (action === "delete") {
     const cur = window._sessions.find(x => x.id === id);
     if (cur?.open && !confirm(`이 대화에 진행 중인 요청 ${cur.open}건이 있습니다.\n휴지통으로 옮기면 작업이 멈춥니다. 옮길까요?`)) return;
-    api({action, id}).then(ok => ok && toast("대화를 휴지통으로 옮겼습니다.", () => api({action: "restore", id})));
+    api({action, id}).then(r => r && !r.purged && toast("대화를 휴지통으로 옮겼습니다.", () => api({action: "restore", id})));   // 빈 대화는 서버가 바로 지우고 안내도 서버 문구로 띄워요
   } else if (action === "purge") {
     if (confirm("이 대화를 영구 삭제할까요?\n기록과 에이전트 세션이 모두 지워지며 되돌릴 수 없습니다.")) api({action, id});
   } else api({action, id});

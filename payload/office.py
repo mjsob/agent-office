@@ -370,7 +370,7 @@ def set_root(path):
 
 # ── 대화(세션) 목록 (.office/meta.json) ─────────────────────
 # 대화마다 .office/sessions/<id>/ 에 state.json · 에이전트 세션 id · 로그를 따로 둠
-# 삭제는 deleted 플래그(휴지통)만 세우고, 영구 삭제는 휴지통에서 따로 해야 지워짐
+# 삭제는 deleted 플래그(휴지통)만 세우고, 영구 삭제는 휴지통에서 따로 해야 지워짐. 빈 대화만 삭제할 때 바로 지움
 def sdir(sid):
     if not valid_sid(sid):
         raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -5419,6 +5419,22 @@ class Office:
             return {"ok": f"메인 폴더({main})에 병합했습니다.", "warning": "병합은 완료했지만 대화 기록 저장에 실패했습니다."}
         return f"메인 폴더({main})에 병합했습니다."
 
+    def session_is_empty(self, x):
+        """이름을 바꾸거나 고정하지 않았고, 대화·요청·작업·에이전트 세션·백그라운드 기록이 하나도 없는 대화만 빈 대화로 봐요.
+        화면 판정은 믿지 않고 서버 기록으로만 정해요. 기록을 못 읽으면 빈 대화로 보지 않아요."""
+        if x.get("renamed") or x.get("pinned") or x.get("deleted"):
+            return False
+        try:
+            folder = sdir(x["id"])
+            if any((folder / f"{name}.sid").exists() for name in AGENTS):
+                return False
+            if (folder / "bg").is_dir() and any((folder / "bg").iterdir()):
+                return False
+            with state(sid=x["id"]) as s:
+                return not s["jobs"] and not s["tasks"] and not any(msg.get("from") != "system" for msg in s["msgs"])
+        except (OSError, StorageError, UserError, KeyError, TypeError):
+            return False
+
     def purge(self, m, x):
         self.stop_team(x["id"])
         remove_worktree(x["id"])
@@ -5537,12 +5553,20 @@ class Office:
                         else:
                             x.pop("pinned_at", None)
         elif act in ("delete", "restore"):
+            with meta() as m:
+                target = next((x for x in m["sessions"] if x["id"] == p["id"]), None)
+            empty = act == "delete" and target is not None and self.session_is_empty(target)
             with meta(True) as m:
-                for x in m["sessions"]:
-                    if x["id"] == p["id"]:
-                        x["deleted"] = act == "delete"; x["deleted_at"] = time.time()
-                        if act == "restore":
-                            set_current(m, x["id"])
+                x = next((x for x in m["sessions"] if x["id"] == p["id"]), None)
+                if empty and x is not None and not x.get("renamed") and not x.get("pinned") and not x.get("deleted"):
+                    self.purge(m, x)   # 빈 대화는 휴지통을 거치지 않고 바로 지워요
+                    msg = {"ok": "빈 대화를 지웠어요.", "purged": True}
+                else:
+                    for x in m["sessions"]:
+                        if x["id"] == p["id"]:
+                            x["deleted"] = act == "delete"; x["deleted_at"] = time.time()
+                            if act == "restore":
+                                set_current(m, x["id"])
             if act == "delete" and CURRENT_HINT["sid"] == p["id"]:
                 CURRENT_HINT.update(sid=None, at=0.0)   # 방금 고른 대화를 지우면 화면이 지운 대화를 계속 찾지 않게
         elif act == "purge":                    # 휴지통에 있는 것만 영구 삭제
