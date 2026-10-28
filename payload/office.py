@@ -4633,6 +4633,19 @@ def storage_notice_view(path=None, now=None):
 
 
 
+def storage_notice_preferences_view():
+    """저장된 표시 설정을 해석해요. today 는 저장한 날짜와 서버 현지 날짜가 같을 때만 숨겨요."""
+    saved = read_json_file(D / "storage-notice-preferences.json", {})
+    mode = saved.get("mode") if isinstance(saved, dict) else None
+    hidden_on = saved.get("hidden_on") if isinstance(saved, dict) else None
+    today = time.strftime("%Y-%m-%d")
+    if mode == "today" and hidden_on != today:
+        mode, hidden_on = "show", None
+    if mode not in ("show", "today", "never"):
+        mode, hidden_on = "show", None
+    return {"mode": mode, "hidden": mode != "show", "hidden_on": hidden_on if mode == "today" else None}
+
+
 STORAGE_COMPACT_SCRIPT = Path.home() / "projects/wsl-compact/src/run-compact.sh"
 STORAGE_COMPACT_DIR = Path.home() / ".local/state/wsl-compact"
 STORAGE_COMPACT_LOCK = threading.RLock()
@@ -5608,7 +5621,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "chat_options", "ui_settings"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "chat_options", "ui_settings", "storage_notice_preferences"}
         if act == "storage_compact":
             return start_storage_compact(p.get("confirmed"))
         if act not in known:
@@ -5654,6 +5667,12 @@ class Office:
                 raise UserError("화면 색 확인 — 색 모드는 자동·밝게·어둡게 중 하나여야 합니다.")
             atomic_json(D / "ui-settings.json", {"theme": theme})
             return {"ui": {"theme": theme}}
+        if act == "storage_notice_preferences":  # 디스크 알림 표시 설정: 모든 대화 공통, 오늘 숨김은 서버 날짜 기준
+            mode = p.get("mode")
+            if mode not in ("show", "today", "never"):
+                raise UserError("알림 설정 확인 — 보기·오늘 숨기기·계속 숨기기 중 하나를 선택하세요.")
+            atomic_json((D / "storage-notice-preferences.json"), {"mode": mode, "hidden_on": time.strftime("%Y-%m-%d") if mode == "today" else None})
+            return {"storage_notice_preferences": storage_notice_preferences_view()}
         if act == "chat_options":
             changes = {key: p[key] for key in CHAT_OPTION_VALUES if key in p}
             if not changes or any(value not in CHAT_OPTION_VALUES[key] for key, value in changes.items()):
@@ -6001,6 +6020,7 @@ def make_handler(office):
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
                     snapshot["storage_notice"] = storage_notice_view()
+                    snapshot["storage_notice_preferences"] = storage_notice_preferences_view()
                     snapshot["storage_compact"] = storage_compact_view()
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":

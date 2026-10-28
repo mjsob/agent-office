@@ -45,7 +45,13 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 .storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
-.storage-actions { grid-column: 2; grid-row: 1; justify-self: end; }
+.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; grid-column: 2; grid-row: 1; justify-self: end; }
+.storage-notice .storage-dismiss { position: relative; grid-column: auto; margin: 0; }
+.storage-dismiss > summary { padding: 5px 8px; border-radius: 6px; }
+.storage-dismiss > summary:hover { background: var(--chip); }
+.storage-dismiss-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; width: 190px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, .16); }
+.storage-dismiss-menu button { display: block; width: 100%; text-align: left; white-space: normal; }
+#storagePreferenceStatus { margin: -2px 0 12px; color: var(--muted); font-size: 12px; }
 #storageActionStatus { grid-column: 1 / -1; margin-left: 22px; color: var(--muted); }
 #storageActionStatus:empty { display: none; }
 .storage-notice.unavailable { background: var(--chip); border-color: var(--line); }
@@ -643,9 +649,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="settingsBtn" class="ghost" aria-controls="settings" aria-expanded="false" onclick="toggleSettings()">설정</button>
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
-    <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
+    <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
     <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
-    <div class="storage-actions"><button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button></div>
+    <div class="storage-actions">
+      <button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button>
+      <details id="storageDismiss" class="storage-dismiss"><summary>알림 숨기기</summary><div class="storage-dismiss-menu" role="group" aria-label="디스크 알림 숨기기">
+        <button id="storageHideToday" class="ghost" onclick="setStorageNoticePreference('today')">오늘 다시 보지 않기</button>
+        <button id="storageHideNever" class="ghost" onclick="setStorageNoticePreference('never')">다시 보지 않기</button>
+      </div></details>
+    </div>
     <span id="storageActionStatus"></span>
   </aside>
 </header>
@@ -654,6 +666,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="settings-heading"><h3>설정</h3><button class="ghost" aria-label="설정 닫기" onclick="toggleSettings(false, true)"><svg class="i sm"><use href="#i-x"/></svg></button></div>
   <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
   <div class="set-row" id="appWindowRow" hidden><span>창 모양</span><button id="appWindow" class="ghost" onclick="openAppWindow()">앱 창으로 열기</button></div>
+  <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
+  <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
   <div id="resbox" hidden></div>
 </section>
 
@@ -1162,13 +1176,15 @@ function toggleSettings(force, restoreFocus = false) {
 }
 // 두 상단 팝업은 같은 규칙을 쓴다. 바깥 클릭은 누른 곳의 초점을 유지한다.
 document.addEventListener("click", e => {
+  if (!e.target.closest("#storageDismiss")) $("#storageDismiss").open = false;
   const settingsWasOpen = !$("#settings").hidden, updateWasOpen = !$("#updateNotice").hidden;
   if (settingsWasOpen && !e.target.closest("#settings, #settingsBtn")) toggleSettings(false);
   if (updateWasOpen && !e.target.closest("#updateNotice, #version, #settingsBtn")) dismissUpdate(false, false);
 });
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if (!$("#settings").hidden) { e.preventDefault(); toggleSettings(false, true); }
+  if ($("#storageDismiss").open) { e.preventDefault(); $("#storageDismiss").open = false; $("#storageDismiss summary").focus(); }
+  else if (!$("#settings").hidden) { e.preventDefault(); toggleSettings(false, true); }
   else if (!$("#updateNotice").hidden) { e.preventDefault(); dismissUpdate(false); }
 });
 // 설정의 테마 버튼: 자동(OS 따라감) → 밝게 → 어둡게 순환, 이 PC에 기억
@@ -2229,7 +2245,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
-  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice, s.storage_compact));
+  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences));
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
@@ -2313,7 +2329,32 @@ async function doRefresh() {
 // 리소스 한도: 새로 시작하는 작업부터 적용. 입력 중엔 다시 그리지 않음
 let lastResSig = "";
 let storageStarting = false;
-let lastStorageNotice = null, lastStorageAction = null;
+let lastStorageNotice = null, lastStorageAction = null, lastStoragePreferences = null;
+let storagePreferenceSaving = false;
+async function setStorageNoticePreference(mode) {
+  if (storagePreferenceSaving || !lastStoragePreferences) return;
+  storagePreferenceSaving = true;
+  renderStorageNotice(lastStorageNotice, lastStorageAction);
+  try {
+    const result = await api({action: "storage_notice_preferences", mode});
+    if (!result?.storage_notice_preferences) return;
+    lastStoragePreferences = result.storage_notice_preferences;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+    $("#storageDismiss").open = false;
+    if (mode === "show") {
+      if (!$("#storageNotice").hidden) {
+        toggleSettings(false);
+        $("#storageTitle").focus({preventScroll: true});
+      } else toast("알림 표시를 켰어요. 현재 새 디스크 알림은 없어요.");
+    } else {
+      $("#settingsBtn").focus({preventScroll: true});
+      toast(mode === "today" ? "오늘은 디스크 알림을 숨겨요. 설정에서 다시 열 수 있어요." : "디스크 알림을 숨겼어요. 설정에서 다시 열 수 있어요.");
+    }
+  } finally {
+    storagePreferenceSaving = false;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+  }
+}
 async function startStorageCompact() {
   if (storageStarting || !lastStorageAction?.can_start) return;
   if (!confirm("디스크를 줄일까요?\n\n45초 뒤 WSL이 꺼져요. Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\nWindows 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 눌러야 진행돼요. 끝나면 Office를 직접 다시 켜세요.")) return;
@@ -2327,8 +2368,14 @@ async function startStorageCompact() {
     renderStorageNotice(lastStorageNotice, lastStorageAction);
   }
 }
-function renderStorageNotice(notice, action) {
+function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
+  if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
+  const preference = lastStoragePreferences;
+  for (const id of ["#storageHideToday", "#storageHideNever", "#storageRestore"]) $(id).disabled = storagePreferenceSaving || !preference;
+  $("#storagePreferenceStatus").textContent = !preference ? "알림 설정을 불러오고 있어요."
+    : preference.hidden ? preference.mode === "today" ? "오늘은 숨겨요. 내일부터 알림을 표시해요." : "알림을 숨겼어요. [다시 열기]를 누르면 표시해요."
+    : "새 디스크 알림이 있으면 창 위쪽에 표시해요.";
   const button = $("#storageRun"), actionText = $("#storageActionStatus");
   const actionMessages = {
     preparing: "Windows 실행 창을 준비하고 있어요.",
@@ -2347,8 +2394,20 @@ function renderStorageNotice(notice, action) {
   const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
   const status = notice?.status;
   const visible = ["suggested", "stale", "unavailable"].includes(status) || Boolean(actionText.textContent);
-  box.hidden = !visible;
-  if (!visible) { details.open = false; return; }
+  const activeWork = ["preparing", "launched", "countdown", "running", "uncertain"].includes(action?.status) || storageStarting;
+  const suppressed = preference?.hidden === true;
+  box.hidden = !visible || (suppressed && !activeWork);
+  $("#storageDismiss").hidden = suppressed;
+  button.hidden = button.hidden || suppressed;
+  if (box.hidden) { details.open = false; $("#storageDismiss").open = false; return; }
+  if (suppressed) {
+    box.classList.toggle("unavailable", false);
+    title.textContent = "디스크 줄이기가 진행 중이에요.";
+    metrics.textContent = "";
+    details.hidden = true;
+    details.open = false;
+    return;
+  }
   const suggested = status === "suggested";
   box.classList.toggle("unavailable", !suggested);
   title.textContent = suggested
