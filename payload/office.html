@@ -36,19 +36,24 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 svg.sm { width: 14px; height: 14px; }
 
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-.storage-notice { flex: 1 0 100%; min-width: 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line)); border-radius: 9px; background: var(--warn-soft); font-size: 12px; line-height: 1.6; }
+.storage-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center; flex: 1 0 100%; min-width: 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line)); border-radius: 9px; background: var(--warn-soft); font-size: 12px; line-height: 1.6; }
 .storage-notice .storage-line { display: flex; align-items: flex-start; gap: 8px; }
 .storage-notice .storage-line > svg { color: var(--warn); margin-top: 3px; }
 .storage-notice strong { font-weight: 600; }
 .storage-notice .storage-metrics { color: var(--muted); margin-left: 8px; }
-.storage-notice details { margin-left: 22px; }
+.storage-notice details { grid-column: 1 / -1; margin-left: 22px; }
 .storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
-.storage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 0 22px; }
-.storage-actions span { color: var(--muted); }
+.storage-actions { grid-column: 2; grid-row: 1; justify-self: end; }
+#storageActionStatus { grid-column: 1 / -1; margin-left: 22px; color: var(--muted); }
+#storageActionStatus:empty { display: none; }
 .storage-notice.unavailable { background: var(--chip); border-color: var(--line); }
-@media (max-width: 700px) { .storage-notice .storage-metrics { display: block; margin-left: 0; } }
+@media (max-width: 700px) {
+  .storage-notice .storage-line { grid-column: 1 / -1; }
+  .storage-notice .storage-metrics { display: block; margin-left: 0; }
+  .storage-actions { grid-column: 1 / -1; grid-row: auto; margin-top: 6px; }
+}
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
 .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
 .version { background: none; border: 0; padding: 2px 4px; position: relative; text-decoration: none; text-underline-offset: 3px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
@@ -640,7 +645,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
     <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
-    <div class="storage-actions"><button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button><span id="storageActionStatus"></span></div>
+    <div class="storage-actions"><button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button></div>
+    <span id="storageActionStatus"></span>
   </aside>
 </header>
 
