@@ -336,6 +336,8 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
   $lnk.Save()
   $made += $path
 }
+# 같은 경로의 아이콘을 바꿔도 탐색기가 예전 그림을 보여 주지 않게 아이콘 캐시를 새로 읽혀요
+try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 $made -join "`n"
 PS1
     if made=$(timeout 30 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$staging/office-shortcut.ps1")" \
