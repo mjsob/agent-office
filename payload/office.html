@@ -45,22 +45,28 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 .storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
-.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; grid-column: 2; grid-row: 1; justify-self: end; }
+.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; grid-column: 2; grid-row: 1; justify-self: end; }
 .storage-notice .storage-dismiss { position: relative; grid-column: auto; margin: 0; }
-.storage-notice .storage-run, .storage-dismiss > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; transition: background .15s, border-color .15s, box-shadow .15s; }
+.storage-notice .storage-run, .storage-dismiss > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 9px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; transition: background .15s, border-color .15s, box-shadow .15s; }
 .storage-notice .storage-run { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 1px 2px #00000012; }
 .storage-notice .storage-run:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--panel)); }
 .storage-notice .storage-run:active:not(:disabled) { box-shadow: none; }
 .storage-notice .storage-run:disabled { opacity: .5; cursor: default; box-shadow: none; }
-.storage-dismiss > summary { color: var(--muted); list-style: none; font-weight: 500; }
+.storage-dismiss > summary { color: var(--text); background: var(--panel); border-color: color-mix(in srgb, var(--muted) 45%, var(--line)); box-shadow: 0 1px 2px #0000000a; list-style: none; font-weight: 600; }
 .storage-dismiss > summary::-webkit-details-marker { display: none; }
-.storage-dismiss > summary:hover, .storage-dismiss[open] > summary { color: var(--text); background: color-mix(in srgb, var(--panel) 75%, transparent); border-color: var(--line); }
-.storage-dismiss .storage-chevron { width: 12px; height: 12px; }
-.storage-dismiss[open] .storage-chevron { transform: rotate(180deg); }
-.storage-dismiss-menu { position: absolute; top: calc(100% + 7px); right: 0; z-index: 30; width: 214px; max-width: calc(100vw - 48px); padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 32px #0000001a, 0 2px 6px #0000000a; }
-.storage-dismiss-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 12px; text-align: left; white-space: normal; }
+.storage-dismiss > summary:hover { background: var(--chip); border-color: var(--muted); }
+.storage-dismiss[open] > summary { color: var(--codex); background: var(--codex-soft); border-color: var(--codex); box-shadow: 0 0 0 1px var(--codex); }
+.storage-dismiss .storage-chevron { box-sizing: content-box; width: 12px; height: 12px; margin-left: 2px; padding-left: 8px; border-left: 1px solid var(--line); }
+.storage-dismiss[open] .storage-chevron path { transform: rotate(180deg); transform-origin: 12px 12px; }
+.storage-dismiss-menu { position: absolute; top: calc(100% + 7px); right: 0; z-index: 30; width: 288px; max-width: calc(100vw - 48px); padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 32px #0000001a, 0 2px 6px #0000000a; }
+.storage-dismiss-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 64px; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 12px; text-align: left; white-space: normal; }
 .storage-dismiss-menu button:hover:not(:disabled) { background: var(--chip); }
-.storage-dismiss-menu button svg { color: var(--muted); }
+.storage-dismiss-menu button > svg { box-sizing: content-box; padding: 8px; border-radius: 9px; background: var(--chip); color: var(--text); }
+.storage-dismiss-copy { display: grid; gap: 2px; }
+.storage-dismiss-label { font-size: 13px; font-weight: 600; line-height: 1.5; }
+.storage-dismiss-description { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.storage-notice .storage-dismiss-heading { margin: 0; padding: 7px 10px 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.storage-notice .storage-dismiss-help { margin: 6px -6px -6px; padding: 10px 14px; border-top: 1px solid var(--line); border-radius: 0 0 12px 12px; background: color-mix(in srgb, var(--chip) 50%, var(--panel)); color: var(--muted); font-size: 11px; line-height: 1.6; }
 .storage-dismiss-menu button:disabled { opacity: .5; cursor: default; }
 .storage-notice .storage-run:focus-visible, .storage-dismiss > summary:focus-visible, .storage-dismiss-menu button:focus-visible { outline: 2px solid var(--codex); outline-offset: 3px; }
 #storagePreferenceStatus { margin: -2px 0 12px; color: var(--muted); font-size: 12px; }
@@ -668,9 +674,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
     <div class="storage-actions">
       <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
-      <details id="storageDismiss" class="storage-dismiss"><summary><span>알림 숨기기</span><svg class="i storage-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></summary><div class="storage-dismiss-menu" role="group" aria-label="디스크 알림 숨기기">
-        <button id="storageHideToday" onclick="setStorageNoticePreference('today')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span>오늘 다시 보지 않기</span></button>
-        <button id="storageHideNever" onclick="setStorageNoticePreference('never')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span>다시 보지 않기</span></button>
+      <details id="storageDismiss" class="storage-dismiss"><summary aria-controls="storageDismissMenu"><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span>알림 숨기기</span><svg class="i storage-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></summary><div id="storageDismissMenu" class="storage-dismiss-menu" role="group" aria-labelledby="storageDismissHeading"><p id="storageDismissHeading" class="storage-dismiss-heading">알림을 숨길 기간을 고르세요.</p>
+        <button id="storageHideToday" onclick="setStorageNoticePreference('today')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span class="storage-dismiss-copy"><span class="storage-dismiss-label">오늘 다시 보지 않기</span><span class="storage-dismiss-description">내일부터 다시 표시해요.</span></span></button>
+        <button id="storageHideNever" onclick="setStorageNoticePreference('never')"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span class="storage-dismiss-copy"><span class="storage-dismiss-label">다시 보지 않기</span><span class="storage-dismiss-description">직접 다시 열 때까지 숨겨요.</span></span></button>
+        <p class="storage-dismiss-help">숨긴 알림은 설정에서 다시 열 수 있어요.</p>
       </div></details>
     </div>
     <span id="storageActionStatus"></span>
@@ -1201,6 +1208,23 @@ document.addEventListener("keydown", e => {
   if ($("#storageDismiss").open) { e.preventDefault(); $("#storageDismiss").open = false; $("#storageDismiss summary").focus(); }
   else if (!$("#settings").hidden) { e.preventDefault(); toggleSettings(false, true); }
   else if (!$("#updateNotice").hidden) { e.preventDefault(); dismissUpdate(false); }
+});
+$("#storageDismiss").addEventListener("keydown", e => {
+  const menu = $("#storageDismiss"), trigger = menu.querySelector("summary");
+  const items = [...menu.querySelectorAll("button:not(:disabled)")];
+  if (!items.length) return;
+  if (e.target === trigger && ["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+    e.preventDefault(); menu.open = true;
+    items[e.key === "ArrowUp" ? items.length - 1 : 0].focus();
+  } else if (menu.open && items.includes(document.activeElement) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+    e.preventDefault();
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  }
+});
+document.addEventListener("focusin", e => {
+  if (!e.target.closest("#storageDismiss")) $("#storageDismiss").open = false;
 });
 // 설정의 테마 버튼: 자동(OS 따라감) → 밝게 → 어둡게 순환, 이 PC에 기억
 const THEMES = {auto: "◐ 자동", light: "☀ 밝게", dark: "☾ 어둡게"};
