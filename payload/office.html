@@ -35,19 +35,21 @@ body { background: var(--bg); color: var(--text); font: 14px/1.55 "Pretendard", 
 svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
 svg.sm { width: 14px; height: 14px; }
 
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-.storage-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; align-items: center; flex: 1 0 100%; min-width: 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--warn) 18%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--warn-soft) 55%, var(--panel)); font-size: 12px; line-height: 1.6; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.storage-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; align-items: center; flex: 1 0 100%; min-width: 0; padding: 8px 8px 8px 14px; border: 1px solid color-mix(in srgb, var(--warn) 18%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--warn-soft) 55%, var(--panel)); font-size: 12px; line-height: 1.6; }
 .storage-notice .storage-line { display: flex; align-items: flex-start; gap: 8px; }
+.storage-notice .storage-text { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; min-width: 0; }
 .storage-notice .storage-line > svg { color: var(--warn); margin-top: 3px; }
 .storage-notice strong { font-weight: 600; }
-.storage-notice .storage-metrics { color: var(--muted); margin-left: 8px; }
-.storage-notice details { grid-column: 1 / -1; margin-left: 22px; }
-.storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.storage-notice .storage-metrics { color: var(--muted); }
+.storage-notice #storageDetails[open] { flex-basis: 100%; }
+.storage-notice #storageDetails > summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.storage-notice #storageDetails > summary:hover { color: var(--text); }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
-.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; grid-column: 2; grid-row: 1; justify-self: end; }
+.storage-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; grid-column: 2; grid-row: 1; justify-self: end; align-self: start; }
 .storage-notice .storage-dismiss { position: relative; grid-column: auto; margin: 0; }
-.storage-notice .storage-run, .storage-dismiss > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 9px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; transition: background .15s, border-color .15s, box-shadow .15s; }
+.storage-notice .storage-run, .storage-dismiss > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; transition: background .15s, border-color .15s, box-shadow .15s; }
 .storage-notice .storage-run { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 1px 2px #00000012; }
 .storage-notice .storage-run:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--panel)); }
 .storage-notice .storage-run:active:not(:disabled) { box-shadow: none; }
@@ -75,8 +77,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 .storage-notice.unavailable { background: var(--chip); border-color: var(--line); }
 @media (max-width: 700px) {
   .storage-notice .storage-line { grid-column: 1 / -1; }
-  .storage-notice .storage-metrics { display: block; margin-left: 0; }
-  .storage-actions { grid-column: 1 / -1; grid-row: auto; margin-top: 10px; }
+  .storage-actions { grid-column: 1 / -1; grid-row: auto; margin-top: 8px; }
+  .storage-notice { padding-right: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .storage-notice .storage-run, .storage-dismiss > summary { transition: none; }
@@ -670,8 +672,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="settingsBtn" class="ghost" aria-controls="settings" aria-expanded="false" onclick="toggleSettings()">설정</button>
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
-    <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
-    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
+    <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div class="storage-text"><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details></div></div>
     <div class="storage-actions">
       <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
       <details id="storageDismiss" class="storage-dismiss"><summary aria-controls="storageDismissMenu"><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M9 5a6 6 0 0 1 9 5v4m-2 2H5l2-3v-3a6 6 0 0 1 .3-2M10 20h4"/></svg><span>알림 숨기기</span><svg class="i storage-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></summary><div id="storageDismissMenu" class="storage-dismiss-menu" role="group" aria-labelledby="storageDismissHeading"><p id="storageDismissHeading" class="storage-dismiss-heading">알림을 숨길 기간을 고르세요.</p>
