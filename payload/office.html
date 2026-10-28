@@ -45,6 +45,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding
 .storage-notice summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .storage-notice p { margin: 5px 0; }
 .storage-notice code { overflow-wrap: anywhere; }
+.storage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 0 22px; }
+.storage-actions span { color: var(--muted); }
 .storage-notice.unavailable { background: var(--chip); border-color: var(--line); }
 @media (max-width: 700px) { .storage-notice .storage-metrics { display: block; margin-left: 0; } }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
@@ -637,7 +639,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div><strong id="storageTitle"></strong><span id="storageMetrics" class="storage-metrics"></span></div></div>
-    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>WSL 터미널에서 <code>~/projects/wsl-compact/src/run-compact.sh</code>를 실행하세요. 자동으로 실행하지는 않아요.</p></details>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 관리자 권한 창에서 [예]를 눌러야 해요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 중단 안내를 확인하세요. Windows 창이 열려요. 45초 안에 그 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 누르면 디스크를 줄여요.</p></details>
+    <div class="storage-actions"><button id="storageRun" onclick="startStorageCompact()" hidden>디스크 줄이기</button><span id="storageActionStatus"></span></div>
   </aside>
 </header>
 
@@ -2220,7 +2223,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
-  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice));
+  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice, s.storage_compact));
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
@@ -2303,10 +2306,41 @@ async function doRefresh() {
 }
 // 리소스 한도: 새로 시작하는 작업부터 적용. 입력 중엔 다시 그리지 않음
 let lastResSig = "";
-function renderStorageNotice(notice) {
+let storageStarting = false;
+let lastStorageNotice = null, lastStorageAction = null;
+async function startStorageCompact() {
+  if (storageStarting || !lastStorageAction?.can_start) return;
+  if (!confirm("디스크를 줄일까요?\n\n45초 뒤 WSL이 꺼져요. Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\nWindows 창을 닫으면 취소돼요. 관리자 권한 창에서 [예]를 눌러야 진행돼요. 끝나면 Office를 직접 다시 켜세요.")) return;
+  storageStarting = true;
+  renderStorageNotice(lastStorageNotice, lastStorageAction);
+  try {
+    const result = await api({action: "storage_compact", confirmed: true});
+    if (result?.storage_compact) lastStorageAction = result.storage_compact;
+  } finally {
+    storageStarting = false;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+  }
+}
+function renderStorageNotice(notice, action) {
+  lastStorageNotice = notice; lastStorageAction = action;
+  const button = $("#storageRun"), actionText = $("#storageActionStatus");
+  const actionMessages = {
+    preparing: "Windows 실행 창을 준비하고 있어요.",
+    launched: "Windows 실행 창을 확인하세요. 45초 뒤 WSL이 꺼져요. 창을 닫으면 취소돼요.",
+    countdown: "Windows 실행 창에서 기다리고 있어요. 45초 뒤 WSL이 꺼져요. 창을 닫으면 취소돼요.",
+    running: "디스크를 줄이고 있어요. Windows 창에서 결과를 확인하세요.",
+    completed: "디스크 줄이기가 끝났어요. 새 용량은 다음 점검에 반영돼요.",
+    cancelled: "실행을 취소했어요.",
+    failed: "실행하지 못했어요. Windows 창과 실행 기록을 확인한 뒤 다시 시도하세요.",
+    uncertain: "실행 상태를 확인하지 못했어요. 다시 누르기 전에 Windows 실행 창을 확인하세요."
+  };
+  actionText.textContent = storageStarting ? actionMessages.preparing : actionMessages[action?.status] || "";
+  button.hidden = notice?.status !== "suggested" || !action?.available;
+  button.disabled = storageStarting || !action?.can_start;
+  button.textContent = storageStarting || action?.status === "preparing" ? "실행 준비 중이에요" : "디스크 줄이기";
   const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
   const status = notice?.status;
-  const visible = ["suggested", "stale", "unavailable"].includes(status);
+  const visible = ["suggested", "stale", "unavailable"].includes(status) || Boolean(actionText.textContent);
   box.hidden = !visible;
   if (!visible) { details.open = false; return; }
   const suggested = status === "suggested";

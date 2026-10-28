@@ -4632,6 +4632,119 @@ def storage_notice_view(path=None, now=None):
         return None
 
 
+
+STORAGE_COMPACT_SCRIPT = Path.home() / "projects/wsl-compact/src/run-compact.sh"
+STORAGE_COMPACT_DIR = Path.home() / ".local/state/wsl-compact"
+STORAGE_COMPACT_LOCK = threading.RLock()
+STORAGE_COMPACT_PROBE = {}
+STORAGE_COMPACT_ACTIVE = {"preparing", "launched", "countdown", "running", "uncertain"}
+
+
+def compact_record(path):
+    try:
+        with path.open("rb") as source:
+            raw = source.read(16385)
+        value = json.loads(raw) if len(raw) <= 16384 else None
+        if not isinstance(value, dict) or value.get("schema_version") != 1:
+            return None
+        at = value.get("updated_at")
+        if type(at) not in (float, int) or not math.isfinite(at) or at <= 0 or at > time.time() + 300:
+            return None
+        if value.get("status") not in STORAGE_COMPACT_ACTIVE | {"completed", "cancelled", "failed"}:
+            return None
+        return value
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def probe_storage_compact(request_id):
+    running = None
+    try:
+        result = subprocess.run(["bash", str(STORAGE_COMPACT_SCRIPT), "--status"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+        if isinstance(data, dict) and type(data.get("running")) is bool:
+            running = data["running"]
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("storage.probe", error)
+    with STORAGE_COMPACT_LOCK:
+        STORAGE_COMPACT_PROBE.update(request_id=request_id, at=time.time(), running=running)
+
+
+def storage_compact_view():
+    """창만 조회해도 실행되지 않아요. Windows가 남긴 진행 상태를 읽어요."""
+    available = bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file()
+    with STORAGE_COMPACT_LOCK:
+        launch = compact_record(STORAGE_COMPACT_DIR / "office-launch.json")
+        external = compact_record(STORAGE_COMPACT_DIR / "status.json")
+        value = launch
+        if external and (not launch or external.get("request_id") == launch.get("request_id")):
+            value = external
+        if not value:
+            # 깨진 실행 기록은 재실행으로 덮지 않아요. Windows 창을 먼저 확인하게 해요.
+            status = "uncertain" if (STORAGE_COMPACT_DIR / "office-launch.json").exists() else "idle"
+            value = {"status": status}
+        value = dict(value)
+        age = time.time() - value.get("updated_at", time.time())
+        # 창을 닫아서는 종료 상태를 쓸 수 없어요. Windows 프로세스가 끝난 것도 확인해요.
+        needs_probe = value["status"] in STORAGE_COMPACT_ACTIVE and age > (5 if value["status"] == "countdown" else 180)
+        probe = dict(STORAGE_COMPACT_PROBE)
+        rid = value.get("request_id")
+        if available and needs_probe:
+            if probe.get("request_id") == rid and probe.get("at", 0) > value.get("updated_at", 0) and time.time() - probe.get("at", 0) < 30:
+                if probe.get("running") is False:
+                    value["status"] = "cancelled"
+            if probe.get("request_id") != rid or time.time() - probe.get("at", 0) >= 15:
+                refresh_later("storage_compact", lambda: probe_storage_compact(rid))
+        if value["status"] in STORAGE_COMPACT_ACTIVE and age > 3600:
+            value["status"] = "uncertain"
+        return {"available": available, "status": value["status"],
+                "updated_at": value.get("updated_at"),
+                "can_start": available and value["status"] not in STORAGE_COMPACT_ACTIVE}
+
+
+def start_storage_compact(confirmed):
+    if confirmed is not True:
+        raise UserError("WSL 작업이 모두 멈추는 안내를 확인한 뒤 실행하세요.")
+    folder = STORAGE_COMPACT_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    # 모든 대화와 다른 Office 서버에서도 같은 준비 작업을 중복 실행하지 않아요.
+    with STORAGE_COMPACT_LOCK, (folder / "office-launch.lock").open("a+") as guard:
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        view = storage_compact_view()
+        if not view["available"]:
+            raise UserError("이 PC의 디스크 줄이기 스크립트를 찾지 못했어요. 설치 상태를 확인하세요.")
+        if not view["can_start"]:
+            raise UserError("이미 실행을 준비했어요. 열려 있는 Windows 실행 창을 확인하세요.")
+        notice = storage_notice_view()
+        if not notice or notice["status"] != "suggested":
+            raise UserError("최신 디스크 제안이 없어요. 다음 용량 점검 뒤 다시 실행하세요.")
+        record = {"schema_version": 1, "status": "preparing", "updated_at": time.time(), "request_id": uuid.uuid4().hex}
+        atomic_json(folder / "office-launch.json", record)
+        def run():
+            status = "uncertain"
+            try:
+                with (folder / "office-launch.log").open("w") as output:
+                    result = subprocess.run(["bash", str(STORAGE_COMPACT_SCRIPT)], cwd=str(STORAGE_COMPACT_SCRIPT.parent),
+                                            env={**os.environ, "WSL_COMPACT_REQUEST_ID": record["request_id"]},
+                                            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=120)
+                status = "launched" if result.returncode in (0, 3) else "failed"
+            except subprocess.TimeoutExpired as error:
+                server_log("storage.launch.timeout", error)
+            except OSError as error:
+                status = "failed"
+                server_log("storage.launch", error)
+            finally:
+                with STORAGE_COMPACT_LOCK:
+                    atomic_json(folder / "office-launch.json", {**record, "status": status, "updated_at": time.time()})
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except RuntimeError:
+            atomic_json(folder / "office-launch.json", {**record, "status": "failed", "updated_at": time.time()})
+            raise UserError("실행을 준비하지 못했어요. 다시 시도하세요.") from None
+    return {"storage_compact": storage_compact_view()}
+
+
 def resource_view():
     """화면용: systemctl 을 기다리지 않게 마지막 값을 바로 돌려주고, 3초 지났으면 뒤에서 다시 구해요.
     값이 아직 없는 서버 시작 직후 한 번만 직접 구해요(없다고 잘못 보이지 않게)"""
@@ -5495,7 +5608,9 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "chat_options", "ui_settings"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "chat_options", "ui_settings"}
+        if act == "storage_compact":
+            return start_storage_compact(p.get("confirmed"))
         if act not in known:
             raise UserError("동작 처리 불가 — 알 수 없는 동작입니다. 화면을 새로고침하고 다시 시도하세요.")
         if act in ("switch", "rename", "pin", "delete", "restore", "purge"):
@@ -5886,6 +6001,7 @@ def make_handler(office):
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
                     snapshot["storage_notice"] = storage_notice_view()
+                    snapshot["storage_compact"] = storage_compact_view()
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":
                     query = parse_qs(urlsplit(self.path).query)
