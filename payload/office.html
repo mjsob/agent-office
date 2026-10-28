@@ -673,7 +673,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div class="storage-text"><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span>
-    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 안내를 확인하세요. Windows 창이 열리고 관리자 권한 창이 떠요. [예]를 누르면 45초 뒤 WSL이 꺼지고 디스크를 줄여요. [중단하기]를 누르면 취소가 끝날 때까지 기다려요.</p></details></div></div>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 끝나면 보이는 콘솔에서 Office를 다시 켜세요.</p><p>[디스크 줄이기]를 누르고 안내를 확인하세요. Windows 창이 열리고 관리자 권한 창이 떠요. [예]를 누르면 1분 뒤 WSL이 꺼지고 디스크를 줄여요. [중단하기]를 누르면 취소가 끝날 때까지 기다려요.</p></details></div></div>
     <div class="storage-actions">
       <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
       <button id="storageCancel" class="storage-cancel" onclick="cancelStorageCompact()" hidden>취소</button>
@@ -2399,7 +2399,7 @@ async function setStorageNoticePreference(mode) {
 }
 async function startStorageCompact() {
   if (storageStarting || !lastStorageAction?.can_start) return;
-  if (!confirm("디스크를 줄일까요?\n\n먼저 관리자 권한 창에서 [예]를 눌러야 해요. 그 뒤 45초가 지나면 WSL이 꺼져요. Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\n멈추려면 Windows 창의 [중단하기]를 누르세요. 끝나면 Office를 직접 다시 켜세요.")) return;
+  if (!confirm("디스크를 줄일까요?\n\n먼저 관리자 권한 창에서 [예]를 눌러야 해요. 그 뒤 1분이 지나면 WSL이 꺼져요(Windows 창의 [바로 실행]으로 건너뛸 수 있어요). Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\n멈추려면 Windows 창의 [중단하기]를 누르세요. 끝나면 Office를 직접 다시 켜세요.")) return;
   storageStarting = true;
   renderStorageNotice(lastStorageNotice, lastStorageAction);
   try {
@@ -2482,10 +2482,10 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
   box.classList.toggle("unavailable", !suggested);
   title.textContent = suggested
     ? notice.urgent ? "디스크 여유가 부족해요. 가상디스크 축소를 제안해요." : "가상디스크를 줄여 공간을 확보할 수 있어요."
-    : status === "stale" ? "디스크 정보를 다시 확인해야 해요." : "디스크 용량을 확인하지 못했어요.";
+    : status === "stale" ? notice.refreshing ? "디스크 정보를 확인하고 있어요." : "디스크 정보를 다시 확인해야 해요." : "디스크 용량을 확인하지 못했어요.";
   metrics.textContent = suggested
     ? `${notice.drive} 여유 ${Number(notice.free_gib).toFixed(1)}GiB · 회수 후보 최대 약 ${Number(notice.reclaim_gib).toFixed(1)}GiB`
-    : "다음 점검에서 다시 확인해요.";
+    : status !== "stale" ? "다음 점검에서 다시 확인해요." : notice.refreshing ? "잠시만 기다리세요." : "10분 안에 다시 확인해요.";
   details.hidden = !suggested;
   if (!suggested) details.open = false;
 }

@@ -4591,6 +4591,27 @@ def resource_status(refresh=False):
 
 STORAGE_NOTICE_FILE = Path.home() / "resource-watch" / "compact-notice.json"
 STORAGE_NOTICE_MAX_AGE = 2 * 3600
+STORAGE_WATCH_SCRIPT = Path.home() / "resource-watch" / "watch.py"
+STORAGE_NOTICE_RETRY = 600
+STORAGE_NOTICE_REFRESH = {"at": 0.0}
+
+
+def refresh_storage_notice(notice, compact):
+    """낡은 디스크 정보는 사용자가 기다리지 않게 뒤에서 한 번만 다시 재요. 실패하면 10분 뒤에 다시 시도해요."""
+    if not notice or compact.get("status") in STORAGE_COMPACT_ACTIVE or not STORAGE_WATCH_SCRIPT.is_file():
+        return notice
+    checked = notice.get("checked_at", 0)
+    after_compact = compact.get("status") == "completed" and checked < (compact.get("updated_at") or 0)
+    if notice["status"] != "stale" and not after_compact:
+        return notice
+    now = time.time()
+    if now - STORAGE_NOTICE_REFRESH["at"] >= STORAGE_NOTICE_RETRY and "storage_notice" not in REFRESHING:
+        STORAGE_NOTICE_REFRESH["at"] = now
+        def run():
+            subprocess.run(["python3", str(STORAGE_WATCH_SCRIPT), "--disk-only"], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=60)
+        refresh_later("storage_notice", run)
+    return {**notice, "refreshing": "storage_notice" in REFRESHING or now - STORAGE_NOTICE_REFRESH["at"] < 60}
 
 
 def storage_notice_view(path=None, now=None):
@@ -6083,9 +6104,10 @@ def make_handler(office):
                     saved_ui = read_json_file(D / "ui-settings.json", {})
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
-                    snapshot["storage_notice"] = storage_notice_view()
+                    compact_state = storage_compact_view()
+                    snapshot["storage_notice"] = refresh_storage_notice(storage_notice_view(), compact_state)
                     snapshot["storage_notice_preferences"] = storage_notice_preferences_view()
-                    snapshot["storage_compact"] = storage_compact_view()
+                    snapshot["storage_compact"] = compact_state
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":
                     query = parse_qs(urlsplit(self.path).query)

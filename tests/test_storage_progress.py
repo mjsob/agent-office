@@ -45,3 +45,26 @@ with tempfile.TemporaryDirectory() as tmp:
             except o.UserError: pass
             else: raise AssertionError("실패 종료 코드를 무시했어요")
 print("storage cancel ok")
+
+# 낡은 디스크 정보는 한 번만 다시 재고, 실패하면 10분 뒤에 다시 시도해요.
+import tempfile
+calls = []
+o.refresh_later = lambda key, fn: (calls.append(key), o.REFRESHING.add(key))
+o.STORAGE_WATCH_SCRIPT = Path(__file__)
+o.STORAGE_NOTICE_REFRESH["at"] = 0.0
+stale = {"status": "stale", "checked_at": 1.0}
+first = o.refresh_storage_notice(stale, {"status": "idle"})
+assert first["refreshing"] is True and calls == ["storage_notice"], (first, calls)
+o.REFRESHING.discard("storage_notice")
+again = o.refresh_storage_notice(stale, {"status": "idle"})
+assert calls == ["storage_notice"], "10분 안에는 다시 재지 않아요"
+o.STORAGE_NOTICE_REFRESH["at"] = time.time() - 700
+o.refresh_storage_notice(stale, {"status": "idle"}); assert len(calls) == 2
+o.STORAGE_NOTICE_REFRESH["at"] = 0.0; calls.clear(); o.REFRESHING.discard("storage_notice")
+assert o.refresh_storage_notice(stale, {"status": "running"}) is stale and not calls, "축소 중엔 재지 않아요"
+fresh = {"status": "ok", "checked_at": time.time()}
+assert o.refresh_storage_notice(fresh, {"status": "idle"}) is fresh and not calls
+after = {"status": "suggested", "checked_at": 100.0}
+assert o.refresh_storage_notice(after, {"status": "completed", "updated_at": 200.0})["refreshing"] and calls, "축소 완료 뒤엔 다시 재요"
+assert o.refresh_storage_notice(None, {"status": "idle"}) is None
+print("storage notice refresh ok")
