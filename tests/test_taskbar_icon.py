@@ -1,7 +1,7 @@
 """작업 표시줄 아이콘 연결과 창 열기 실패 처리를 확인해요."""
 import base64,importlib.util,os,subprocess,sys,tempfile,unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 SOURCE=Path(sys.argv.pop(1)) if len(sys.argv)>1 else Path(__file__).resolve().parents[1]/'payload'/'office.py'
 class TaskbarIcon(unittest.TestCase):
  def setUp(self):
@@ -29,12 +29,20 @@ class TaskbarIcon(unittest.TestCase):
   for err in (OSError('missing'),subprocess.TimeoutExpired([],12)):
    with self.subTest(error=type(err)),patch.object(self.o.subprocess,'run',side_effect=err):self.assertFalse(self.o.configure_taskbar_icon())
  def test_browser_open_starts_bounded_icon_worker(self):
-  with patch.object(Path,'exists',return_value=True),patch.object(self.o.subprocess,'Popen') as launch,patch.object(self.o.threading,'Thread') as thread:
-   self.assertTrue(self.o.open_window(12345,app_only=True));self.assertEqual(launch.call_count,1);thread.return_value.start.assert_called_once()
-   self.assertEqual(thread.call_args.kwargs['target'],self.o.configure_taskbar_icon);self.assertTrue(thread.call_args.kwargs['daemon'])
+  created=[]
+  def make_thread(*args,**kwargs):
+   obj=Mock();created.append((kwargs,obj));return obj
+  with patch.object(Path,'exists',return_value=True),patch.object(self.o.subprocess,'Popen') as launch,patch.object(self.o.threading,'Thread',side_effect=make_thread):
+   self.assertTrue(self.o.open_window(12345,app_only=True));self.assertEqual(launch.call_count,1)
+  icon_threads=[(kw,obj) for kw,obj in created if kw.get('target')==self.o.configure_taskbar_icon]
+  self.assertEqual(len(icon_threads),1);kw,obj=icon_threads[0];obj.start.assert_called_once();self.assertTrue(kw['daemon'])
  def test_icon_worker_start_failure_keeps_open_browser_successful(self):
-  with patch.object(Path,'exists',return_value=True),patch.object(self.o.subprocess,'Popen'),patch.object(self.o.threading,'Thread') as thread:
-   thread.return_value.start.side_effect=RuntimeError('no threads');self.assertTrue(self.o.open_window(12345,app_only=True))
+  def make_thread(*args,**kwargs):
+   obj=Mock()
+   if kwargs.get('target')==self.o.configure_taskbar_icon:obj.start.side_effect=RuntimeError('no threads')
+   return obj
+  with patch.object(Path,'exists',return_value=True),patch.object(self.o.subprocess,'Popen'),patch.object(self.o.threading,'Thread',side_effect=make_thread):
+   self.assertTrue(self.o.open_window(12345,app_only=True))
  def test_no_app_browser_does_not_start_icon_worker(self):
   with patch.object(Path,'exists',return_value=False),patch.object(self.o.threading,'Thread') as thread:
    self.assertFalse(self.o.open_window(12345,app_only=True));thread.assert_not_called()
