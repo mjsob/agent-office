@@ -2482,6 +2482,19 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
   }
   const suggested = status === "suggested";
   box.classList.toggle("unavailable", !suggested);
+  // 새로 잰 값이 정상이어도 줄이기 진행·결과가 있으면 그 상태를 제목으로 써요.
+  const actionTitles = {preparing: "디스크 줄이기를 준비하고 있어요.", launched: "디스크 줄이기를 준비하고 있어요.", awaiting_admin: "디스크 줄이기를 준비하고 있어요.", countdown: "디스크 줄이기를 준비하고 있어요.",
+    stopping: "디스크를 줄이고 있어요.", running: "디스크를 줄이고 있어요.", cancelling: "디스크 줄이기를 취소하고 있어요.",
+    completed: "디스크를 줄였어요.", cancelled: "디스크 줄이기를 취소했어요.", failed: "디스크를 줄이지 못했어요.", uncertain: "디스크 줄이기 상태를 확인해야 해요."};
+  const actionTitle = suggested ? "" : actionTitles[action?.status] || "";
+  if (actionTitle) {
+    title.textContent = actionTitle;
+    metrics.textContent = action.status === "completed" && Number.isFinite(action.before_gb) && Number.isFinite(action.after_gb)
+      ? `디스크 파일 ${action.before_gb}GiB → ${action.after_gb}GiB` : "";
+    details.hidden = true;
+    details.open = false;
+    return;
+  }
   title.textContent = suggested
     ? notice.urgent ? "디스크 여유가 부족해요. 가상디스크 축소를 제안해요." : "가상디스크를 줄여 공간을 확보할 수 있어요."
     : status === "stale" ? notice.refreshing ? "디스크 정보를 확인하고 있어요." : "디스크 정보를 다시 확인해야 해요." : "디스크 용량을 확인하지 못했어요.";
