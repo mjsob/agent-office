@@ -5725,7 +5725,7 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
         if act == "storage_compact":
             return start_storage_compact(p.get("confirmed"))
         if act == "storage_compact_cancel":
@@ -5779,6 +5779,12 @@ class Office:
                 raise UserError("알림 설정 확인 — 보기·오늘 숨기기·계속 숨기기 중 하나를 선택하세요.")
             atomic_json((D / "storage-notice-preferences.json"), {"mode": mode, "hidden_on": time.strftime("%Y-%m-%d") if mode == "today" else None})
             return {"storage_notice_preferences": storage_notice_preferences_view()}
+        if act == "storage_result_close":   # 끝난 디스크 줄이기 결과를 닫은 기록: 서버를 다시 켜면 주소(포트)가 바뀌어 브라우저 저장소는 못 쓰니 서버 파일에 둬요
+            key = p.get("key")
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", key):
+                raise UserError("알림 확인 — 닫을 알림을 확인하지 못했어요. 화면을 새로고침하세요.")
+            atomic_json(D / "storage-result-closed.json", {"key": key})
+            return {"storage_result_closed": key}
         if act == "chat_options":
             changes = {key: p[key] for key in CHAT_OPTION_VALUES if key in p}
             if not changes or any(value not in CHAT_OPTION_VALUES[key] for key, value in changes.items()):
@@ -6128,6 +6134,8 @@ def make_handler(office):
                     compact_state = storage_compact_view()
                     snapshot["storage_notice"] = refresh_storage_notice(storage_notice_view(), compact_state)
                     snapshot["storage_notice_preferences"] = storage_notice_preferences_view()
+                    closed = read_json_file(D / "storage-result-closed.json", {})
+                    snapshot["storage_result_closed"] = closed.get("key") if isinstance(closed, dict) and isinstance(closed.get("key"), str) else ""
                     snapshot["storage_compact"] = compact_state
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":

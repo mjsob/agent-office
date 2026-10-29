@@ -2288,7 +2288,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
-  if (seq >= appliedSeq) safe("storage", () => renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences));
+  if (seq >= appliedSeq) safe("storage", () => { if (!storageClosedKey && typeof s.storage_result_closed === "string") storageClosedKey = s.storage_result_closed; renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences); });
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
@@ -2400,11 +2400,14 @@ async function setStorageNoticePreference(mode) {
 }
 // 끝난 디스크 줄이기 결과(완료·취소·실패)는 숨길 기간을 고르지 않고 닫기만 해요. 닫은 실행은 기억해서 다시 안 보여요
 const STORAGE_RESULTS = ["completed", "cancelled", "failed"];
+let storageClosedKey = "";
 function storageResultKey(action) { return action ? String(action.request_id || action.updated_at || action.status) : ""; }
 function closeStorageResult() {
   if (!STORAGE_RESULTS.includes(lastStorageAction?.status)) return;
-  try { localStorage.officeStorageClosed = storageResultKey(lastStorageAction); } catch (e) {}
+  const key = storageResultKey(lastStorageAction);
+  storageClosedKey = key;   // 바로 숨기고, 서버 파일에도 남겨요(서버를 다시 켜면 주소가 바뀌어 브라우저 저장소는 사라져요)
   renderStorageNotice(lastStorageNotice, lastStorageAction);
+  api({action: "storage_result_close", key});
 }
 async function startStorageCompact() {
   if (storageStarting || !lastStorageAction?.can_start) return;
@@ -2458,7 +2461,7 @@ function storageActionMessage(action) {
 }
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
-  let closedKey = ""; try { closedKey = localStorage.officeStorageClosed || ""; } catch (e) {}
+  const closedKey = storageClosedKey;
   const resultShown = STORAGE_RESULTS.includes(action?.status) && !(closedKey && closedKey === storageResultKey(action));
   if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {status: "idle"};   // 닫은 결과는 없는 것처럼 그려요
   if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
