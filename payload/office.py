@@ -1116,6 +1116,10 @@ def cmd_add(a):
                    and job["status"] != "done" and not job.get("cancelled") and (not j or job["id"] > j["id"])]
         if len(targets) == 1:
             j = targets[0]
+        mentioned = {int(x) for x in re.findall(r"요청\s*#?(\d+)", a.text)}
+        others = sorted(n for n in mentioned if (not j or n != j["id"]) and any(x["id"] == n and x["status"] != "done" and not x.get("cancelled") for x in s["jobs"]))
+        if j and others and not targets:   # 차례 요청과 본문 요청이 다르면 엉뚱한 요청에 붙을 수 있어 알려요
+            print(f"주의: 본문에 요청 {', '.join(map(str, others))}이(가) 있지만 이 작업은 요청 {j['id']}에 붙어요. 다른 요청 일이면 `office say --job`으로 그 요청에 알려 두세요.", file=sys.stderr)
         normalized = " ".join(a.text.split()).casefold()
         existing = next((task for task in s["tasks"] if task.get("job") == (j and j["id"]) and task["status"] != "done" and " ".join(task["title"].split()).casefold() == normalized), None)
         if existing and ab and (not existing.get("ab") or existing["ab"]["criteria"] != criteria.strip()):
@@ -1174,7 +1178,7 @@ def cmd_claim(a):
             t.pop(key, None)
         t.update(keep)   # 아직 도는 백그라운드는 claim 뒤에도 계속 감시한다
         state_transition(t, "doing", owner=me(), claimed_at=t.get("claimed_at") if resumed and t.get("claimed_at") else time.time())
-        event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=message_job(s))
+        event(s, f"작업 #{a.id} " + ("다시 시작" if resumed else "시작"), me(), job=t.get("job") or message_job(s))
         print(f"#{a.id} 맡음")
 
 
@@ -1300,7 +1304,7 @@ def mark_waiting(a, reason, **watch):
         if deadline:
             t["wait_deadline"] = deadline
         t.setdefault("claimed_at", time.time())
-        event(s, f"작업 #{a.id} 기다리는 중 · {reason}", me(), job=message_job(s))
+        event(s, f"작업 #{a.id} 기다리는 중 · {reason}", me(), job=t.get("job") or message_job(s))
         return t.get("job")
 
 
@@ -1804,7 +1808,7 @@ def cmd_done(a):
         record_verdict(targets, verdict, review_task=a.id)
         t.setdefault("completed_by", t.get("owner"))
         state_transition(t, "done", note=a.text, done_at=time.time())
-        event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
+        event(s, f"작업 #{a.id} 완료" + (f" · {a.text}" if a.text else ""), me(), job=t.get("job") or message_job(s))
         print(f"#{a.id} 실행 성공 · " + ("산출물 검증 근거 기록" if t["completion"]["status"] == "verified" else "산출물 미확인(--evidence로 근거를 남기세요)"))
         released_job = t.get("job")
         remaining = any(x.get("job") == released_job and x.get("owner") == me() and x["status"] != "done" for x in s["tasks"])
@@ -1824,7 +1828,7 @@ def cmd_handoff(a):
         t.pop("done_at", None)
         t["created_at"] = time.time()
         state_transition(t, "todo", owner=a.to, note=f"{disp(me())}에게서 넘겨받음" + (f": {a.text}" if a.text else ""))
-        event(s, f"작업 #{a.id}을(를) {disp(a.to)}에게 넘김" + (f" · {a.text}" if a.text else ""), me(), job=message_job(s))
+        event(s, f"작업 #{a.id}을(를) {disp(a.to)}에게 넘김" + (f" · {a.text}" if a.text else ""), me(), job=t.get("job") or message_job(s))
         print(f"#{a.id} → {a.to}")
         released_job = t.get("job")
         remaining = any(x.get("job") == released_job and x.get("owner") == me() and x["status"] != "done" for x in s["tasks"])
@@ -5429,20 +5433,34 @@ class Office:
             jid = j["id"]
             left = [t for t in tasks if t.get("job") == jid]
             signature = j.get("progress_revision", 0)
+            # 차례는 다른 요청이어도, 그 요청의 진행 중 작업을 가진 담당이 일하는 중이면 멈춘 게 아니에요
+            owns_doing = {t.get("owner") for t in left if t["status"] == "doing"}
             busy = any((w.status == "working" or getattr(w, "retry_at", 0) > now)
                        and ((getattr(w, "doing", None) or {}).get("job") == jid or getattr(w, "retry_job", None) == jid
+                            or w.name in owns_doing
                             or len(jobs) == 1 and not getattr(w, "doing", None)) for w in workers.values())
+            lead_name = j.get("acting_lead", j["lead"]); lead_w = workers.get(lead_name)
+            lead_turn = (getattr(lead_w, "doing", None) or {}).get("job") if lead_w is not None and lead_w.status == "working" else None
+            # 리더가 다른 요청 차례 중이고 이 요청이 미착수(작업 0건)이거나 마감 대기(작업 전부 끝남)면 멈춤이 아니라 순서 대기예요
+            queued = lead_turn is not None and lead_turn != jid and (not left)
+            alarm = team.get("stall_alarms", {}).get(jid)
+            if alarm and len(left) < alarm[1] and now - alarm[0] <= 600:   # 알림 뒤 10분 안에 작업이 끝났으면 오탐으로 세요
+                server_log(f"job.stall.false_alarm job={jid} after={int(now - alarm[0])}s left={len(left)}")
+                team["stall_alarms"].pop(jid, None)
+            elif alarm and now - alarm[0] > 600:
+                team["stall_alarms"].pop(jid, None)
             prev = history.get(jid)
             if busy or left and all(t["status"] == "waiting" for t in left) or not prev or prev[0] != signature:
                 history[jid] = (signature, now)
                 continue
             if now - prev[1] < STALL_NOTICE or notices.get(jid) == signature:
                 continue
+            if queued:   # 순서 대기는 알림 없이 두고, 대행 판단은 reconcile_busy가 해요
+                continue
             notices[jid] = signature
             stopped = [f"{disp(w.name)}(" + ("오류로 멈춤" if w.error else "사용자가 멈춤") + ")" for w in workers.values() if w.paused]
-            left_text = ", ".join(f"#{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'} {'진행 중' if t['status'] == 'doing' else '기다리는 중' if t['status'] == 'waiting' else '대기'}" for t in left) or "없음(검수 차례 대기)"
+            left_text = ", ".join(f"#{t['id']} {disp(t['owner']) if t.get('owner') else '담당 없음'} {'진행 중' if t['status'] == 'doing' else '기다리는 중' if t['status'] == 'waiting' else '대기'}" for t in left) or ("없음(작업 0건 · 착수 대기)" if not any(t.get("job") == jid for t in s["tasks"]) else "없음(작업 전부 완료 · 리더 확인 대기)")
             detail = f"남은 작업 {left_text}" + (f" · 멈춘 담당 {', '.join(stopped)}" if stopped else "")
-            lead_name = j.get("acting_lead", j["lead"])
             lead = workers.get(lead_name)
             nudged = lead is not None and not lead.paused
             with state(True, sid) as record:
@@ -5455,7 +5473,10 @@ class Office:
                     "작업판을 보고 막힌 원인을 풀어라. 동료 답을 기다리는 중이면 필요한 내용을 다시 정리해 보내라.\n"
                     f"오류로 멈춘 담당의 작업은 `office handoff 번호 --to {lead_name}` 로 넘겨받아 이어서 해라.\n"
                     "사용자 결정이 필요하면 need-user로 필요한 자료를 남겨라.", jid)]
-                server_log("job.stall.nudge")
+                owners = ",".join(f"{t.get('owner') or '없음'}:{t['status']}@{(getattr(workers.get(t.get('owner')), 'doing', None) or {}).get('job')}" for t in left) or "-"
+                turns = ",".join(f"{n}:{w.status}@{(getattr(w, 'doing', None) or {}).get('job')}" for n, w in workers.items())
+                server_log(f"job.stall.nudge job={jid} left={len(left)} owners={owners} turns={turns}")
+                team.setdefault("stall_alarms", {})[jid] = (now, len(left))
 
     @staticmethod
     def live_view(w, msgs):
