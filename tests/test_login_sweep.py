@@ -197,6 +197,29 @@ class LoginSweep(unittest.TestCase):
         texts = [m["text"] for m in json.loads((self.o.sdir("other") / "state.json").read_text())["msgs"]]
         self.assertTrue(any("링크를 받지 못했어요" in t for t in texts))
 
+    def test_failed_save_is_retried_by_next_sweep(self):
+        real = self.office.login_resume_worker
+        def fail(w):
+            raise self.o.StorageError("잠깐 실패")
+        self.office.login_resume_worker = fail
+        with self.assertRaises(self.o.StorageError):
+            self.office.sweep_login()
+        self.office.login_resume_worker = real
+        self.office.sweep_login()
+        self.assertEqual(self.task()["status"], "todo")
+        self.assertFalse(self.worker.paused)
+
+    def test_failed_save_does_not_kill_the_link_watcher(self):
+        self.office.login_pending = {"codex"}
+        self.office.login_lock = threading.Lock()
+        self.office.login_sid = {"codex": "test"}
+        def fail(w):
+            raise self.o.StorageError("잠깐 실패")
+        self.office.login_resume_worker = fail
+        self.o.login_alive = lambda pidfile: False
+        self.office.watch_login("test")   # 예외 없이 끝나야 해요
+        self.assertFalse(self.office.login_watching)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

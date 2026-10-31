@@ -5413,8 +5413,8 @@ class Office:
             outside.discard(n)
             due = [w for w in stuck if (w.sid, n) not in spent]
             for w in due:
+                self.login_resume_worker(w)   # 저장이 잠깐 실패하면 다음 확인 때 다시 풀어요
                 spent.add((w.sid, n))
-                self.login_resume_worker(w)
             if due or watched:
                 self.login_post(due[0].sid if due else current_sid(), f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요. 멈춘 일은 이어서 해요." if due else "이제 바로 일을 맡길 수 있어요.")
 
@@ -5453,7 +5453,10 @@ class Office:
                     for team in list(self.teams.values()):
                         w = team["w"].get(n)
                         if w:
-                            self.login_resume_worker(w)
+                            try:
+                                self.login_resume_worker(w)
+                            except (OSError, StorageError, UserError) as error:   # 감시가 죽지 않게 하고 sweep_login 이 다시 풀어요
+                                server_log("login.resume", error)
                     for d in (tries, started, deadline, checked):
                         d.pop(n, None)
                     continue
