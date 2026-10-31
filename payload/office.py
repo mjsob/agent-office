@@ -3613,7 +3613,8 @@ class Worker:
         self.fail_count = self.fail_count + 1 if self.failure_key == key else 1
         self.failure_key = key
         self.set_recovery("diagnosing", reason)
-        if self.schedule_retry(reason, job):
+        # 로그인이 풀린 건 다시 해 봐도 같아서 재시도(15·60·180초)를 건너뛰고 바로 로그인 링크를 띄워요
+        if self.error_kind != "auth" and self.schedule_retry(reason, job):
             return
         retry_key = "direct" if job is None else str(job)
         retries = self.retry_counts.get(retry_key, 0)
@@ -5289,6 +5290,8 @@ class Office:
         with self.login_lock:
             if not hasattr(self, "login_pending"):
                 self.login_pending = set()
+            if midway:
+                names = AGENTS   # 한쪽이 풀렸으면 다른 쪽도 같이 확인해서 둘 다 풀린 경우 링크를 한 번에 띄워요
             need = [n for n in names if n not in self.login_pending and not login_ok(n)]
             if not need or self.stop.is_set():
                 return
@@ -5296,6 +5299,22 @@ class Office:
             if self.login_pending and not getattr(self, "login_watching", False):
                 self.login_watching = True
                 threading.Thread(target=self.watch_login, args=(sid,), daemon=True).start()
+
+    def login_post(self, sid, title, body):
+        """로그인 안내는 에이전트가 멈춘 대화와, 사용자가 지금 보는 대화에 함께 띄워요. 다른 대화에는 링크가 없어서 찾느라 늦어지지 않게요"""
+        targets = [sid]
+        try:
+            view = current_sid()
+            if view not in targets:
+                targets.append(view)
+        except (OSError, StorageError, UserError):
+            pass
+        for target in targets:
+            try:
+                with state(True, target) as s:
+                    post(s, "system", "user", ui_notice(title, body), "event")
+            except (OSError, StorageError, UserError) as error:
+                server_log("login.post", error)
 
     def _offer_login(self, sid, need, midway):
         self.login_sid = getattr(self, "login_sid", {})
@@ -5311,11 +5330,10 @@ class Office:
             self.login_pending.add(n)
             how = ("링크를 열어 로그인한 뒤, 화면에 나온 코드를 이 채팅창에 붙여 넣어 보내세요." if n == "claude"
                    else "링크를 이 PC 브라우저에서 열면 로그인이 끝나요.")
-            with state(True, sid) as s:
-                if midway:
-                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 풀림", f"로그인이 풀려서 {disp(n)}가 멈췄어요. {how} 로그인이 끝나면 하던 일을 이어서 해요.\n{url}"), "event")
-                else:
-                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 필요", f"쓰려면 로그인이 필요해요. {how}\n{url}"), "event")
+            if midway:
+                self.login_post(sid, f"{disp(n)} 로그인 풀림", f"로그인이 풀려서 {disp(n)}가 멈췄어요. {how} 로그인이 끝나면 하던 일을 이어서 해요.\n{url}")
+            else:
+                self.login_post(sid, f"{disp(n)} 로그인 필요", f"쓰려면 로그인이 필요해요. {how}\n{url}")
 
     LOGIN_TRIES = 1          # 만료 뒤에는 자동 재발급하지 않고 사용자 복귀 때 새 링크를 받아요.
     LOGIN_WAIT = 620         # 링크 하나를 기다리는 시간(로그인 과정은 600초 뒤 스스로 끝남)
@@ -5339,8 +5357,7 @@ class Office:
                 ok = login_ok(n)
                 if ok:
                     self.login_pending.discard(n)
-                    with state(True, self.login_sid.get(n, sid)) as s:
-                        post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요."), "event")
+                    self.login_post(self.login_sid.get(n, sid), f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요.")
                     for team in list(self.teams.values()):
                         w = team["w"].get(n)
                         if w:
@@ -5383,13 +5400,11 @@ class Office:
                     how = ("새 링크로 다시 로그인한 뒤, 화면에 나온 코드를 이 채팅창에 붙여 넣어 보내세요." if n == "claude"
                            else "새 링크를 이 PC 브라우저에서 열면 로그인이 끝나요.")
                     why = "10분 안에 로그인이 끝나지 않아 링크를 새로 받았어요." if expired else "로그인이 끝나지 않았어요."
-                    with state(True, self.login_sid.get(n, sid)) as s:
-                        post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 다시 시도", f"{why} {how}\n{url}"), "event")
+                    self.login_post(self.login_sid.get(n, sid), f"{disp(n)} 로그인 다시 시도", f"{why} {how}\n{url}")
                     continue
                 self.login_pending.discard(n)
-                with state(True, self.login_sid.get(n, sid)) as s:
-                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 안 됨",
-                         f"로그인을 {tries[n]}번 시도했지만 끝나지 않았어요. 터미널에서 {'claude 를 실행한 뒤 /login' if n == 'claude' else 'codex login'} 으로 로그인한 뒤 Office 를 다시 켜세요."), "event")
+                self.login_post(self.login_sid.get(n, sid), f"{disp(n)} 로그인 안 됨",
+                                f"로그인을 {tries[n]}번 시도했지만 끝나지 않았어요. 터미널에서 {'claude 를 실행한 뒤 /login' if n == 'claude' else 'codex login'} 으로 로그인한 뒤 Office 를 다시 켜세요.")
                 for d in (tries, started, deadline):
                     d.pop(n, None)
             self.stop.wait(1)
@@ -5398,6 +5413,10 @@ class Office:
         """Claude 로그인 중에 사용자가 보낸 코드면 요청으로 만들지 않고 로그인에 넣는다.
         로그인 과정이 이미 끝났는데 Claude 코드 모양(코드#상태)이 오면, 요청으로 새지 않게 막고 안내만 한다"""
         code = text.strip()
+        # 터미널·브라우저에서 복사하면 코드 뒤에 벨 문자나 로그인 주소가 붙어 올 수 있어서 코드만 뽑아요
+        pasted = re.fullmatch(r"([A-Za-z0-9_#~.\-]{20,})(?:[\x00-\x20]+https?://\S*)?", re.sub(r"[\x00-\x1f\x7f]+", " ", code).strip())
+        if pasted:
+            code = pasted.group(1)
         if "claude" in getattr(self, "login_pending", ()) and re.fullmatch(r"[A-Za-z0-9_#~.\-]{20,}", code):
             login_feed("claude", code)
             with state(True, sid) as s:
