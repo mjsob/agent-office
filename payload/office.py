@@ -5324,8 +5324,7 @@ class Office:
                 url = login_start(n)
             except (OSError, UserError) as error:
                 server_log("login.first_run.start", error)
-                with state(True, sid) as s:
-                    post(s, "system", "user", ui_notice(f"{disp(n)} 로그인 필요", f"로그인 링크를 받지 못했어요. 터미널에서 {'claude 실행 후 /login' if n == 'claude' else 'codex login'}으로 로그인하세요."), "event")
+                self.login_post(sid, f"{disp(n)} 로그인 필요", f"로그인 링크를 받지 못했어요. 터미널에서 {'claude 실행 후 /login' if n == 'claude' else 'codex login'}으로 로그인하세요.")
                 continue
             self.login_pending.add(n)
             how = ("링크를 열어 로그인한 뒤, 화면에 나온 코드를 이 채팅창에 붙여 넣어 보내세요." if n == "claude"
@@ -5338,7 +5337,7 @@ class Office:
     LOGIN_TRIES = 1          # 만료 뒤에는 자동 재발급하지 않고 사용자 복귀 때 새 링크를 받아요.
     LOGIN_WAIT = 620         # 링크 하나를 기다리는 시간(로그인 과정은 600초 뒤 스스로 끝남)
 
-    LOGIN_SWEEP = 15   # 멈춘 에이전트가 있을 때 로그인 상태를 다시 보는 간격(초)
+    LOGIN_SWEEP = 5    # 로그인을 기다리는 동안 상태를 다시 보는 간격(초)
 
     def login_resume_worker(self, w):
         """로그인 성공 뒤 그 에이전트의 로그인 대기 작업을 풀고, 로그인 오류로 멈춘 차례를 다시 움직여요."""
@@ -5369,7 +5368,7 @@ class Office:
         """이 에이전트가 로그인 때문에 멈췄거나 로그인 대기 작업이 남아 있는지 봐요."""
         if w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
             return True
-        record = state_view_cached(w.sid)[0]   # 큰 대화 기록을 15초마다 다시 읽지 않아요
+        record = state_view_cached(w.sid)[0]   # 큰 대화 기록을 몇 초마다 다시 읽지 않아요
         return any(t.get("owner") == w.name and (t.get("user_request") or {}).get("source") == "agent_auth" and pending_user_request(t) for t in record["tasks"])
 
     def sweep_login(self):
@@ -5381,6 +5380,8 @@ class Office:
         if not hasattr(self, "login_pending"):
             self.login_pending = set()
         spent = self.__dict__.setdefault("login_spent", set())
+        outside = self.__dict__.setdefault("login_outside", set())
+        seen = self.__dict__.setdefault("login_seen", {})
         for n in AGENTS:
             with self.login_lock:
                 offered = n in self.login_pending   # 띄운 링크는 watch_login 이 끝까지 지켜봐요
@@ -5388,18 +5389,34 @@ class Office:
             if offered:
                 spent.difference_update({(w.sid, n) for w in workers})
                 continue
+            pidfile = login_paths(n)[2]
+            running = login_alive(pidfile)
+            if running:
+                try:
+                    pid = pidfile.read_text().strip()
+                except OSError:   # 확인하는 사이에 과정이 끝난 경우
+                    pid, running = seen.get(n), False
+                if seen.get(n) != pid:   # 이미 로그인된 채 받은 링크는 지켜볼 게 없어요
+                    seen[n] = pid
+                    if not login_ok(n):
+                        outside.add(n)
             stuck = [w for w in workers if self.login_stuck(w)]
-            if not stuck:
+            if not stuck and n not in outside:
                 continue
             if not login_ok(n):
                 spent.difference_update({(w.sid, n) for w in workers})
+                if n in outside and not running:
+                    outside.discard(n)
+                    self.login_post(stuck[0].sid if stuck else current_sid(), f"{disp(n)} 로그인 안 됨", "링크가 끝났어요. 새 링크가 필요하면 말해 주세요.")
                 continue
+            watched = n in outside
+            outside.discard(n)
             due = [w for w in stuck if (w.sid, n) not in spent]
             for w in due:
                 spent.add((w.sid, n))
                 self.login_resume_worker(w)
-            if due:
-                self.login_post(due[0].sid, f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요. 멈춘 일은 이어서 해요.")
+            if due or watched:
+                self.login_post(due[0].sid if due else current_sid(), f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요. 멈춘 일은 이어서 해요." if due else "이제 바로 일을 맡길 수 있어요.")
 
     def watch_login_changes(self):
         while not self.stop.is_set():
@@ -5412,7 +5429,7 @@ class Office:
     def watch_login(self, sid):
         """띄운 로그인 과정이 끝나면 결과를 알린다. 실패·만료면 새 링크를 받아 다시 안내하고(최대 LOGIN_TRIES번),
         성공하면 로그인 오류로 멈춘 에이전트를 다시 움직인다"""
-        tries, started, deadline = {}, {}, {}
+        tries, started, deadline, checked = {}, {}, {}, {}
         while not self.stop.is_set():
             with self.login_lock:
                 if not self.login_pending:
@@ -5423,9 +5440,13 @@ class Office:
                 if n not in started:   # 지켜보는 도중에 새로 로그인이 풀린 쪽
                     tries[n], started[n] = 1, time.time()
                     deadline[n] = started[n] + self.LOGIN_WAIT
-                if login_alive(login_paths(n)[2]) and time.time() < deadline[n]:
+                running = login_alive(login_paths(n)[2]) and time.time() < deadline[n]
+                if running and time.time() - checked.get(n, 0) < self.LOGIN_SWEEP:
                     continue
+                checked[n] = time.time()
                 ok = login_ok(n)
+                if running and not ok:
+                    continue
                 if ok:
                     self.login_pending.discard(n)
                     self.login_post(self.login_sid.get(n, sid), f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요.")
@@ -5433,7 +5454,7 @@ class Office:
                         w = team["w"].get(n)
                         if w:
                             self.login_resume_worker(w)
-                    for d in (tries, started, deadline):
+                    for d in (tries, started, deadline, checked):
                         d.pop(n, None)
                     continue
                 # 로그인 과정은 600초 뒤 timeout 으로 먼저 끝나므로, 그 무렵 끝났으면 만료로 본다
@@ -5468,7 +5489,7 @@ class Office:
         pasted = re.fullmatch(r"([A-Za-z0-9_#~.\-]{20,})(?:[\x00-\x20]+https?://\S*)?", re.sub(r"[\x00-\x1f\x7f]+", " ", code).strip())
         if pasted:
             code = pasted.group(1)
-        if "claude" in getattr(self, "login_pending", ()) and re.fullmatch(r"[A-Za-z0-9_#~.\-]{20,}", code):
+        if "claude" in getattr(self, "login_pending", ()) and re.fullmatch(r"[A-Za-z0-9_~.\-]{20,}#[A-Za-z0-9_~.\-]{10,}", code):
             login_feed("claude", code)
             with state(True, sid) as s:
                 post(s, "system", "user", "Claude 로그인 코드를 넣었어요. 확인하는 중이에요.", "event")

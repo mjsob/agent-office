@@ -113,6 +113,90 @@ class LoginSweep(unittest.TestCase):
         self.office.sweep_login()
         self.assertEqual(self.task()["status"], "waiting")
 
+    def test_link_issued_outside_reports_success(self):
+        self.ok = False
+        alive = [True]
+        self.o.login_alive = lambda pidfile: pidfile.name.startswith("codex") and alive[0]
+        self.o.login_paths("codex")[2].write_text("123")
+        self.worker.paused, self.worker.error_kind = False, None
+        self.o.atomic_json(self.o.sdir("test") / "state.json", dict(jobs=[], tasks=[], msgs=[], seq=1), self.o.state_valid)
+        self.office.sweep_login()
+        self.assertEqual(self.notices(), [])
+        self.ok = True   # 과정이 아직 살아 있어도 로그인되면 바로 알려요
+        self.office.sweep_login()
+        self.assertEqual(len([t for t in self.notices() if "로그인 완료" in t]), 1)
+        self.office.sweep_login()
+        self.assertEqual(len(self.notices()), 1)
+
+    def test_link_issued_outside_reports_expiry(self):
+        self.ok = False
+        alive = [True]
+        self.o.login_alive = lambda pidfile: pidfile.name.startswith("codex") and alive[0]
+        self.o.login_paths("codex")[2].write_text("123")
+        self.office.sweep_login()
+        alive[0] = False
+        self.office.sweep_login()
+        self.assertEqual(len([t for t in self.notices() if "로그인 안 됨" in t]), 1)
+        self.office.sweep_login()
+        self.assertEqual(len([t for t in self.notices() if "로그인 안 됨" in t]), 1)
+        self.assertEqual(self.task()["status"], "waiting")
+
+    def test_new_link_while_logged_in_is_not_reported(self):
+        self.o.login_alive = lambda pidfile: pidfile.name.startswith("codex")
+        self.o.login_paths("codex")[2].write_text("123")
+        self.worker.paused, self.worker.error_kind = False, None
+        self.o.atomic_json(self.o.sdir("test") / "state.json", dict(jobs=[], tasks=[], msgs=[], seq=1), self.o.state_valid)
+        self.office.sweep_login()
+        self.assertEqual(self.notices(), [])
+
+    def test_offered_link_is_detected_while_process_runs(self):
+        self.ok = False
+        self.o.login_alive = lambda pidfile: True
+        self.office.login_pending = {"codex"}
+        self.office.login_lock = threading.Lock()
+        self.office.login_sid = {"codex": "test"}
+        self.office.LOGIN_SWEEP = 0
+        thread = threading.Thread(target=self.office.watch_login, args=("test",), daemon=True)
+        thread.start()
+        time.sleep(.3)
+        self.assertEqual(self.task()["status"], "waiting")
+        self.ok = True
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.task()["status"], "todo")
+        self.assertFalse(self.worker.paused)
+
+    def test_long_hash_is_not_taken_as_a_code(self):
+        fed = []
+        self.o.login_feed = lambda name, code: fed.append(code)
+        self.office.login_pending = {"claude"}
+        self.assertFalse(self.office.take_login_code("test", "0123456789abcdef0123456789abcdef01234567"))
+        self.assertEqual(fed, [])
+        code = "bj1gxEabcdefghijklmnopqrstuvwxyz0123456789#abcdefghijklmnop"
+        self.assertTrue(self.office.take_login_code("test", code))
+        self.assertEqual(fed, [code])
+
+    def test_link_failure_notice_does_not_stop_the_other_agent(self):
+        started = []
+        def start(name):
+            started.append(name)
+            if name == "claude":
+                raise OSError("링크 실패")
+            return "https://example.com/codex"
+        self.o.login_start = start
+        self.office.login_pending = set()
+        real = self.office.login_post
+        def post(sid, title, body):
+            if "링크를 받지 못했어요" in body:
+                self.o.atomic_json(self.o.sdir("other") / "state.json", dict(jobs=[], tasks=[], msgs=[], seq=1), self.o.state_valid)
+            real(sid, title, body)
+        self.office.login_post = post
+        self.o.current_sid = lambda: "other"
+        self.office._offer_login("broken", ["claude", "codex"], True)   # 원래 대화 기록이 없어도 다음 에이전트로 넘어가요
+        self.assertEqual(started, ["claude", "codex"])
+        texts = [m["text"] for m in json.loads((self.o.sdir("other") / "state.json").read_text())["msgs"]]
+        self.assertTrue(any("링크를 받지 못했어요" in t for t in texts))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
