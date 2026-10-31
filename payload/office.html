@@ -2288,7 +2288,7 @@ async function doRefresh() {
     return;
   }
   downCount = 0;
-  if (seq >= appliedSeq) safe("storage", () => { if (!storageClosedKey && typeof s.storage_result_closed === "string") storageClosedKey = s.storage_result_closed; renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences); });
+  if (seq >= appliedSeq) safe("storage", () => { if (!storageClosing && typeof s.storage_result_closed === "string") storageClosedKey = s.storage_result_closed; renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences); });
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }
@@ -2400,14 +2400,33 @@ async function setStorageNoticePreference(mode) {
 }
 // 끝난 디스크 줄이기 결과(완료·취소·실패)는 숨길 기간을 고르지 않고 닫기만 해요. 닫은 실행은 기억해서 다시 안 보여요
 const STORAGE_RESULTS = ["completed", "cancelled", "failed"];
-let storageClosedKey = "";
+let storageClosedKey = "", storageClosing = false;
+const STORAGE_RESULT_MAX_AGE = 24 * 60 * 60 * 1000;
 function storageResultKey(action) { return action ? String(action.request_id || action.updated_at || action.status) : ""; }
-function closeStorageResult() {
-  if (!STORAGE_RESULTS.includes(lastStorageAction?.status)) return;
-  const key = storageResultKey(lastStorageAction);
-  storageClosedKey = key;   // 바로 숨기고, 서버 파일에도 남겨요(서버를 다시 켜면 주소가 바뀌어 브라우저 저장소는 사라져요)
+function storageResultVisible(action, closedKey, now = Date.now()) {
+  if (!STORAGE_RESULTS.includes(action?.status)) return false;
+  if (closedKey && closedKey === storageResultKey(action)) return false;
+  // 복구가 필요한 오류는 기한이 지나도 남겨요. 정상 종료 결과만 하루 뒤에 치워요.
+  if (["completed", "cancelled"].includes(action.status) && !action.recovery_required) {
+    const at = action.updated_at;
+    if (!Number.isFinite(at) || at <= 0 || now - at * 1000 > STORAGE_RESULT_MAX_AGE) return false;
+  }
+  return true;
+}
+async function closeStorageResult() {
+  if (storageClosing || !STORAGE_RESULTS.includes(lastStorageAction?.status)) return;
+  const key = storageResultKey(lastStorageAction), previous = storageClosedKey;
+  storageClosing = true;
+  storageClosedKey = key;
   renderStorageNotice(lastStorageNotice, lastStorageAction);
-  api({action: "storage_result_close", key});
+  try {
+    const result = await api({action: "storage_result_close", key});
+    storageClosedKey = result?.storage_result_closed === key ? key : previous;
+    if (storageClosedKey !== key) toast("닫은 기록을 저장하지 못했어요. 다시 닫기를 누르세요.");
+  } finally {
+    storageClosing = false;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+  }
 }
 async function startStorageCompact() {
   if (storageStarting || !lastStorageAction?.can_start) return;
@@ -2462,8 +2481,8 @@ function storageActionMessage(action) {
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
   const closedKey = storageClosedKey;
-  const resultShown = STORAGE_RESULTS.includes(action?.status) && !(closedKey && closedKey === storageResultKey(action));
-  if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {status: "idle"};   // 닫은 결과는 없는 것처럼 그려요
+  const resultShown = storageResultVisible(action, closedKey);
+  if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {...action, status: "idle"};   // 실행 가능 여부는 보존하고 결과 문구만 치워요
   if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
   const preference = lastStoragePreferences;
   for (const id of ["#storageHideToday", "#storageHideNever", "#storageRestore"]) $(id).disabled = storagePreferenceSaving || !preference;
@@ -2481,7 +2500,8 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
   $("#storageRunLabel").textContent = storageStarting || action?.status === "preparing" ? "실행 준비 중이에요" : "디스크 줄이기";
   const box = $("#storageNotice"), title = $("#storageTitle"), metrics = $("#storageMetrics"), details = $("#storageDetails");
   const status = notice?.status;
-  const visible = ["suggested", "stale", "unavailable"].includes(status) || Boolean(actionText.textContent);
+  // 오래된 측정값은 뒤에서 자동 갱신해요. 재검사를 새 경고처럼 띄우지 않아요.
+  const visible = ["suggested", "unavailable"].includes(status) || Boolean(actionText.textContent);
   const activeWork = ["preparing", "launched", "awaiting_admin", "countdown", "stopping", "running", "cancelling", "uncertain"].includes(action?.status) || storageStarting;
   const suppressed = preference?.hidden === true;
   box.hidden = !visible || (suppressed && !activeWork);
