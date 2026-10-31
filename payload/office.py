@@ -5338,6 +5338,77 @@ class Office:
     LOGIN_TRIES = 1          # 만료 뒤에는 자동 재발급하지 않고 사용자 복귀 때 새 링크를 받아요.
     LOGIN_WAIT = 620         # 링크 하나를 기다리는 시간(로그인 과정은 600초 뒤 스스로 끝남)
 
+    LOGIN_SWEEP = 15   # 멈춘 에이전트가 있을 때 로그인 상태를 다시 보는 간격(초)
+
+    def login_resume_worker(self, w):
+        """로그인 성공 뒤 그 에이전트의 로그인 대기 작업을 풀고, 로그인 오류로 멈춘 차례를 다시 움직여요."""
+        n = w.name
+        with state(True, w.sid) as record:
+            for task in record["tasks"]:
+                request = task.get("user_request") or {}
+                if task.get("owner") == n and request.get("source") == "agent_auth" and pending_user_request(task):
+                    request.update(status="resolved", resolved_at=time.time(), resolution="로그인 성공을 확인했어요.")
+                    resume = "done" if task.get("auth_task") else request.get("resume_status", "doing")
+                    if resume == "waiting" and not any(task.get(k) for k in ("wait_on", "wait_pid", "wait_log", "wait_deadline")):
+                        resume = "todo"   # 로그인 중에 기한이 지워진 대기는 다시 시작할 작업으로 돌려요.
+                    state_transition(task, resume)
+                    if task["status"] == "done":
+                        task["done_at"] = time.time()
+                    task.pop("wait_reason", None)
+        if w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
+            # 사용자 정지는 유지하고 인증 오류로 멈춘 차례만 다시 실행해요.
+            w.set_recovery("verifying", "로그인 성공을 확인했어요. 중단된 차례의 재개를 확인해요.")
+            w.paused, w.error, w.error_kind = False, None, None
+            w.cont = w.chatter = 0
+            w.nudge_state = {}
+            w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
+            w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
+            w.save_checkpoint()
+
+    def login_stuck(self, w):
+        """이 에이전트가 로그인 때문에 멈췄거나 로그인 대기 작업이 남아 있는지 봐요."""
+        if w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
+            return True
+        record = state_view_cached(w.sid)[0]   # 큰 대화 기록을 15초마다 다시 읽지 않아요
+        return any(t.get("owner") == w.name and (t.get("user_request") or {}).get("source") == "agent_auth" and pending_user_request(t) for t in record["tasks"])
+
+    def sweep_login(self):
+        """Office 가 띄운 링크가 아닌 길(office login start·터미널 로그인)로 로그인해도 멈춘 일을 풀어요.
+        로그인이 멀쩡하다고 나오는데 차례가 또 인증 오류로 멈추면 무한 반복이 되니, 대화·에이전트마다
+        다음에 로그인 풀림을 볼 때까지 한 번만 풀어요."""
+        if not hasattr(self, "login_lock"):
+            self.login_lock = threading.Lock()
+        if not hasattr(self, "login_pending"):
+            self.login_pending = set()
+        spent = self.__dict__.setdefault("login_spent", set())
+        for n in AGENTS:
+            with self.login_lock:
+                offered = n in self.login_pending   # 띄운 링크는 watch_login 이 끝까지 지켜봐요
+            workers = [team["w"][n] for team in list(self.teams.values()) if n in team["w"]]
+            if offered:
+                spent.difference_update({(w.sid, n) for w in workers})
+                continue
+            stuck = [w for w in workers if self.login_stuck(w)]
+            if not stuck:
+                continue
+            if not login_ok(n):
+                spent.difference_update({(w.sid, n) for w in workers})
+                continue
+            due = [w for w in stuck if (w.sid, n) not in spent]
+            for w in due:
+                spent.add((w.sid, n))
+                self.login_resume_worker(w)
+            if due:
+                self.login_post(due[0].sid, f"{disp(n)} 로그인 완료", "이제 바로 일을 맡길 수 있어요. 멈춘 일은 이어서 해요.")
+
+    def watch_login_changes(self):
+        while not self.stop.is_set():
+            try:
+                self.sweep_login()
+            except (OSError, StorageError, UserError) as error:
+                server_log("login.sweep", error)
+            self.stop.wait(self.LOGIN_SWEEP)
+
     def watch_login(self, sid):
         """띄운 로그인 과정이 끝나면 결과를 알린다. 실패·만료면 새 링크를 받아 다시 안내하고(최대 LOGIN_TRIES번),
         성공하면 로그인 오류로 멈춘 에이전트를 다시 움직인다"""
@@ -5361,27 +5432,7 @@ class Office:
                     for team in list(self.teams.values()):
                         w = team["w"].get(n)
                         if w:
-                            with state(True, w.sid) as record:
-                                for task in record["tasks"]:
-                                    request = task.get("user_request") or {}
-                                    if task.get("owner") == n and request.get("source") == "agent_auth" and pending_user_request(task):
-                                        request.update(status="resolved", resolved_at=time.time(), resolution="로그인 성공을 확인했어요.")
-                                        resume = "done" if task.get("auth_task") else request.get("resume_status", "doing")
-                                        if resume == "waiting" and not any(task.get(k) for k in ("wait_on", "wait_pid", "wait_log", "wait_deadline")):
-                                            resume = "todo"   # 로그인 중에 기한이 지워진 대기는 다시 시작할 작업으로 돌려요.
-                                        state_transition(task, resume)
-                                        if task["status"] == "done":
-                                            task["done_at"] = time.time()
-                                        task.pop("wait_reason", None)
-                        if w and w.paused and not getattr(w, "manual_pause", False) and getattr(w, "error_kind", None) == "auth":
-                            # 사용자 정지는 유지하고 인증 오류로 멈춘 차례만 다시 실행해요.
-                            w.set_recovery("verifying", "로그인 성공을 확인했어요. 중단된 차례의 재개를 확인해요.")
-                            w.paused, w.error, w.error_kind = False, None, None
-                            w.cont = w.chatter = 0
-                            w.nudge_state = {}
-                            w.auto_retries, w.retry_at, w.retry_job = 0, 0, None
-                            w.retry_due = dict(w.resume_turn) if isinstance(w.resume_turn, dict) else None
-                            w.save_checkpoint()
+                            self.login_resume_worker(w)
                     for d in (tries, started, deadline):
                         d.pop(n, None)
                     continue
@@ -6244,6 +6295,7 @@ def serve():
     threading.Thread(target=codex_limits, daemon=True).start()    # 과거 관측을 보조로 표시
     threading.Thread(target=check_update, args=(office.stop,), daemon=True).start()
     threading.Thread(target=office.first_run_login, daemon=True).start()   # 처음 쓰는 사람은 로그인부터
+    threading.Thread(target=office.watch_login_changes, daemon=True).start()   # Office 밖에서 로그인해도 멈춘 일을 풀어요
     for name in AGENTS:
         threading.Thread(target=refresh_provider_limits, args=(name, office.stop), daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGHUP):     # office stop / 콘솔 창 닫기
