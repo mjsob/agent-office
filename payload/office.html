@@ -1713,6 +1713,10 @@ function msgHtml(m, compact) {
   return `<div class="msg ${m.from} ${report ? "report" : ask ? "toUser" : ""} ${compact ? "compact" : ""}"><div class="who">${tag(m.from)}${to}${report ? '<span class="pill">결과 보고</span>' : ""}<span class="ts">${esc(when(m))}</span></div><div class="body">${(t => md(t, report && t.includes("\n")))(report ? unescNl(m.text) : m.text)}</div>${readNote(m)}</div>`;
 }
 
+// 파일 예약 안내는 에이전트용 기록으로 남기고 사용자 대화에서는 숨겨요.
+const userTimelineMessages = msgs => msgs.filter(m => !(m.from === "system" && m.to === "user" && m.kind === "event"
+  && /^파일 (?:대기 중|예약 풀림) — /.test(m.text)));
+
 // 대화창을 요청 단위로 묶음: 요청 → (진행 과정은 접어둠) → 결과 보고
 // 메시지에 job이 없으면(예전 기록) 요청 순서·"요청 N" 이벤트로 추정
 function threads(msgs, jobs) {
@@ -1858,6 +1862,7 @@ function threadHtml(t, part = "full") {
 }
 
 function renderTimeline(msgs, jobs) {
+  msgs = userTimelineMessages(msgs);
   const tl = $("#timeline"), sec = tl.parentElement;
   lazyFoldBodies.clear();
   const rv = restoreView && !restoreView.tlDone ? restoreView : null;   // 대화를 옮긴 직후: 그 대화에서 보던 위치로
