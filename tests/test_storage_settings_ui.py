@@ -93,10 +93,16 @@ with sync_playwright() as p:
             assert page.locator('#storageRefresh').is_disabled()
             render(measured)
             assert run.is_enabled()
+            render(measured, {**idle, 'status': 'completed', 'updated_at': now - 3 * 86400, 'request_id': 'expired'})
+            assert not page.locator('#storageSettingsAction').inner_text() and run.is_enabled()
+            page.evaluate("storageClosedKey = 'closed-result'")
+            render(measured, {**idle, 'status': 'completed', 'updated_at': now, 'request_id': 'closed-result'})
+            assert not page.locator('#storageSettingsAction').inner_text() and run.is_enabled()
+            render(measured)
             if output:
                 page.locator('.storage-settings').screenshot(path=str(output / f'settings-{width}-{theme}.png'))
             assert not errors, errors
-            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'remeasure', 'no-overflow'], 'errors': errors})
+            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'no-overflow'], 'errors': errors})
             context.close()
     finally:
         browser.close()

@@ -2538,10 +2538,10 @@ function renderStorageSettings(notice, action) {
 }
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
-  renderStorageSettings(notice, action);
   const closedKey = storageClosedKey;
   const resultShown = storageResultVisible(action, closedKey);
   if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {...action, status: "idle"};   // 실행 가능 여부는 보존하고 결과 문구만 치워요
+  renderStorageSettings(notice, action);
   if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
   const preference = lastStoragePreferences;
   for (const id of ["#storageHideToday", "#storageHideNever", "#storageRestore"]) $(id).disabled = storagePreferenceSaving || !preference;
