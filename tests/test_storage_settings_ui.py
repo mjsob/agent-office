@@ -98,11 +98,24 @@ with sync_playwright() as p:
             page.evaluate("storageClosedKey = 'closed-result'")
             render(measured, {**idle, 'status': 'completed', 'updated_at': now, 'request_id': 'closed-result'})
             assert not page.locator('#storageSettingsAction').inner_text() and run.is_enabled()
+            completed = {**idle, 'status': 'completed', 'updated_at': now, 'request_id': 'recent-result', 'reclaimed_gb': 17.3}
+            render(measured, completed)
+            assert not page.locator('#storageSettingsAction').inner_text() and run.is_enabled()
+            assert '알림이 없어도 회수할 공간이 있으면' not in page.locator('.storage-settings').inner_text()
+            page.evaluate('([n,a]) => renderStorageNotice(n,a,{hidden:false,mode:"show"})', [measured, completed])
+            assert page.locator('#storageNotice').is_visible()
+            assert '17.3GB' in page.locator('#storageActionStatus').inner_text()
+            assert page.locator('#storageClose').is_visible()
+            assert not page.locator('#storageSettingsAction').inner_text() and run.is_enabled()
+            for status, expected in [('failed', '줄이지 못했어요'), ('uncertain', 'Windows 실행 창을 확인하세요')]:
+                render(measured, {**idle, 'status': status, 'can_start': False, 'updated_at': now, 'request_id': status})
+                assert expected in page.locator('#storageSettingsAction').inner_text()
+                assert run.is_disabled()
             render(measured)
             if output:
                 page.locator('.storage-settings').screenshot(path=str(output / f'settings-{width}-{theme}.png'))
             assert not errors, errors
-            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'no-overflow'], 'errors': errors})
+            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
             context.close()
     finally:
         browser.close()

@@ -707,7 +707,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <button id="storageManualRun" onclick="startStorageCompact(true)" disabled>디스크 줄이기</button>
     </div>
     <p id="storageSettingsAction" role="status" aria-live="polite"></p>
-    <p>알림이 없어도 회수할 공간이 있으면 직접 줄일 수 있어요. 실제 확보량은 달라질 수 있어요.</p>
     <details><summary>줄이기 전에 확인하세요</summary><p>파일을 지우지 않고 가상디스크의 빈 공간을 회수해요.</p><p>진행 중인 작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows 창에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요.</p></details>
   </div>
   <div id="resbox" hidden></div>
@@ -2534,7 +2533,8 @@ function renderStorageSettings(notice, action) {
   refresh.textContent = refreshing ? "측정 중이에요" : "다시 측정";
   run.disabled = storageStarting || !storageManualReady(notice, action);
   run.textContent = storageStarting ? "실행 준비 중이에요" : "디스크 줄이기";
-  $("#storageSettingsAction").textContent = storageStarting ? "Windows 실행 창을 준비하고 있어요." : storageActionMessage(action);
+  $("#storageSettingsAction").textContent = storageStarting ? "Windows 실행 창을 준비하고 있어요."
+    : action?.status === "completed" ? "" : storageActionMessage(action);
 }
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
