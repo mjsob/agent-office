@@ -4603,12 +4603,15 @@ STORAGE_NOTICE_REFRESH = {"at": 0.0}
 
 def refresh_storage_notice(notice, compact):
     """낡은 디스크 정보는 사용자가 기다리지 않게 뒤에서 한 번만 다시 재요. 실패하면 10분 뒤에 다시 시도해요."""
+    if not notice and "storage_notice" in REFRESHING:   # 첫 측정 중에도 화면 버튼이 풀리지 않게 해요
+        return {"status": "unavailable", "refreshing": True}
     if not notice or compact.get("status") in STORAGE_COMPACT_ACTIVE or not STORAGE_WATCH_SCRIPT.is_file():
         return notice
     checked = notice.get("checked_at", 0)
     after_compact = compact.get("status") == "completed" and checked < (compact.get("updated_at") or 0)
     if notice["status"] != "stale" and not after_compact:
-        return notice
+        # 직접 다시 재는 중이면 신선한 값에도 표시해서 화면 버튼이 일찍 풀리지 않게 해요.
+        return {**notice, "refreshing": True} if "storage_notice" in REFRESHING else notice
     now = time.time()
     if now - STORAGE_NOTICE_REFRESH["at"] >= STORAGE_NOTICE_RETRY and "storage_notice" not in REFRESHING:
         STORAGE_NOTICE_REFRESH["at"] = now
@@ -4638,20 +4641,22 @@ def storage_notice_view(path=None, now=None):
             return None
         if now - checked > STORAGE_NOTICE_MAX_AGE:
             return {"status": "stale", "checked_at": checked}
-        if status in ("ok", "unavailable"):
+        if status == "unavailable":
             return {"status": status, "checked_at": checked}
         disk = notice.get("disk")
         if not isinstance(disk, dict):
-            return None
+            return {"status": status, "checked_at": checked} if status == "ok" else None
         values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb")]
         if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values):
-            return None
+            return {"status": status, "checked_at": checked} if status == "ok" else None
         reclaim = max(0, values[0] - values[1])
-        if reclaim < 20 and not (values[2] < 30 and reclaim >= 10):
-            return {"status": "ok", "checked_at": checked}
         drive = disk.get("drive", "")
         if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
             drive = "디스크"
+        if status == "ok" or (reclaim < 20 and not (values[2] < 30 and reclaim >= 10)):
+            # 추천 기준 밑이어도 설정에서 직접 줄일 수 있게 여유·회수 후보를 같이 내려요.
+            return {"status": "ok", "checked_at": checked, "free_gib": round(values[2], 1),
+                    "reclaim_gib": round(reclaim, 1), "drive": drive}
         return {"status": "suggested", "checked_at": checked, "free_gib": values[2],
                 "reclaim_gib": round(reclaim, 1), "drive": drive, "urgent": values[2] < 15}
     except (OSError, ValueError, TypeError, OverflowError):
@@ -4784,7 +4789,28 @@ def storage_compact_view():
         return view
 
 
-def start_storage_compact(confirmed):
+STORAGE_REMEASURE_GAP = 30   # 직접 다시 재기는 이 초 안에 두 번 못 해요
+
+
+def remeasure_storage_notice():
+    """설정에서 직접 누르는 다시 재기예요. 줄이기가 진행 중이거나 도구가 없으면 안 돌려요."""
+    if not STORAGE_WATCH_SCRIPT.is_file():
+        raise UserError("용량 점검 도구를 찾지 못했어요. 설치 상태를 확인하세요.")
+    compact = storage_compact_view()
+    if compact.get("status") in STORAGE_COMPACT_ACTIVE:
+        raise UserError("디스크를 줄이는 중이라 지금은 다시 잴 수 없어요.")
+    now = time.time()
+    if "storage_notice" in REFRESHING or now - STORAGE_NOTICE_REFRESH["at"] < STORAGE_REMEASURE_GAP:
+        return {"storage_notice": {**(storage_notice_view() or {"status": "unavailable"}), "refreshing": True}}
+    STORAGE_NOTICE_REFRESH["at"] = now
+    def run():
+        subprocess.run(["python3", str(STORAGE_WATCH_SCRIPT), "--disk-only"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=60)
+    refresh_later("storage_notice", run)
+    return {"storage_notice": {**(storage_notice_view() or {"status": "unavailable"}), "refreshing": True}}
+
+
+def start_storage_compact(confirmed, manual=False):
     if confirmed is not True:
         raise UserError("WSL 작업이 모두 멈추는 안내를 확인한 뒤 실행하세요.")
     folder = STORAGE_COMPACT_DIR
@@ -4797,9 +4823,15 @@ def start_storage_compact(confirmed):
             raise UserError("이 PC의 디스크 줄이기 스크립트를 찾지 못했어요. 설치 상태를 확인하세요.")
         if not view["can_start"]:
             raise UserError("이미 실행을 준비했어요. 열려 있는 Windows 실행 창을 확인하세요.")
+        if "storage_notice" in REFRESHING:
+            raise UserError("디스크를 다시 재는 중이에요. 끝난 뒤 실행하세요.")
         notice = storage_notice_view()
-        if not notice or notice["status"] != "suggested":
-            raise UserError("최신 디스크 제안이 없어요. 다음 용량 점검 뒤 다시 실행하세요.")
+        # 직접 줄이기(manual)는 추천 기준과 무관하게 최신 측정에서 회수 후보가 있으면 허용해요.
+        manual_ok = (manual is True and notice and notice["status"] in ("suggested", "ok")
+                     and notice.get("reclaim_gib", 0) > 0)
+        if not manual_ok and (not notice or notice["status"] != "suggested"):
+            raise UserError("줄일 수 있는 최신 측정이 없어요. 다시 잰 뒤 실행하세요." if manual is True
+                            else "최신 디스크 제안이 없어요. 다음 용량 점검 뒤 다시 실행하세요.")
         record = {"schema_version": 1, "status": "preparing", "updated_at": time.time(), "request_id": uuid.uuid4().hex}
         atomic_json(folder / "office-launch.json", record)
         def run():
@@ -5819,9 +5851,11 @@ class Office:
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_remeasure", "storage_refresh", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
         if act == "storage_compact":
-            return start_storage_compact(p.get("confirmed"))
+            return start_storage_compact(p.get("confirmed"), p.get("manual"))
+        if act in ("storage_remeasure", "storage_refresh"):
+            return remeasure_storage_notice()
         if act == "storage_compact_cancel":
             return cancel_storage_compact()
         if act not in known:

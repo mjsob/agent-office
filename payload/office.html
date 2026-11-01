@@ -366,6 +366,10 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .settings-panel .set-row { margin-bottom: 8px; }
 .settings-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .settings-heading h3 { margin: 0 !important; }
+.storage-settings { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.storage-settings p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.storage-settings .storage-setting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.storage-settings .storage-setting-meta { color: var(--muted); font-size: 12px; }
 .settings-panel h3 { margin: 0 0 10px; font-size: 14px; }
 .settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 @media (max-width: 760px) { .settings-panel { left: 12px; right: 12px; width: auto; } }
@@ -694,6 +698,18 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="set-row" id="appWindowRow" hidden><span>창 모양</span><button id="appWindow" class="ghost" onclick="openAppWindow()">앱 창으로 열기</button></div>
   <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
   <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
+  <div class="storage-settings" aria-labelledby="storageSettingsTitle">
+    <h3 id="storageSettingsTitle">디스크 줄이기</h3>
+    <p id="storageSettingsMetrics" role="status" aria-live="polite">디스크 정보를 불러오고 있어요.</p>
+    <p id="storageSettingsChecked" class="storage-setting-meta"></p>
+    <div class="storage-setting-actions">
+      <button id="storageRefresh" class="ghost" onclick="refreshStorageCapacity()" disabled>다시 측정</button>
+      <button id="storageManualRun" onclick="startStorageCompact(true)" disabled>디스크 줄이기</button>
+    </div>
+    <p id="storageSettingsAction" role="status" aria-live="polite"></p>
+    <p>알림이 없어도 회수할 공간이 있으면 직접 줄일 수 있어요. 실제 확보량은 달라질 수 있어요.</p>
+    <details><summary>줄이기 전에 확인하세요</summary><p>파일을 지우지 않고 가상디스크의 빈 공간을 회수해요.</p><p>진행 중인 작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows 창에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요.</p></details>
+  </div>
   <div id="resbox" hidden></div>
 </section>
 
@@ -2376,7 +2392,7 @@ async function doRefresh() {
 }
 // 리소스 한도: 새로 시작하는 작업부터 적용. 입력 중엔 다시 그리지 않음
 let lastResSig = "";
-let storageStarting = false;
+let storageStarting = false, storageRefreshing = false;
 let lastStorageNotice = null, lastStorageAction = null, lastStoragePreferences = null;
 let storagePreferenceSaving = false;
 async function setStorageNoticePreference(mode) {
@@ -2433,13 +2449,14 @@ async function closeStorageResult() {
     renderStorageNotice(lastStorageNotice, lastStorageAction);
   }
 }
-async function startStorageCompact() {
+async function startStorageCompact(manual = false) {
   if (storageStarting || !lastStorageAction?.can_start) return;
+  if (manual && !storageManualReady(lastStorageNotice, lastStorageAction)) return;
   if (!confirm("디스크를 줄일까요?\n\n먼저 관리자 권한 창에서 [예]를 눌러야 해요. 그 뒤 1분이 지나면 WSL이 꺼져요(Windows 창의 [바로 실행]으로 건너뛸 수 있어요). Office·점검 서버·다른 WSL 작업도 모두 멈춰요. 진행 중인 작업을 먼저 저장하세요.\n\n멈추려면 Windows 창의 [중단하기]를 누르세요. 끝나면 Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.")) return;
   storageStarting = true;
   renderStorageNotice(lastStorageNotice, lastStorageAction);
   try {
-    const result = await api({action: "storage_compact", confirmed: true});
+    const result = await api({action: "storage_compact", confirmed: true, ...(manual ? {manual: true} : {})});
     if (result?.storage_compact) lastStorageAction = result.storage_compact;
   } finally {
     storageStarting = false;
@@ -2483,8 +2500,45 @@ function storageActionMessage(action) {
   };
   return messages[status] || "";
 }
+function storageManualReady(notice, action) {
+  return action?.available === true && action.can_start === true && !notice?.refreshing && !storageRefreshing
+    && ["ok", "suggested"].includes(notice?.status) && Number.isFinite(notice.reclaim_gib) && notice.reclaim_gib > 0;
+}
+async function refreshStorageCapacity() {
+  if (storageRefreshing || lastStorageNotice?.refreshing || !lastStorageAction?.available || !lastStorageAction?.can_start) return;
+  storageRefreshing = true;
+  renderStorageNotice(lastStorageNotice, lastStorageAction);
+  try {
+    const result = await api({action: "storage_refresh"});
+    if (result?.storage_notice) lastStorageNotice = result.storage_notice;
+  } finally {
+    storageRefreshing = false;
+    renderStorageNotice(lastStorageNotice, lastStorageAction);
+  }
+}
+function renderStorageSettings(notice, action) {
+  const available = action?.available === true;
+  const refreshing = storageRefreshing || notice?.refreshing === true;
+  const measured = ["ok", "suggested"].includes(notice?.status) && Number.isFinite(notice.reclaim_gib) && Number.isFinite(notice.free_gib);
+  const metrics = $("#storageSettingsMetrics");
+  metrics.textContent = !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
+    : refreshing ? "디스크 정보를 다시 측정하고 있어요."
+    : measured ? `${notice.drive} 여유 ${notice.free_gib.toFixed(1)}GiB · 회수 후보 약 ${notice.reclaim_gib.toFixed(1)}GiB`
+    : notice?.status === "stale" ? "지난 측정값이 오래됐어요. 다시 측정한 뒤 실행하세요."
+    : "회수할 공간을 확인하려면 [다시 측정]을 누르세요.";
+  if (available && measured && notice.reclaim_gib <= 0 && !refreshing) metrics.textContent += " 지금은 회수할 공간이 없어요.";
+  $("#storageSettingsChecked").textContent = available && Number.isFinite(notice?.checked_at)
+    ? `최근 측정: ${new Date(notice.checked_at * 1000).toLocaleString("ko-KR")}` : "";
+  const refresh = $("#storageRefresh"), run = $("#storageManualRun");
+  refresh.disabled = !available || refreshing || storageStarting || !action?.can_start;
+  refresh.textContent = refreshing ? "측정 중이에요" : "다시 측정";
+  run.disabled = storageStarting || !storageManualReady(notice, action);
+  run.textContent = storageStarting ? "실행 준비 중이에요" : "디스크 줄이기";
+  $("#storageSettingsAction").textContent = storageStarting ? "Windows 실행 창을 준비하고 있어요." : storageActionMessage(action);
+}
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
+  renderStorageSettings(notice, action);
   const closedKey = storageClosedKey;
   const resultShown = storageResultVisible(action, closedKey);
   if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {...action, status: "idle"};   // 실행 가능 여부는 보존하고 결과 문구만 치워요

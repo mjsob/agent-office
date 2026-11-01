@@ -66,5 +66,6 @@ fresh = {"status": "ok", "checked_at": time.time()}
 assert o.refresh_storage_notice(fresh, {"status": "idle"}) is fresh and not calls
 after = {"status": "suggested", "checked_at": 100.0}
 assert o.refresh_storage_notice(after, {"status": "completed", "updated_at": 200.0})["refreshing"] and calls, "축소 완료 뒤엔 다시 재요"
+o.REFRESHING.discard("storage_notice")   # 앞 시험이 남긴 재는 중 표시를 지워요
 assert o.refresh_storage_notice(None, {"status": "idle"}) is None
 print("storage notice refresh ok")
