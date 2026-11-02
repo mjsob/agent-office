@@ -177,7 +177,7 @@ staging=$(mktemp -d "$prefix/.staging.XXXXXX")
 for name in "${files[@]}"; do cp -- "$payload/$name" "$staging/$name"; done
 chmod 700 "$staging/office.py"
 
-# OFFICE_CUSTOMIZATION_GUARD=1
+OFFICE_CUSTOMIZATION_GUARD=1
 # 직접 고친 부분 검사는 CLI 설치보다 먼저 해서, 멈출 때 아무것도 바뀌지 않게 한다.
 # Keep pristine incoming files separate from any reapplied local edits.
 local_summary=$("$python_bin" - "$prefix" "$staging" "${files[@]}" <<'PYLOCAL'
