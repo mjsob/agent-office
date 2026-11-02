@@ -42,6 +42,9 @@ EDGE = "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"   # 있으면 우선 (Edge는 텍스트 선택 시 미니 메뉴가 뜸)
 IS_MAC = sys.platform == "darwin"
 MAC_BROWSERS = ("Google Chrome", "Microsoft Edge")   # 앱 창으로 열 수 있는 브라우저, 앞쪽 우선
+# 맥에 없는 기능(디스크 줄이기·사용량 제한)의 동작은 화면 밖에서 불러도 실행하지 않아요
+MAC_BLOCKED_ACTIONS = {"resource_limits", "storage_compact", "storage_remeasure", "storage_refresh", "storage_compact_cancel",
+                       "storage_notice_preferences", "storage_result_close"}
 LIMITS = {}         # 구독 사용 한도 + 관측시각 at(epoch)
 LIMITS_LOCK = threading.RLock()
 HERE = Path(__file__).resolve().parent
@@ -4274,6 +4277,9 @@ def fetch_codex_limits():
 def refresh_provider_limits(name, stop):
     fetch = fetch_claude_limits if name == "claude" else fetch_codex_limits
     while not stop.is_set():
+        if name == "claude" and not claude_limits_readable():   # 맥 키체인은 읽지 않아요. 실패로 남기지 않고 스트림 값만 써요
+            stop.wait(300)
+            continue
         try:
             windows = fetch()
             if windows:
@@ -4944,9 +4950,27 @@ def cancel_storage_compact():
     return {"storage_compact": storage_compact_view()}
 
 
+def app_window_available():
+    """앱 창은 맥에서 Chrome·Edge가 있을 때만 쓸 수 있어요."""
+    return not IS_MAC or mac_browser_app() is not None
+
+
+def claude_limits_readable():
+    """맥은 Claude 로그인이 키체인에 있어서 파일이 없으면 남은 양을 직접 읽지 않아요."""
+    return not IS_MAC or (Path.home() / ".claude" / ".credentials.json").exists()
+
+
+def platform_features():
+    """이 PC에서 쓸 수 있는 기능. 화면은 false인 기능을 아예 그리지 않아요."""
+    return {"mac": IS_MAC, "storage": not IS_MAC, "resources": not IS_MAC,
+            "app_window": app_window_available(), "claude_limits": claude_limits_readable()}
+
+
 def resource_view():
     """화면용: systemctl 을 기다리지 않게 마지막 값을 바로 돌려주고, 3초 지났으면 뒤에서 다시 구해요.
-    값이 아직 없는 서버 시작 직후 한 번만 직접 구해요(없다고 잘못 보이지 않게)"""
+    값이 아직 없는 서버 시작 직후 한 번만 직접 구해요(없다고 잘못 보이지 않게). 맥에는 이 기능이 없어 보내지 않아요."""
+    if IS_MAC:
+        return None
     cache = dict(RESOURCE_CACHE)
     if cache.get("root") != str(ROOT) or "value" not in cache:
         return resource_status()
@@ -5932,6 +5956,8 @@ class Office:
         if not isinstance(p, dict) or not isinstance(p.get("action"), str):
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
+        if IS_MAC and act in MAC_BLOCKED_ACTIONS:
+            raise UserError("맥에서는 쓸 수 없는 기능이에요.")
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
                  "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_remeasure", "storage_refresh", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
         if act == "storage_compact":
@@ -6081,8 +6107,6 @@ class Office:
             cpu, memory = p.get("cpu_percent"), p.get("memory_high_gb")
             if type(cpu) is not int or not 1 <= cpu <= 100 or type(memory) not in (int, float) or not math.isfinite(memory) or not 0 <= memory <= physical_memory() / 1024**3:
                 raise UserError("리소스 한도 확인 — CPU는 1~100%, 메모리는 이 PC 용량 안에서 설정하세요. 메모리 0은 한도를 끄는 값이에요.")
-            if IS_MAC:
-                raise UserError("맥에서는 사용량 제한을 쓸 수 없어요.")
             try:
                 with RESOURCE_LOCK:
                     apply_resource_limits(cpu, memory)
@@ -6343,12 +6367,14 @@ def make_handler(office):
                     saved_ui = read_json_file(D / "ui-settings.json", {})
                     snapshot["ui"] = {"theme": saved_ui.get("theme") if isinstance(saved_ui, dict) and saved_ui.get("theme") in ("auto", "light", "dark") else None}
                     snapshot["server_instance"] = office.server_instance
-                    compact_state = storage_compact_view()
-                    snapshot["storage_notice"] = refresh_storage_notice(storage_notice_view(), compact_state)
-                    snapshot["storage_notice_preferences"] = storage_notice_preferences_view()
-                    closed = read_json_file(D / "storage-result-closed.json", {})
-                    snapshot["storage_result_closed"] = closed.get("key") if isinstance(closed, dict) and isinstance(closed.get("key"), str) else ""
-                    snapshot["storage_compact"] = compact_state
+                    snapshot["features"] = platform_features()
+                    if not IS_MAC:   # 디스크 줄이기는 WSL 기능이라 맥에는 보내지 않아요
+                        compact_state = storage_compact_view()
+                        snapshot["storage_notice"] = refresh_storage_notice(storage_notice_view(), compact_state)
+                        snapshot["storage_notice_preferences"] = storage_notice_preferences_view()
+                        closed = read_json_file(D / "storage-result-closed.json", {})
+                        snapshot["storage_result_closed"] = closed.get("key") if isinstance(closed, dict) and isinstance(closed.get("key"), str) else ""
+                        snapshot["storage_compact"] = compact_state
                     self.json_reply(200, snapshot)
                 elif path == "/api/turn":
                     query = parse_qs(urlsplit(self.path).query)
@@ -6524,20 +6550,24 @@ def usage_lines(width):
         return pad(f"{battery(left)} {num} {paint(f"{until(w.get('resets'))} 초기화" if w.get("resets") else "", 2)}", cell)
     # 에이전트마다 이름 색을 달리하고 사이에 구분선을 둬서 두 줄이 섞여 보이지 않게 함
     names = {"claude": 33, "codex": 36}
-    rows, seen = [pad(paint("  남은 양", 1), 10) + pad(paint("5시간", 2), cell) + paint("7일", 2)], False
-    for i, n in enumerate(AGENTS):
+    rows, seen, skipped = [pad(paint("  남은 양", 1), 10) + pad(paint("5시간", 2), cell) + paint("7일", 2)], False, 0
+    for n in AGENTS:
         L = limits_for(n) or {}
         seen = seen or bool(L.get("at"))
         known = any((L.get(k) or {}).get("used") is not None for k in ("five_hour", "seven_day"))
         # 기준 시각은 에이전트별로 따로: 그 에이전트 값이 10분 넘게 묵었을 때만 그 줄 끝에 표시
         mins = int((time.time() - L["at"]) // 60) if L.get("at") else 0
         stale = paint(f" {mins}분 전 값", 33) if mins >= 10 else ""
-        if i:
+        if n == "claude" and not known and not claude_limits_readable():
+            skipped = 2   # 맥에서 읽을 수 없는 값은 '정보 없음'으로 두지 않고 줄을 빼요. 값이 오면 다시 보여요
+            continue
+        if len(rows) > 1:
             rows.append(paint("  " + "-" * 70, 2))
         rows.append(pad("  " + paint(disp(n), 1, names.get(n, 37)), 10) + one(L.get("five_hour"), known)
                     + one(L.get("seven_day"), known) + stale)
     # 줄 수는 고정해야 해서(제자리 갱신용) 받은 값이 있으면 빈 줄
     rows.append("" if seen else paint("  아직 받은 사용량 정보 없음", 2))
+    rows.extend([""] * skipped)
     return [fit_console(r, width) for r in rows]
 
 
@@ -6610,7 +6640,7 @@ def status_line(office, port, opened=True):
 def status_loop(office, port, opened, interactive):
     print(f"{paint(' Office ', 1, 30, 46)}  {paint(f'http://localhost:{port}/', 4, 36)}")
     print(f"{paint('폴더', 2)}    {ROOT}")
-    print(paint("이 콘솔은 켜 두세요 · 앱 창 다시 열기 R · 종료 Ctrl+C", 2))
+    print(paint(f"이 콘솔은 켜 두세요 · {'앱 창' if app_window_available() else '창'} 다시 열기 R · 종료 Ctrl+C", 2))
     if not opened:
         print(paint("창을 자동으로 열지 못했어요. 위 주소를 브라우저에서 열어 보세요.", 33))
     print()
@@ -6663,8 +6693,11 @@ def status_loop(office, port, opened, interactive):
                         typed = os.read(tty_fd, 256).decode(errors="ignore").lower()
                         pressed = "r" in typed or "ㄱ" in typed   # 한글 입력 상태에서 R은 'ㄱ'으로 들어와요
                     if pressed:
-                        shown = open_window(port, app_only=True)
-                        flash = ("앱 창을 열었어요." if shown else "앱 창을 열지 못했어요 · Chrome이나 Edge 설치를 확인하세요.", time.time() + 5)
+                        app = app_window_available()   # 앱 창을 못 쓰는 맥은 기본 브라우저로 열어요
+                        shown = open_window(port, app_only=app)
+                        flash = (("앱 창을 열었어요." if app else "창을 열었어요.") if shown
+                                 else "앱 창을 열지 못했어요 · Chrome이나 Edge 설치를 확인하세요." if app
+                                 else "창을 열지 못했어요 · 위 주소를 브라우저에서 열어 보세요.", time.time() + 5)
             office.stop.wait(0.2)
     except KeyboardInterrupt:
         office.shutdown()

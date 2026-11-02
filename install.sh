@@ -18,12 +18,15 @@ Office 설치기 (Linux/WSL/macOS)
   --no-launch            Office 실행 생략
   --device-auth          Codex 기기 코드 로그인
   --install-system-deps  누락된 Python/git/curl을 apt 또는 Homebrew로 설치 허용
-  --no-shortcut          윈도우 바탕화면·시작 메뉴 바로가기 만들지 않음
   -h, --help             도움말
 
 기존 Office·셸 프로필·설정은 덮어쓰지 않음. ~/.local/bin/office가 없을 때만 만듦.
 에이전트(Claude·Codex)는 전체 권한으로 실행됨. 제한하려면 OFFICE_SANDBOX=1로 실행.
 실제 설치는 대상 PC에 필요한 CLI를 설치하고 사용자 로그인을 진행함.
+EOF
+  # 윈도우 전용 안내는 맥에 보이지 않게 해요
+  [[ $(uname -s) == Darwin ]] || cat <<'EOF'
+WSL 전용: --no-shortcut 을 붙이면 윈도우 바탕화면·시작 메뉴 바로가기를 만들지 않음.
 현재 사용 중인 WSL에서 변경을 원치 않으면 --apply를 실행하지 마세요.
 EOF
 }
@@ -78,10 +81,14 @@ case $platform in
   Linux) ;;
   Darwin)
     mac_version=$(sw_vers -productVersion)
-    [[ ${mac_version%%.*} -ge 13 ]] || fail 'macOS 13 이상이 필요해요'
+    mac_major=${mac_version%%.*}
+    mac_minor=0
+    [[ $mac_version != *.* ]] || { mac_minor=${mac_version#*.}; mac_minor=${mac_minor%%.*}; }
+    # 13.3부터 들어 있는 Safari 16.4 이상이어야 화면이 열려요.
+    [[ $mac_major -gt 13 || ( $mac_major -eq 13 && $mac_minor -ge 3 ) ]] || fail 'macOS 13.3 이상이 필요해요'
     export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
     ;;
-  *) fail 'Linux/WSL 또는 macOS 13 이상에서 실행하세요';;
+  *) fail 'Linux/WSL 또는 macOS 13.3 이상에서 실행하세요';;
 esac
 if command -v sha256sum >/dev/null; then
   (cd "$payload" && sha256sum --check --strict SHA256SUMS) || fail '배포 파일 해시가 맞지 않습니다'
@@ -339,15 +346,17 @@ case ":$original_path:" in
     ;;
 esac
 
-# 바로가기로 열어도 서버 종료 뒤 대화형 셸을 남겨요.
-{
-  printf '# Office 콘솔을 시작해요. 서버가 끝나면 이 셸을 계속 사용하세요.\n'
-  printf 'if [[ -f $HOME/.bashrc ]]; then . "$HOME/.bashrc"; fi\n'
-  printf 'cd -- %q\n' "$workspace"
-  printf '%q\n' "$prefix/bin/office"
-} > "$staging/office-console.bashrc"
-chmod 600 "$staging/office-console.bashrc"
-mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
+# 바로가기로 열어도 서버 종료 뒤 대화형 셸을 남겨요. 바로가기가 없는 맥에는 만들지 않아요.
+if [[ $platform == Linux ]]; then
+  {
+    printf '# Office 콘솔을 시작해요. 서버가 끝나면 이 셸을 계속 사용하세요.\n'
+    printf 'if [[ -f $HOME/.bashrc ]]; then . "$HOME/.bashrc"; fi\n'
+    printf 'cd -- %q\n' "$workspace"
+    printf '%q\n' "$prefix/bin/office"
+  } > "$staging/office-console.bashrc"
+  chmod 600 "$staging/office-console.bashrc"
+  mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
+fi
 
 # WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.

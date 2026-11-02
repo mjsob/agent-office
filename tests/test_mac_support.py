@@ -177,6 +177,42 @@ class Desktop(unittest.TestCase):
             o.Office().handle({"action": "resource_limits", "cpu_percent": 50, "memory_high_gb": 0})
         o.RESOURCE_CACHE.clear()
 
+    def test_unsupported_actions_blocked(self):
+        for act in sorted(o.MAC_BLOCKED_ACTIONS):
+            with self.assertRaisesRegex(o.UserError, "맥에서는"):
+                o.Office.handle(object.__new__(o.Office), {"action": act, "confirmed": True, "cpu_percent": 50, "memory_high_gb": 0})
+        self.assertEqual(self.calls, [])
+
+    def test_features_hide_unsupported(self):
+        with patch.object(o, "mac_browser_app", lambda: None), patch.object(o.Path, "home", lambda: Path(TMP.name)):
+            self.assertEqual(o.platform_features(), {"mac": True, "storage": False, "resources": False,
+                                                     "app_window": False, "claude_limits": False})
+        with patch.object(o, "mac_browser_app", lambda: Path("/Applications/Google Chrome.app")):
+            self.assertTrue(o.platform_features()["app_window"])
+        self.assertIsNone(o.resource_view())
+        with patch.object(o, "IS_MAC", False), patch.object(o, "mac_browser_app", lambda: None):
+            features = o.platform_features()
+            self.assertEqual((features["storage"], features["resources"], features["app_window"], features["claude_limits"]),
+                             (True, True, True, True))
+
+    def test_console_drops_unreadable_claude_row(self):
+        with patch.object(o.Path, "home", lambda: Path(TMP.name)):
+            with patch.object(o, "limits_for", lambda n: {}):
+                hidden = o.usage_lines(120)
+            with patch.object(o, "limits_for", lambda n: {"five_hour": {"used": 10}, "at": time.time()} if n == "claude" else {}):
+                shown = o.usage_lines(120)
+        self.assertEqual(len(hidden), len(shown))   # 제자리 갱신이라 줄 수는 그대로예요
+        self.assertFalse(any("Claude" in line for line in hidden))
+        self.assertTrue(any("Claude" in line for line in shown))
+
+    def test_limit_loop_skips_keychain(self):
+        stop = o.threading.Event()
+        with patch.object(o.Path, "home", lambda: Path(TMP.name)), patch.object(o, "fetch_claude_limits") as fetch, \
+                patch.object(o, "log_limits_failure") as failed, patch.object(stop, "wait", lambda _: stop.set()):
+            o.refresh_provider_limits("claude", stop)
+        fetch.assert_not_called()
+        failed.assert_not_called()
+
     def test_claude_limits_skip_keychain(self):
         with patch.object(o.Path, "home", lambda: Path(TMP.name)):
             self.assertIsNone(o.fetch_claude_limits())
@@ -194,6 +230,20 @@ class Screen(unittest.TestCase):
         html = (Path(SRC).parent / "office.html").read_text(encoding="utf-8")
         self.assertEqual(html.count("usr|Users|Volumes|private"), 2)
         self.assertIn('s.file_manager || "탐색기"', html)
+        self.assertNotIn('title="탐색기에서 열기"', html)   # 맥은 Finder로 보여요
+        self.assertRegex(html, r'id="storageSettingsGroup" hidden')
+
+    def test_installer_mac_text(self):
+        script = (Path(SRC).parent.parent / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("macOS 13.3 이상이 필요해요", script)
+        run = subprocess.run(["bash", "-c", 'uname() { echo Darwin; }; ' + script.split("fail() {")[0] + "usage"],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("윈도우", run.stdout)
+        self.assertNotIn("WSL에서", run.stdout)
+        linux = subprocess.run(["bash", "-c", 'uname() { echo Linux; }; ' + script.split("fail() {")[0] + "usage"],
+                               capture_output=True, text=True)
+        self.assertIn("--no-shortcut", linux.stdout)
 
 
 if __name__ == "__main__":
