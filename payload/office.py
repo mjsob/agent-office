@@ -4705,7 +4705,7 @@ def storage_notice_view(path=None, now=None):
         if len(raw) > 16384:
             return None
         notice = json.loads(raw)
-        if not isinstance(notice, dict) or type(notice.get("schema_version")) is not int or notice["schema_version"] != 1:
+        if not isinstance(notice, dict) or type(notice.get("schema_version")) is not int or notice["schema_version"] not in (1, 2):
             return None
         checked = notice.get("checked_at")
         if type(checked) not in (int, float) or not math.isfinite(checked) or checked <= 0 or checked > now + 300:
@@ -4715,27 +4715,33 @@ def storage_notice_view(path=None, now=None):
             return None
         if now - checked > STORAGE_NOTICE_MAX_AGE:
             return {"status": "stale", "checked_at": checked}
+        if notice["schema_version"] == 1:
+            return {"status": "stale", "checked_at": checked}
         if status == "unavailable":
             return {"status": status, "checked_at": checked}
         disk = notice.get("disk")
         if not isinstance(disk, dict):
             return {"status": status, "checked_at": checked} if status == "ok" else None
-        # 옛 단순 차이는 관리 공간까지 후보로 잡아요. 새 측정으로 갱신할 때까지 수치를 숨겨요.
-        if disk.get("estimate_method") != "ext4-overhead-v1":
-            return {"status": "stale", "checked_at": checked}
-        values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb", "metadata_gib")]
+        values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb")]
         if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values):
-            return {"status": status, "checked_at": checked} if status == "ok" else None
-        reclaim = max(0, values[0] - values[1] - values[3])
+            return None
+        # 측정 도구의 보정된 추정값만 써요. 이곳에서 옛 단순 차이나 추천을 다시 만들지 않아요.
+        reclaim = notice.get("reclaim_gib")
+        basis = notice.get("reclaim_basis")
+        if reclaim is not None:
+            if (type(reclaim) not in (int, float) or not math.isfinite(reclaim)
+                    or not 0 <= reclaim <= values[0] or basis not in ("last_compact", "ext4_metadata")):
+                return None
+        if status == "suggested" and (reclaim is None or reclaim <= 0):
+            return None
         drive = disk.get("drive", "")
         if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
             drive = "디스크"
-        if status == "ok" or (reclaim < 20 and not (values[2] < 30 and reclaim >= 10)):
-            # 관리 공간을 제외한 보수적 추정이에요. 0이어도 실제 확보량을 확정하지 않아요.
-            return {"status": "ok", "checked_at": checked, "free_gib": round(values[2], 1),
-                    "reclaim_gib": round(reclaim, 1), "drive": drive}
-        return {"status": "suggested", "checked_at": checked, "free_gib": values[2],
-                "reclaim_gib": round(reclaim, 1), "drive": drive, "urgent": values[2] < 15}
+        view = {"status": status, "checked_at": checked, "free_gib": round(values[2], 1),
+                "reclaim_gib": round(reclaim, 1) if reclaim is not None else None, "drive": drive}
+        if status == "suggested":
+            view["urgent"] = notice.get("urgent") is True
+        return view
     except (OSError, ValueError, TypeError, OverflowError):
         return None
 

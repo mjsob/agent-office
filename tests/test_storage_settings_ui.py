@@ -79,6 +79,9 @@ with sync_playwright() as p:
                 page.evaluate('([n,a]) => renderStorageNotice(n,a,{hidden:true,mode:"never"})', [notice, action])
             render({**measured, 'reclaim_gib': 0})
             assert run.is_enabled() and '추가로 확보할 공간이 적을 수 있어요' in page.locator('#storageSettingsMetrics').inner_text()
+            render({**measured, 'reclaim_gib': None})
+            assert run.is_disabled() and '36.1GiB' in page.locator('#storageSettingsMetrics').inner_text()
+            assert '추정하지 못했어요' in page.locator('#storageSettingsMetrics').inner_text()
             render({'status': 'stale', 'checked_at': now - 7300})
             assert run.is_disabled() and page.locator('#storageRefresh').is_enabled()
             render(None)
@@ -129,7 +132,7 @@ with sync_playwright() as p:
             if output:
                 page.locator('.storage-settings').screenshot(path=str(output / f'settings-{width}-{theme}.png'))
             assert not errors, errors
-            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero-manual-allowed', 'conservative-label', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'valid-percent', 'zero-percent', 'pending-100', 'unknown-percent', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
+            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero-manual-allowed', 'conservative-label', 'unknown-estimate', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'valid-percent', 'zero-percent', 'pending-100', 'unknown-percent', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
             context.close()
     finally:
         browser.close()

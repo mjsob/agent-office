@@ -46,9 +46,9 @@ class StorageManual(unittest.TestCase):
 
     def write(self, reclaim, free, status='ok', age=0):
         self.notice_file.write_text(json.dumps({
-            'schema_version': 1, 'checked_at': self.now - age, 'status': status,
-            'disk': {'vhdx_gb': 108 + reclaim, 'used_gb': 100, 'c_free_gb': free, 'drive': 'C:',
-                     'estimate_method': 'ext4-overhead-v1', 'metadata_gib': 8}}))
+            'schema_version': 2, 'checked_at': self.now - age, 'status': status,
+            'reclaim_gib': reclaim, 'reclaim_basis': 'last_compact',
+            'disk': {'vhdx_gb': 108 + (reclaim or 0), 'used_gb': 100, 'c_free_gb': free, 'drive': 'C:'}}))
 
     def run_ok(self, *args):
         with patch.object(self.o.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)) as run:
@@ -85,11 +85,15 @@ class StorageManual(unittest.TestCase):
     def test_legacy_estimate_cannot_launch_manual_run(self):
         self.write(11.7, 36.1)
         data = json.loads(self.notice_file.read_text())
-        del data['disk']['estimate_method']
+        data['schema_version'] = 1
         self.notice_file.write_text(json.dumps(data))
         with patch.object(self.o.subprocess, 'run') as run:
             with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
             run.assert_not_called()
+
+    def test_unknown_estimate_cannot_launch_manual_run(self):
+        self.write(None, 36.1)
+        with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
 
     def test_manual_must_be_exactly_true(self):
         self.write(11.7, 36.1)

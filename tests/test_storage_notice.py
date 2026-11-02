@@ -35,31 +35,30 @@ class StorageNotice(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.file = Path(self.temp.name, 'notice.json')
         self.now = 1800000000
-        self.data = {'schema_version': 1, 'checked_at': self.now, 'status': 'suggested',
-                     'disk': {'vhdx_gb': 164.3, 'used_gb': 118.2, 'c_free_gb': 21.6, 'drive': 'C:',
-                              'estimate_method': 'ext4-overhead-v1', 'metadata_gib': 17},
-                     'reclaim_gib': 9999}
+        self.data = {'schema_version': 2, 'checked_at': self.now, 'status': 'suggested',
+                     'disk': {'vhdx_gb': 164.3, 'used_gb': 118.2, 'c_free_gb': 21.6, 'drive': 'C:'},
+                     'reclaim_gib': 12.1, 'reclaim_basis': 'last_compact', 'urgent': False}
 
     def view(self, data=None):
         self.file.write_text(json.dumps(self.data if data is None else data))
         return self.o.storage_notice_view(self.file, self.now)
 
-    def test_excludes_metadata_and_ignores_inflated_candidate(self):
+    def test_uses_producer_estimate_without_rebuilding_old_difference(self):
         got = self.view()
         self.assertEqual((got['status'], got['reclaim_gib'], got['free_gib'], got['urgent']),
-                         ('suggested', 29.1, 21.6, False))
+                         ('suggested', 12.1, 21.6, False))
 
     def test_actual_post_compaction_does_not_suggest_another_11_gib(self):
         self.data['disk'].update(vhdx_gb=140.8701171875, used_gb=129.43646621704102,
                                  metadata_gib=17.146068572998047, c_free_gb=24.721294403076172)
+        self.data.update(status='ok', reclaim_gib=0)
         got = self.view()
         self.assertEqual((got['status'], got['reclaim_gib']), ('ok', 0))
 
-    def test_old_method_is_stale_and_refreshes_without_exposing_candidate(self):
-        for method in (None, 'simple-difference', 1, True):
-            self.data['disk']['estimate_method'] = method
-            got = self.view()
-            self.assertEqual(got, {'status': 'stale', 'checked_at': self.now})
+    def test_legacy_is_stale_and_refreshes_without_exposing_candidate(self):
+        self.data['schema_version'] = 1
+        got = self.view()
+        self.assertEqual(got, {'status': 'stale', 'checked_at': self.now})
         with patch.object(self.o, 'STORAGE_WATCH_SCRIPT', self.file), \
                 patch.object(self.o.time, 'time', return_value=self.now), \
                 patch.object(self.o, 'refresh_later') as refresh:
@@ -67,23 +66,36 @@ class StorageNotice(unittest.TestCase):
             self.assertTrue(self.o.refresh_storage_notice(got, {'status': 'idle'})['refreshing'])
             refresh.assert_called_once()
 
-    def test_missing_metadata_never_falls_back_to_old_difference(self):
-        del self.data['disk']['metadata_gib']
+    def test_unknown_estimate_preserves_free_space_but_never_suggests(self):
+        self.data.update(status='ok', reclaim_gib=None, reclaim_basis=None)
+        got = self.view()
+        self.assertIsNone(got['reclaim_gib'])
+        self.assertEqual((got['free_gib'], got['status']), (21.6, 'ok'))
+        self.data['status'] = 'suggested'
         self.assertIsNone(self.view())
 
-    def test_thresholds_keep_full_precision(self):
-        for reclaim, free, expected in [(19.99, 30, 'ok'), (20, 30, 'suggested'),
-                                        (10, 29.99, 'suggested'), (9.99, 1, 'ok')]:
-            with self.subTest(reclaim=reclaim, free=free):
-                self.data['disk'].update(vhdx_gb=137 + reclaim, used_gb=120, c_free_gb=free)
-                self.assertEqual(self.view()['status'], expected)
+    def test_producer_status_and_urgent_are_not_recomputed(self):
+        self.data.update(status='ok', reclaim_gib=29.1)
+        self.data['disk']['c_free_gb'] = 1
+        self.assertEqual(self.view()['status'], 'ok')
+        self.data.update(status='suggested', urgent=False)
+        self.assertFalse(self.view()['urgent'])
+        self.data['urgent'] = True
+        self.assertTrue(self.view()['urgent'])
+
+    def test_invalid_estimate_and_basis_do_not_fall_back_to_old_difference(self):
+        for value in [-1, True, '11.4', float('inf'), float('nan'), 9999]:
+            self.data['reclaim_gib'] = value
+            self.assertIsNone(self.view())
+        self.data.update(reclaim_gib=12.1, reclaim_basis='old')
+        self.assertIsNone(self.view())
 
     def test_absent_broken_oversized_and_schema(self):
         self.assertIsNone(self.o.storage_notice_view(self.file, self.now))
         for raw in ['broken', '[]', 'x' * 16385]:
             self.file.write_text(raw)
             self.assertIsNone(self.o.storage_notice_view(self.file, self.now))
-        for key, bad in [('schema_version', 2), ('schema_version', True), ('status', 'unknown'),
+        for key, bad in [('schema_version', 3), ('schema_version', True), ('status', 'unknown'),
                          ('checked_at', float('nan')), ('checked_at', self.now + 301)]:
             data = copy.deepcopy(self.data)
             data[key] = bad
@@ -91,7 +103,7 @@ class StorageNotice(unittest.TestCase):
 
     def test_invalid_numbers_do_not_break_ui(self):
         for value in [-1, True, None, '123', float('inf'), float('nan')]:
-            for key in ['vhdx_gb', 'used_gb', 'c_free_gb', 'metadata_gib']:
+            for key in ['vhdx_gb', 'used_gb', 'c_free_gb']:
                 with self.subTest(key=key, value=value):
                     data = copy.deepcopy(self.data)
                     data['disk'][key] = value
@@ -106,6 +118,7 @@ class StorageNotice(unittest.TestCase):
 
     def test_drive_is_plain_text_and_urgent_is_measured(self):
         self.data['disk'].update(drive='<img src=x>', c_free_gb=14.9)
+        self.data['urgent'] = True
         got = self.view()
         self.assertEqual(got['drive'], '디스크')
         self.assertTrue(got['urgent'])
