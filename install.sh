@@ -432,7 +432,7 @@ PYREC
 
 # WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
-# 같은 이름의 바로가기가 wsl.exe를 가리키지 않으면(다른 프로그램) 건드리지 않는다.
+# 같은 이름의 바로가기가 이미 있으면(누가 만들었든) 건드리지 않고, 없을 때만 만든다. 아이콘도 없거나 지난 설치 그대로일 때만 바꾼다.
 if (( shortcut )) && [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
   if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
     cat > "$staging/office-shortcut.ps1" <<'PS1'
@@ -455,10 +455,8 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
   if (-not $folder) { continue }
   $path = Join-Path $folder 'Office.lnk'
   if (Test-Path -LiteralPath $path) {
-    # 이미 있는 바로가기는 이 설치기가 만든 그대로일 때만 다시 쓴다. 직접 고친 것은 그대로 둔다.
-    $old = $shell.CreateShortcut($path)
-    if ($old.TargetPath -notlike '*\wsl.exe') { continue }
-    if ($old.Arguments -ne "-d $Distro --cd ~ -e bash --rcfile $ShellInit -i" -or $old.IconLocation -notlike "$ico*") { continue }
+    # 이미 있는 Office.lnk는 누가 만들었는지 알 수 없어 그대로 둔다.
+    continue
   }
   $lnk = $shell.CreateShortcut($path)
   $lnk.TargetPath = $wsl
