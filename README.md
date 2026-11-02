@@ -5,16 +5,27 @@ Claude와 Codex가 한 팀으로 일하는 작업 공간이에요.
 
 ## 시작하기 전에 확인하세요
 
-- Windows라면 WSL이 필요해요. Linux에서도 쓸 수 있어요.
-- Ubuntu 24.04 이상을 권장해요.
+- Windows라면 WSL이 필요해요. Linux와 macOS 13 이상에서도 쓸 수 있어요.
+- Linux는 Ubuntu 24.04 이상을 권장해요.
+- 맥은 Apple Silicon과 Intel을 지원해요. Python 3.11 이상이 필요해요.
+- 맥에서 필요한 프로그램을 함께 설치하려면 [Homebrew](https://brew.sh)를 먼저 설치하세요.
 - 인터넷에 연결되어 있어야 해요.
 - Claude 계정과 ChatGPT 계정이 있어야 해요.
 
-WSL이 없다면 먼저 설치하세요. 설치 중에 관리자 권한이나 재부팅이 필요할 수 있어요.
+Windows에서 WSL이 없다면 먼저 설치하세요. 설치 중에 관리자 권한이나 재부팅이 필요할 수 있어요.
+
+맥 지원은 모의 환경에서 확인했어요. 실제 맥에서 설치와 화면 실행은 아직 확인하지 못했어요.
+
+### 맥에서 지원하는 기능을 확인하세요
+
+- Chrome이나 Edge가 있으면 앱 창으로 열려요. 없으면 기본 브라우저로 열려요.
+- 맥에서는 CPU와 메모리 사용량 제한을 쓸 수 없어요.
+- 디스크 줄이기와 바탕화면 바로가기는 WSL에서만 쓸 수 있어요.
+- 맥에서는 Claude의 남은 사용량이 표시되지 않을 수 있어요.
 
 ## 설치하기
 
-WSL 터미널에 아래 명령을 붙여 넣으세요.
+터미널에 아래 명령을 붙여 넣으세요.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | bash -s -- --apply --install-system-deps
@@ -33,8 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | ba
 
 - Claude Code와 Codex CLI가 없으면 함께 설치돼요.
 - 작업 폴더 `~/agent-office`가 만들어져요.
-- 새 터미널에서 `office` 명령으로 실행할 수 있어요.
-- Python이나 git이 없으면 함께 설치돼요. 이때 관리자 비밀번호를 물어볼 수 있어요.
+- 설치 안내에 따라 PATH를 설정하면 새 터미널에서 `office` 명령으로 실행할 수 있어요.
+- Python이나 git이 없으면 Linux는 apt로, 맥은 Homebrew로 설치돼요. 이때 관리자 비밀번호를 물어볼 수 있어요.
 
 ## 실행하기
 
@@ -42,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | ba
 office
 ```
 
-새 WSL 터미널을 열고 `office`를 입력하면 Office가 열려요.
+새 터미널을 열고 `office`를 입력하면 Office가 열려요.
 `~/agent-office` 폴더에서 일을 시작해요.
 
 다른 폴더에서 일하려면 폴더 경로를 함께 입력하세요.
@@ -68,7 +79,7 @@ office ~/내프로젝트
 **업데이트**를 클릭하면 새 버전을 설치하고 Office를 다시 시작해요.
 에이전트가 일하는 중에는 업데이트할 수 없어요. 작업이 끝난 뒤 클릭하세요.
 
-이미 설치했거나 업데이트 알림이 뜨지 않으면 WSL 터미널에서 아래 명령을 실행하세요.
+이미 설치했거나 업데이트 알림이 뜨지 않으면 터미널에서 아래 명령을 실행하세요.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | bash -s -- --apply
@@ -111,7 +122,7 @@ OFFICE_SANDBOX=1 office
 
 - 이미 설치된 Claude Code와 Codex CLI는 다시 설치하지 않아요.
 - 이미 로그인되어 있으면 그 계정을 그대로 써요.
-- 이미 있는 `office` 명령은 바꾸지 않아요.
+- 이 설치기가 만든 `office` 명령은 업데이트해요. 직접 만든 명령은 그대로 둬요.
 - `.bashrc` 같은 설정 파일은 고치지 않아요.
 
 ## 문제가 생겼을 때
@@ -145,8 +156,14 @@ curl -fsSL https://raw.githubusercontent.com/mjsob/agent-office/main/get.sh | ba
 안내된 파일을 지우거나 이름을 바꾸세요.
 
 **`office` 명령을 찾을 수 없어요**
-새 WSL 터미널을 열고 다시 입력하세요.
-그래도 안 되면 `~/.local/share/office-app/bin/office`로 실행하세요.
+새 터미널을 열고 다시 입력하세요.
+맥에서 기본 zsh를 쓰면 `~/.zprofile`에 아래 줄을 추가하고 새 터미널을 여세요.
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+바로 실행하려면 `~/.local/share/office-app/bin/office`를 입력하세요.
 
 **Codex 로그인 화면이 열리지 않아요**
 설치 명령 끝에 `--device-auth`를 붙여 다시 실행하세요.
@@ -166,8 +183,15 @@ Office는 시스템에 등록한 인증서를 함께 읽어요.
 그래도 오류가 나면 `SSL_CERT_FILE` 환경변수에 인증서 파일 경로를 넣으세요.
 `office stop`으로 Office를 끈 뒤 다시 실행해야 적용돼요.
 
+**맥에서 다른 설치기가 실행 중이라고 나와요**
+실행 중인 설치가 끝날 때까지 기다리세요.
+설치기를 강제로 종료했다면 실행 중인 설치기가 없는지 먼저 확인하세요.
+그다음 `~/.local/share/office-app/.install.lock.d` 폴더를 지우고 다시 설치하세요.
+설치 경로를 바꿨다면 그 경로 안의 `.install.lock.d` 폴더를 지우세요.
+
 **Python 버전이 낮다고 나와요**
 Python 3.11 이상을 설치하세요.
+맥에서는 Homebrew를 설치한 뒤 설치 명령에 `--install-system-deps`를 붙여 다시 실행하세요.
 Ubuntu를 새로 설치한다면 24.04 이상을 권장해요.
 
 ## 삭제하기

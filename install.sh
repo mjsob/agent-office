@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Office bootstrap for Linux/WSL. Preview by default; never source this script.
+# Office bootstrap for Linux/WSL/macOS. Preview by default; never source this script.
 set -Eeuo pipefail
 umask 077
 
 usage() {
   cat <<'EOF'
-Office 설치기 (Linux/WSL)
+Office 설치기 (Linux/WSL/macOS)
   bash install.sh                         변경 없이 설치 계획만 확인
   bash install.sh --apply                 대상 PC에서 설치 → 로그인 → 실행
   bash install.sh --apply --install-system-deps
-                                         누락된 시스템 의존도 apt로 설치
+                                         누락된 시스템 의존도 apt 또는 Homebrew로 설치
 옵션:
   --prefix /절대/경로     설치 폴더 (기본 ~/.local/share/office-app)
   --workspace /절대/경로  기본 작업 폴더 (기본 ~/agent-office)
@@ -17,7 +17,7 @@ Office 설치기 (Linux/WSL)
   --skip-login           로그인 확인/실행 생략
   --no-launch            Office 실행 생략
   --device-auth          Codex 기기 코드 로그인
-  --install-system-deps  누락된 Python/git/curl을 apt로 설치 허용
+  --install-system-deps  누락된 Python/git/curl을 apt 또는 Homebrew로 설치 허용
   --no-shortcut          윈도우 바탕화면·시작 메뉴 바로가기 만들지 않음
   -h, --help             도움말
 
@@ -73,9 +73,23 @@ if (( ! apply )); then
   printf '시스템 패키지 설치 허용: %s / 로그인: %s / 실행: %s\n' "$system_deps" "$login" "$launch"
   exit 0
 fi
-[[ $(uname -s) == Linux ]] || fail '현재 설치기는 Linux/WSL만 지원합니다'
-command -v sha256sum >/dev/null || fail 'sha256sum이 필요합니다'
-(cd "$payload" && sha256sum --check --strict SHA256SUMS) || fail '배포 파일 해시가 맞지 않습니다'
+platform=$(uname -s)
+case $platform in
+  Linux) ;;
+  Darwin)
+    mac_version=$(sw_vers -productVersion)
+    [[ ${mac_version%%.*} -ge 13 ]] || fail 'macOS 13 이상이 필요해요'
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    ;;
+  *) fail 'Linux/WSL 또는 macOS 13 이상에서 실행하세요';;
+esac
+if command -v sha256sum >/dev/null; then
+  (cd "$payload" && sha256sum --check --strict SHA256SUMS) || fail '배포 파일 해시가 맞지 않습니다'
+elif command -v shasum >/dev/null; then
+  (cd "$payload" && shasum -a 256 --check --strict SHA256SUMS) || fail '배포 파일 해시가 맞지 않습니다'
+else
+  fail 'sha256sum 또는 shasum이 필요해요'
+fi
 # Existing install trees and symlink components are never silently adopted.
 probe=$prefix
 while [[ $probe != / ]]; do
@@ -93,7 +107,7 @@ if [[ -e $prefix ]]; then
 fi
 find_python() {
   local candidate
-  for candidate in python3.13 python3.12 python3.11 python3; do
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
     if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys, tomllib, fcntl; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
       command -v "$candidate"; return 0
     fi
@@ -105,30 +119,54 @@ missing=()
 [[ -n $python_bin ]] || missing+=(python3)
 command -v git >/dev/null || missing+=(git)
 command -v curl >/dev/null || missing+=(curl)
-command -v flock >/dev/null || missing+=(util-linux)
-if ((${#missing[@]})); then
-  (( system_deps )) || fail "필요한 의존이 없습니다: ${missing[*]}. Python 3.11+와 git/curl/flock 설치 또는 --install-system-deps 사용(대상 PC만)."
-  command -v apt-get >/dev/null || fail '자동 의존 설치는 apt 기반 배포판만 지원합니다'
-  elevate=()
-  if (( EUID != 0 )); then
-    command -v sudo >/dev/null || fail '시스템 패키지 설치에 sudo가 필요합니다'
-    elevate=(sudo)
+if [[ $platform == Linux ]]; then command -v flock >/dev/null || missing+=(util-linux); fi
+if [[ ${missing[*]-} ]]; then
+  (( system_deps )) || fail "필요한 의존이 없습니다: ${missing[*]}. Python 3.11+와 git/curl을 설치하거나 --install-system-deps를 쓰세요."
+  if [[ $platform == Darwin ]]; then
+    command -v brew >/dev/null || fail 'Homebrew를 https://brew.sh 에서 설치한 뒤 같은 명령을 다시 실행하세요. Homebrew는 자동으로 설치하지 않아요.'
+    brew_deps=()
+    [[ -n $python_bin ]] || brew_deps+=(python@3.13)
+    command -v git >/dev/null || brew_deps+=(git)
+    command -v curl >/dev/null || brew_deps+=(curl)
+    brew install ${brew_deps[@]+"${brew_deps[@]}"}
+    # Versioned Python formulae expose python3.X even when python3 is supplied by CLT.
+    if [[ -z $python_bin ]]; then
+      brew_python_prefix=$(brew --prefix python@3.13)
+      export PATH="$brew_python_prefix/bin:$PATH"
+    fi
+  else
+    command -v apt-get >/dev/null || fail '자동 의존 설치는 apt 기반 배포판에서 지원해요'
+    elevate=()
+    if (( EUID != 0 )); then
+      command -v sudo >/dev/null || fail '시스템 패키지 설치에 sudo가 필요합니다'
+      elevate=(sudo)
+    fi
+    ${elevate[@]+"${elevate[@]}"} apt-get update
+    ${elevate[@]+"${elevate[@]}"} apt-get install -y "${missing[@]}" ca-certificates
   fi
-  "${elevate[@]}" apt-get update
-  "${elevate[@]}" apt-get install -y "${missing[@]}" ca-certificates
   python_bin=$(find_python || true)
-  [[ -n $python_bin ]] || fail '이 배포판의 기본 Python은 3.11 미만입니다. Ubuntu 24.04 이상 환경을 사용하세요. Python 저장소를 임의로 추가하지 않습니다.'
 fi
-[[ -n $python_bin ]] || fail 'Python 3.11+가 필요합니다'
-for cmd in git curl flock; do command -v "$cmd" >/dev/null || fail "의존 설치 후에도 $cmd 명령이 없습니다"; done
+[[ -n $python_bin ]] || fail 'Python 3.11+가 필요해요. macOS에서는 Homebrew Python을, Ubuntu에서는 24.04 이상 환경을 사용하세요.'
+for cmd in git curl; do command -v "$cmd" >/dev/null || fail "의존 설치 후에도 $cmd 명령이 없습니다"; done
+if [[ $platform == Linux ]]; then command -v flock >/dev/null || fail 'flock 명령이 필요해요'; fi
 mkdir -p -- "$prefix"
 printf '%s\n' office-bootstrap-v1 > "$prefix/.office-install"
 [[ ! -L "$prefix/.install.lock" ]] || fail '설치 잠금 파일이 심볼릭 링크입니다'
-exec 9>"$prefix/.install.lock"
-flock -n 9 || fail '이 폴더에서 다른 설치기가 실행 중입니다'
-staging=$(mktemp -d "$prefix/.staging.XXXXXX")
-cleanup() { rm -rf -- "$staging"; }
+lock_dir=
+staging=
+cleanup() {
+  [[ -z $staging ]] || rm -rf -- "$staging"
+  [[ -z $lock_dir ]] || rmdir -- "$lock_dir"
+}
+if [[ $platform == Darwin ]]; then
+  mkdir -- "$prefix/.install.lock.d" 2>/dev/null || fail '이 폴더에서 다른 설치기가 실행 중이에요. 강제 종료했다면 .install.lock.d 폴더를 확인하세요.'
+  lock_dir=$prefix/.install.lock.d
+else
+  exec 9>"$prefix/.install.lock"
+  flock -n 9 || fail '이 폴더에서 다른 설치기가 실행 중입니다'
+fi
 trap cleanup EXIT
+staging=$(mktemp -d "$prefix/.staging.XXXXXX")
 for name in "${files[@]}"; do cp -- "$payload/$name" "$staging/$name"; done
 chmod 700 "$staging/office.py"
 
@@ -290,8 +328,13 @@ fi
 case ":$original_path:" in
   *":$HOME/.local/bin:"*) ;;
   *)
-    printf '새 WSL 터미널을 열고 office를 실행하세요.\n'
-    printf '명령을 찾지 못하면 ~/.profile에서 ~/.local/bin을 PATH에 추가하는지 확인하세요.\n'
+    printf '새 터미널을 열고 office를 실행하세요.\n'
+    if [[ $platform == Darwin ]]; then
+      printf '명령을 찾지 못하면 ~/.zprofile에 아래 줄을 추가한 뒤 새 터미널을 여세요.\n'
+      printf '%s\n' 'export PATH="$HOME/.local/bin:$PATH"'
+    else
+      printf '명령을 찾지 못하면 ~/.profile에서 ~/.local/bin을 PATH에 추가하는지 확인하세요.\n'
+    fi
     printf '현재 터미널에서 바로 실행: %q\n' "$prefix/bin/office"
     ;;
 esac
@@ -309,7 +352,7 @@ mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
 # WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
 # 같은 이름의 바로가기가 wsl.exe를 가리키지 않으면(다른 프로그램) 건드리지 않는다.
-if (( shortcut )) && [[ -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
+if (( shortcut )) && [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
   if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
     cat > "$staging/office-shortcut.ps1" <<'PS1'
 param([string]$Distro, [string]$ShellInit, [string]$Icon)
@@ -367,8 +410,10 @@ fi
 cleanup
 trap - EXIT
 # Do not retain the installer lock in the long-running GUI.
-flock -u 9
-exec 9>&-
+if [[ $platform == Linux ]]; then
+  flock -u 9
+  exec 9>&-
+fi
 printf '%s\n' "$local_summary"
 if (( launch )); then
   printf '별도 작업 폴더에서 Office를 시작합니다.\n'

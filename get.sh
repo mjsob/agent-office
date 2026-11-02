@@ -24,8 +24,15 @@ if [[ -n $version ]]; then
 else
   BASE="https://github.com/$REPO/releases/latest/download"
 fi
-for cmd in curl tar sha256sum mktemp; do command -v "$cmd" >/dev/null || fail "$cmd 명령이 필요합니다"; done
+for cmd in curl tar mktemp; do command -v "$cmd" >/dev/null || fail "$cmd 명령이 필요합니다"; done
 
+if command -v sha256sum >/dev/null; then
+  hash_cmd=(sha256sum)
+elif command -v shasum >/dev/null; then
+  hash_cmd=(shasum -a 256)
+else
+  fail 'sha256sum 또는 shasum 명령이 필요해요'
+fi
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 printf 'Office 설치 묶음을 받습니다: %s\n' "$REPO"
@@ -35,7 +42,7 @@ fetch "$BASE/$ASSET.sha256" "$work/$ASSET.sha256" || fail '해시 파일을 받�
 
 # 해시 파일의 파일명과 상관없이 첫 칸(해시값)만 비교
 want=$(awk '{print $1; exit}' "$work/$ASSET.sha256")
-got=$(sha256sum "$work/$ASSET" | awk '{print $1}')
+got=$("${hash_cmd[@]}" "$work/$ASSET" | awk '{print $1}')
 [[ -n $want && $want == "$got" ]] || fail '받은 파일의 해시가 맞지 않습니다'
 
 tar -xzf "$work/$ASSET" -C "$work"
@@ -43,7 +50,7 @@ tar -xzf "$work/$ASSET" -C "$work"
 
 # curl | bash 로 실행되면 표준입력이 이 스크립트라서, 로그인 단계가 터미널을 쓰도록 /dev/tty를 연결
 if [[ -t 0 ]] || ! { : </dev/tty; } 2>/dev/null; then
-  bash "$work/office-dist/install.sh" "${args[@]}"
+  bash "$work/office-dist/install.sh" ${args[@]+"${args[@]}"}
 else
-  bash "$work/office-dist/install.sh" "${args[@]}" </dev/tty
+  bash "$work/office-dist/install.sh" ${args[@]+"${args[@]}"} </dev/tty
 fi
