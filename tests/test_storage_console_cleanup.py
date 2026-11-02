@@ -69,25 +69,30 @@ class ConsoleCleanup(unittest.TestCase):
         self.assertEqual(len(self.select(f"(P 88 'wsl.exe' 1 '{quoted}'),(P 89 'conhost.exe' 88)")), 1)
 
     def close(self, before, after):
+        # Stop-Process를 가짜 함수로 가려 실제 프로세스는 종료하지 않고, 불린 PID만 기록해요.
         out = ps(FAKE + f"""
+$global:calls=@()
+function Stop-Process {{ param([int]$Id,[switch]$Force,$ErrorAction) $global:calls += $Id }}
 $a=@({before}); $t=@(Select-OfficeConsoles $a $cfg)
 $b=@({after})
-'{{0}}|{{1}}' -f $t.Count,@(Close-OfficeConsoles $t $cfg $b).Count""")
+$closed=@(Close-OfficeConsoles $t $cfg $b)
+'{{0}}|{{1}}|{{2}}' -f $t.Count,$closed.Count,($global:calls -join ',')""")
         return out
 
     LAYOUT = "(P 90 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 91 'conhost.exe' 90)"
 
     def test_close_skips_when_another_program_attached_after_snapshot(self):
-        # 실제 Stop-Process는 없는 PID라 항상 0을 돌려줘요. 여기서는 '닫기 후보에서 빠지는지'를 Select 결과로 확인해요.
-        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT + ",(P 92 'notepad.exe' 90)"), "1|0")
+        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT + ",(P 92 'notepad.exe' 90)"), "1|0|")
 
     def test_close_skips_when_pid_is_reused_or_time_changed(self):
-        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 91 'conhost.exe' 90 '' '20270101000000.000000+540')"), "1|0")
-        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'cmd.exe'),(P 91 'conhost.exe' 90)"), "1|0")
+        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 91 'conhost.exe' 90 '' '20270101000000.000000+540')"), "1|0|")
+        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'cmd.exe'),(P 91 'conhost.exe' 90)"), "1|0|")
 
-    def test_close_requires_unchanged_layout(self):
-        # 같은 배치면 후보로 인정돼 Stop-Process까지 가지만, 없는 PID 오류는 삼켜서 0이에요.
-        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT), "1|0")
+    def test_close_skips_when_console_is_gone(self):
+        self.assertEqual(self.close(self.LAYOUT, "(P 1 'explorer.exe' 0)"), "1|0|")
+
+    def test_close_runs_only_for_unchanged_layout(self):
+        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT), "1|1|91")
 
 
 if __name__ == "__main__":
