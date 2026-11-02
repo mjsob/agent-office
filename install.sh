@@ -262,7 +262,7 @@ if conflicts:
     blocked.append('직접 고친 파일을 새 버전과 자동으로 합칠 수 없어요: ' + ','.join(conflicts))
 if blocked:
     print('OFFICE_LOCAL: blocked=1 conflicts=%s' % (','.join(conflicts) or '-'))
-    sys.stderr.write('직접 고친 부분이 있어 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
+    sys.stderr.write('아래 이유로 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
     for reason in blocked: sys.stderr.write('- ' + reason + '\n')
     sys.exit(3)
 backup = None
@@ -279,7 +279,7 @@ if changed or legacy:
 print('OFFICE_LOCAL: changed=%d merged=%s conflicts=%s backup=%s' %
       (len(changed) if old else 0, ','.join(merged) or '-', ','.join(conflicts) or '-', str(backup) if backup else '-') + (' legacy=1' if legacy else ''))
 PYLOCAL
-) || fail '직접 고친 부분을 지킬 수 없어서 설치를 멈췄어요. 기존 설치는 그대로예요.'
+) || fail '설치를 멈췄어요. 기존 설치는 그대로예요.'
 
 export PATH="$HOME/.local/bin:$PATH"
 # Download official installers as files; an HTTP failure never executes a partial script.

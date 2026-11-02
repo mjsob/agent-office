@@ -4336,6 +4336,9 @@ def install_paths():
     return str(prefix), workspace
 
 
+LOCAL_EDITION_UPDATE_TEXT = "이 PC 전용 버전이에요. 공개 버전으로 덮지 않으니 에이전트에게 이 PC용 업데이트를 맡겨 보세요."
+
+
 def update_info():
     with UPDATE_LOCK:
         info = dict(UPDATE)
@@ -4345,9 +4348,13 @@ def update_info():
     current = office_version()
     info["current"] = current
     info["available"] = bool(info["latest"]) and version_key(info["latest"]) > version_key(current)
-    info["installable"] = install_paths() is not None
+    local_edition = "+local" in current
+    info["installable"] = install_paths() is not None and not local_edition
+    # 이미 맞는 버전이거나 앱에서 업데이트하지 않는 설치면 지난 실패를 계속 보여 주지 않아요.
+    if info["state"] == "failed" and (local_edition or not info["available"]):
+        info.update(state="idle", message=None)
     if info["available"] and not info["installable"] and info["state"] == "idle":
-        info["message"] = "설치기로 설치한 Office에서만 바로 업데이트할 수 있어요."
+        info["message"] = LOCAL_EDITION_UPDATE_TEXT if local_edition else "설치기로 설치한 Office에서만 바로 업데이트할 수 있어요."
     return info
 
 
@@ -4485,6 +4492,21 @@ def local_changes_text(output):
     return text
 
 
+def install_failure_text(error_output):
+    """설치기가 적은 멈춘 이유를 찾아 보여 줘요. 마지막 일반 문장이 실제 이유를 가리지 않게 해요."""
+    lines = [x.strip() for x in (error_output or "").splitlines() if x.strip()]
+    start = next((i for i, x in enumerate(lines) if "설치를 멈췄어요" in x), None)
+    reasons = [x[2:].strip() for x in lines[start + 1:] if x.startswith("- ")] if start is not None else []
+    if not reasons:
+        return f"설치에 실패했어요. {lines[-1] if lines else ''}".strip()
+    others = [x for x in reasons if "+local" not in x]
+    parts = ["이 PC 전용 버전이라 공개 버전으로 바꾸지 않았어요."] if len(others) < len(reasons) else []
+    if parts and not others:
+        parts.append("직접 고친 파일 때문이 아니에요.")
+    parts += [x if x.endswith(".") else x + "." for x in others]
+    return " ".join([*parts, "기존 설치는 그대로예요."])
+
+
 def run_update(office):
     """최신 설치 묶음을 받아 해시를 확인하고 install.sh로 같은 경로에 다시 설치한 뒤 새 프로세스로 다시 시작"""
     def fail(text):
@@ -4493,6 +4515,8 @@ def run_update(office):
     paths = install_paths()
     if not paths:
         return fail("설치기로 설치한 Office에서만 바로 업데이트할 수 있어요.")
+    if "+local" in office_version():
+        return fail(LOCAL_EDITION_UPDATE_TEXT)
     prefix, workspace = paths
     base = f"https://github.com/{UPDATE_REPO}/releases/latest/download/{UPDATE_ASSET}"
     try:
@@ -4518,8 +4542,7 @@ def run_update(office):
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
             if r.returncode:
                 server_log("update.install", (r.stderr or r.stdout)[-2000:])
-                tail = (r.stderr or r.stdout).strip().splitlines()
-                return fail(f"설치에 실패했어요. {tail[-1] if tail else ''}".strip())
+                return fail(install_failure_text(r.stderr or r.stdout))
     except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
         server_log("update.run", error)
         return fail("업데이트 파일을 받지 못했어요. 인터넷 연결을 확인해 보세요.")

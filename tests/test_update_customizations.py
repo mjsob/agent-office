@@ -44,12 +44,16 @@ class AppUpdate(unittest.TestCase):
         self.office = SimpleNamespace(shutdown=Mock())
         self.o.server_log = Mock()
         self.o.UPDATE['state'] = 'installing'
+        # 이 PC 전용 저장소에서 돌려도 공개판 경로를 시험해요.
+        version = patch.object(self.o, 'office_version', return_value='1.0.0')
+        version.start()
+        self.addCleanup(version.stop)
 
-    def run_update(self, marked, returncode=0, output=''):
+    def run_update(self, marked, returncode=0, output='', stderr='수정 파일을 보존해요.'):
         blob = archive('#!/bin/bash\n' + ('OFFICE_CUSTOMIZATION_GUARD=1\n' if marked else '') + 'exit 0\n')
         def download(url, **kwargs):
             return io.BytesIO((hashlib.sha256(blob).hexdigest() + '  archive.tar.gz').encode() if url.endswith('.sha256') else blob)
-        with patch.object(self.o, 'install_paths', return_value=(str(self.folder/'app-root'), str(self.folder/'workspace'))), patch.object(self.o, 'provider_ssl_context', return_value=None), patch.object(self.o.urlrequest, 'urlopen', side_effect=download), patch.object(self.o.subprocess, 'run', return_value=subprocess.CompletedProcess([], returncode, stdout=output, stderr='수정 파일을 보존해요.' if returncode else '')) as run, patch.object(self.o.time, 'sleep'):
+        with patch.object(self.o, 'install_paths', return_value=(str(self.folder/'app-root'), str(self.folder/'workspace'))), patch.object(self.o, 'provider_ssl_context', return_value=None), patch.object(self.o.urlrequest, 'urlopen', side_effect=download), patch.object(self.o.subprocess, 'run', return_value=subprocess.CompletedProcess([], returncode, stdout=output, stderr=stderr if returncode else '')) as run, patch.object(self.o.time, 'sleep'):
             self.o.run_update(self.office)
         return run
 
@@ -67,6 +71,77 @@ class AppUpdate(unittest.TestCase):
         self.office.shutdown.assert_not_called()
         self.assertFalse(hasattr(self.office, 'restart'))
         self.assertEqual(self.o.UPDATE['state'], 'failed')
+
+    def test_general_failure_shows_last_line(self):
+        self.run_update(True, returncode=1, stderr='앞줄\n- 목록 같은 줄\n설치 중단: flock 명령이 필요해요\n')
+        self.assertEqual(self.o.UPDATE['message'], '설치에 실패했어요. 설치 중단: flock 명령이 필요해요')
+
+    def test_published_installer_local_block_is_not_blamed_on_edits(self):
+        # 이미 공개된 0.9.0 설치기가 내는 그대로의 출력이에요.
+        stderr = ('직접 고친 부분이 있어 설치를 멈췄어요. 기존 설치는 그대로예요.\n'
+                  '- 이 PC 전용 버전(0.8.8+local) 위에 공개 버전을 덮어쓸 수 없어요\n'
+                  '설치 중단: 직접 고친 부분을 지킬 수 없어서 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
+        self.run_update(True, returncode=1, stderr=stderr)
+        self.assertEqual(self.o.UPDATE['message'], '이 PC 전용 버전이라 공개 버전으로 바꾸지 않았어요. 직접 고친 파일 때문이 아니에요. 기존 설치는 그대로예요.')
+        self.office.shutdown.assert_not_called()
+
+    def test_real_conflict_names_the_file(self):
+        stderr = ('아래 이유로 설치를 멈췄어요. 기존 설치는 그대로예요.\n'
+                  '- 직접 고친 파일을 새 버전과 자동으로 합칠 수 없어요: office.html\n'
+                  '설치 중단: 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
+        self.run_update(True, returncode=1, stderr=stderr)
+        self.assertEqual(self.o.UPDATE['message'], '직접 고친 파일을 새 버전과 자동으로 합칠 수 없어요: office.html. 기존 설치는 그대로예요.')
+
+    def test_local_and_real_edit_show_both(self):
+        stderr = ('아래 이유로 설치를 멈췄어요. 기존 설치는 그대로예요.\n'
+                  '- 실행 파일 bin/office를 직접 고친 것 같아요\n'
+                  '- 이 PC 전용 버전(0.8.8+local) 위에 공개 버전을 덮어쓸 수 없어요\n')
+        self.run_update(True, returncode=1, stderr=stderr)
+        message = self.o.UPDATE['message']
+        self.assertIn('이 PC 전용 버전이라', message)
+        self.assertIn('bin/office를 직접 고친 것 같아요', message)
+        self.assertNotIn('때문이 아니에요', message)
+
+    def test_local_edition_does_not_download(self):
+        self.o.office_version.return_value = '0.8.8+local'
+        with patch.object(self.o, 'install_paths', return_value=('/x', '/y')), patch.object(self.o.urlrequest, 'urlopen') as urlopen, patch.object(self.o.subprocess, 'run') as run:
+            self.o.run_update(self.office)
+        urlopen.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(self.o.UPDATE['state'], 'failed')
+        self.assertIn('이 PC 전용 버전', self.o.UPDATE['message'])
+        self.office.shutdown.assert_not_called()
+
+    def info(self, current, latest, state='idle', message=None, paths=('/x', '/y')):
+        self.o.office_version.return_value = current
+        self.o.UPDATE.update(latest=latest, state=state, message=message, error=None)
+        with patch.object(self.o, 'install_paths', return_value=paths):
+            return self.o.update_info()
+
+    def test_local_edition_with_newer_public_has_no_button(self):
+        info = self.info('0.8.8+local', '0.9.0')
+        self.assertTrue(info['available'])
+        self.assertFalse(info['installable'])
+        self.assertEqual(info['message'], self.o.LOCAL_EDITION_UPDATE_TEXT)
+
+    def test_local_edition_same_version_clears_old_failure(self):
+        info = self.info('0.9.0+local', '0.9.0', 'failed', '설치에 실패했어요.')
+        self.assertFalse(info['available'])
+        self.assertEqual((info['state'], info['message']), ('idle', None))
+
+    def test_local_edition_newer_public_replaces_old_failure(self):
+        info = self.info('0.8.8+local', '0.9.0', 'failed', '설치에 실패했어요.')
+        self.assertEqual((info['state'], info['message']), ('idle', self.o.LOCAL_EDITION_UPDATE_TEXT))
+
+    def test_public_failure_stays_while_update_is_available(self):
+        info = self.info('0.8.8', '0.9.0', 'failed', '설치에 실패했어요.')
+        self.assertTrue(info['installable'])
+        self.assertEqual((info['state'], info['message']), ('failed', '설치에 실패했어요.'))
+
+    def test_public_not_from_installer_message_is_unchanged(self):
+        info = self.info('0.8.8', '0.9.0', paths=None)
+        self.assertFalse(info['installable'])
+        self.assertIn('설치기로 설치한', info['message'])
 
     def test_safe_success_restarts(self):
         run = self.run_update(True, output='OFFICE_LOCAL: changed=1 merged=office.html conflicts=- backup=/tmp/test\n')
