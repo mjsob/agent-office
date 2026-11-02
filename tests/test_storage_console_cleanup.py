@@ -61,6 +61,13 @@ class ConsoleCleanup(unittest.TestCase):
         self.assertEqual(self.select("(P 82 'wsl.exe' 1 'wsl.exe -d U -e bash --rcfile /home/other/office-console.bashrc -i'),(P 83 'conhost.exe' 82)"), [])
         self.assertEqual(self.select("(P 84 'wsl.exe' 1 'wsl.exe -d U --exec /bin/bash /mnt/c/Other/wsl-compact/reopen-office.sh'),(P 85 'conhost.exe' 84)"), [])
 
+    def test_path_must_be_a_whole_token(self):
+        for tail in ("reopen-office.sh.backup", "reopen-office.sh2", "x-reopen-office.sh"):
+            cmd = "wsl.exe -d U --exec /bin/bash /mnt/c/L/wsl-compact/" + tail
+            self.assertEqual(self.select(f"(P 86 'wsl.exe' 1 '{cmd}'),(P 87 'conhost.exe' 86)"), [], tail)
+        quoted = "wsl.exe -d U --exec /bin/bash \"/mnt/c/L/wsl-compact/reopen-office.sh\""
+        self.assertEqual(len(self.select(f"(P 88 'wsl.exe' 1 '{quoted}'),(P 89 'conhost.exe' 88)")), 1)
+
     def close(self, before, after):
         out = ps(FAKE + f"""
 $a=@({before}); $t=@(Select-OfficeConsoles $a $cfg)
