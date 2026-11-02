@@ -4479,7 +4479,7 @@ def local_changes_text(output):
     if merged:
         text += f" {', '.join(merged)}는 새 버전에 다시 넣었어요."
     if conflicts:
-        text += f" {', '.join(conflicts)}는 새 버전과 겹쳐서 새 버전으로 바꿨어요."
+        text += f" {', '.join(conflicts)}는 자동으로 반영할 수 없어요. 업데이트 결과를 확인하세요."
     if fields.get("backup", "-") != "-":
         text += f" 예전 파일은 {fields['backup']}에 있어요."
     return text
@@ -4511,6 +4511,8 @@ def run_update(office):
             script = work / "office-dist" / "install.sh"
             if not script.is_file():
                 return fail("설치 파일에 설치기가 없어요.")
+            if "OFFICE_CUSTOMIZATION_GUARD=1" not in script.read_text().splitlines():
+                return fail("이 설치기는 사용자 수정 보존을 확인할 수 없어요. 기존 설치를 유지해요. 최신 설치기를 사용하세요.")
             r = subprocess.run(["bash", str(script), "--apply", "--skip-login", "--no-launch",
                                 "--prefix", prefix, "--workspace", workspace],
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)

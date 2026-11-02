@@ -12,9 +12,14 @@ fail() { printf '설치 중단: %s\n' "$*" >&2; exit 1; }
 
 # --version X.Y.Z 로 이전 버전을 받을 수 있다. 나머지 옵션은 install.sh로 넘긴다.
 version="" args=()
+apply=0
+prefix="${HOME:?HOME이 필요해요}/.local/share/office-app"
 while (($#)); do
   case $1 in
     --version) (($# >= 2)) || fail '--version 뒤에 버전이 필요합니다'; version=${2#v}; shift 2;;
+    --apply) apply=1; args+=("$1"); shift;;
+    --dry-run) apply=0; args+=("$1"); shift;;
+    --prefix) (($# >= 2)) || fail '--prefix 뒤에 경로가 필요해요'; prefix=$2; args+=("$1" "$2"); shift 2;;
     *) args+=("$1"); shift;;
   esac
 done
@@ -47,6 +52,11 @@ got=$("${hash_cmd[@]}" "$work/$ASSET" | awk '{print $1}')
 
 tar -xzf "$work/$ASSET" -C "$work"
 [[ -f "$work/office-dist/install.sh" ]] || fail '묶음 안에 office-dist/install.sh가 없습니다'
+
+# 구형 설치기는 수정 파일을 백업한 뒤 덮을 수 있어요. 기존 환경에서는 실행하지 않아요.
+if (( apply )) && { [[ -e "$prefix/app" || -L "$prefix/app" || -e "$prefix/bin" || -L "$prefix/bin" || -e "$HOME/.local/bin/office" || -L "$HOME/.local/bin/office" ]]; }; then
+  grep -q '^OFFICE_CUSTOMIZATION_GUARD=1$' "$work/office-dist/install.sh" || fail '이전 설치기는 사용자 수정 보존을 확인할 수 없어요. 기존 설치를 유지해요. 최신 버전을 사용하세요.'
+fi
 
 # curl | bash 로 실행되면 표준입력이 이 스크립트라서, 로그인 단계가 터미널을 쓰도록 /dev/tty를 연결
 if [[ -t 0 ]] || ! { : </dev/tty; } 2>/dev/null; then
