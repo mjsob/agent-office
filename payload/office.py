@@ -40,6 +40,8 @@ AUTO_RETRY_DELAYS = (15, 60, 180)   # 초: 연결 끊김·서버 오류 같은 �
 STALL_NOTICE = 180    # 초: 열린 요청이 이 시간 동안 아무 진척 없이 멈춰 있으면 사용자에게 알리고 리더에게 점검 차례를 줌
 EDGE = "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"   # 있으면 우선 (Edge는 텍스트 선택 시 미니 메뉴가 뜸)
+IS_MAC = sys.platform == "darwin"
+MAC_BROWSERS = ("Google Chrome", "Microsoft Edge")   # 앱 창으로 열 수 있는 브라우저, 앞쪽 우선
 LIMITS = {}         # 구독 사용 한도 + 관측시각 at(epoch)
 LIMITS_LOCK = threading.RLock()
 HERE = Path(__file__).resolve().parent
@@ -1194,10 +1196,8 @@ def wait_probe(t):
         ident = process_identity(t["wait_pid"])
         alive = bool(ident) and (not t.get("wait_start") or ident["start"] == t["wait_start"])
         if alive:
-            try:   # 끝났는데 부모가 회수 안 한 좀비는 죽은 것으로 본다
-                alive = (Path("/proc") / str(t["wait_pid"]) / "stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-            except (OSError, IndexError):
-                alive = False
+            # 끝났는데 부모가 회수 안 한 좀비는 죽은 것으로 본다
+            alive = process_state(t["wait_pid"]) not in (None, "Z")
     try:
         log_at = Path(t["wait_log"]).stat().st_mtime if t.get("wait_log") else None
     except OSError:
@@ -2027,8 +2027,7 @@ def login_alive(pidfile):
             return False
         os.kill(pid, 0)
         # 다른 프로세스가 띄운 과정이 좀비(Z)로 남았으면 끝난 것으로 본다
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        return stat[stat.rindex(")") + 2] != "Z"
+        return process_state(pid) not in (None, "Z")
     except (OSError, ValueError):
         return False
 
@@ -2042,6 +2041,15 @@ def login_ok(name):
         return False
 
 
+def login_script(fifo, out, command, seconds=600):
+    """로그인 명령을 fifo 입력으로 돌리는 셸 문장. timeout 명령이 없으면(맥) 같은 그룹의 감시 셸이 시간 지나면 그룹을 끝내요."""
+    target = f"bash -c {shlex.quote(command)} <&3 >>{shlex.quote(str(out))} 2>&1"
+    opened = f"exec 3<>{shlex.quote(str(fifo))}"
+    if shutil.which("timeout"):
+        return f"{opened}; exec timeout {seconds} {target}"
+    return f"{opened}; (sleep {seconds}; kill -TERM 0) </dev/null >/dev/null 2>&1 3>&- & exec {target}"
+
+
 def login_start(name):
     """로그인 과정을 띄우고 로그인 링크를 돌려준다. 브라우저는 열지 않는다(사용자가 링크를 직접 엶). 10분 지나면 정리된다."""
     fifo, out, pidfile = login_paths(name)
@@ -2052,7 +2060,7 @@ def login_start(name):
     out.write_text("")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_CODE_", "OFFICE_")) and k != "CLAUDECODE"}
     env["BROWSER"] = "true"      # 브라우저 자동 열기 막기
-    script = f'exec 3<>{shlex.quote(str(fifo))}; exec timeout 600 bash -c {shlex.quote(LOGIN_CMDS[name])} <&3 >>{shlex.quote(str(out))} 2>&1'
+    script = login_script(fifo, out, LOGIN_CMDS[name])
     proc = subprocess.Popen(["bash", "-c", script], env=env, cwd=str(Path.home()), start_new_session=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     pidfile.write_text(str(proc.pid))
@@ -2571,17 +2579,9 @@ def terminate_bg_watch(task):
     try:
         if os.getpgid(pid) != pid:
             return False
-        if not saved and str(task["wait_rc"]).encode() not in (Path("/proc") / str(pid) / "cmdline").read_bytes():
+        if not saved and str(task["wait_rc"]).encode() not in process_command(pid):
             return False   # 예전 감시 기록은 Office 종료 코드 경로가 실행 명령에 있는지도 확인해요.
-        members = []
-        for entry in Path("/proc").iterdir():
-            if entry.name.isdigit():
-                try:
-                    child = int(entry.name)
-                    if os.getpgid(child) == pid:
-                        members.append((child, process_identity(child)))
-                except ProcessLookupError:
-                    pass
+        members = [(child, process_identity(child)) for child in process_group_members(pid)]
         os.killpg(pid, signal.SIGTERM)
         time.sleep(.1)
         for child, recorded in members:
@@ -2598,7 +2598,63 @@ def terminate_bg_watch(task):
         return False
 
 
+def ps_process(pid):
+    """맥에는 /proc 이 없어 ps 로 읽어요. (uid, 상태, 시작 시각 epoch, 실행 명령), 없으면 None.
+    맥의 ps 는 -o a=,b= 를 하나로 읽을 수 있어 -o 를 나눠 줘요. lstart 는 언어 설정을 타서 LC_ALL=C 로 고정해요."""
+    try:
+        result = subprocess.run(["ps", "-ww", "-o", "uid=", "-o", "state=", "-o", "lstart=", "-o", "command=", "-p", str(pid)],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=5, env={**os.environ, "LC_ALL": "C"})
+        found = re.match(rb"\s*(\d+)\s+(\S+)\s+(\w{3} \w{3}\s+\d+ \d\d:\d\d:\d\d \d{4})\s+(.*?)\s*$", result.stdout, re.S)
+        if result.returncode or not found:
+            return None
+        started = " ".join(found.group(3).decode().split())
+        return int(found.group(1)), found.group(2).decode()[0], int(time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y"))), found.group(4)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def process_state(pid):
+    """프로세스 상태 글자(R·S·Z 등), 없으면 None"""
+    if IS_MAC:
+        info = ps_process(pid)
+        return info and info[1]
+    try:
+        return (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def process_command(pid):
+    """실행 명령 바이트. 읽지 못하면 OSError"""
+    if not IS_MAC:
+        return (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    info = ps_process(pid)
+    if not info:
+        raise ProcessLookupError(pid)
+    return info[3]
+
+
+def process_group_members(group):
+    """그 프로세스 그룹에 속한 PID 목록"""
+    if IS_MAC:
+        result = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "pgid="], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        rows = (line.split() for line in result.stdout.splitlines())
+        return [int(row[0]) for row in rows if len(row) == 2 and row[1] == str(group)]
+    members = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                if os.getpgid(int(entry.name)) == group:
+                    members.append(int(entry.name))
+            except ProcessLookupError:
+                pass
+    return members
+
+
 def process_identity(pid):
+    if IS_MAC:
+        info = ps_process(pid)
+        return info and {"start": info[2], "uid": info[0], "command": hashlib.sha256(info[3]).hexdigest()}
     try:
         folder = Path("/proc") / str(pid)
         stat = (folder / "stat").read_text().rsplit(")", 1)[1].split()
@@ -4111,7 +4167,10 @@ def provider_ssl_context():
 
 
 def fetch_claude_limits():
-    credentials = json.loads((Path.home() / ".claude" / ".credentials.json").read_text())
+    path = Path.home() / ".claude" / ".credentials.json"
+    if IS_MAC and not path.exists():
+        return None   # 맥의 Claude 로그인은 키체인에 있어요. 뒤에서 읽으면 암호 창이 떠서 읽지 않아요.
+    credentials = json.loads(path.read_text())
     if not isinstance(credentials, dict):
         return None
     oauth = credentials.get("claudeAiOauth") or {}
@@ -4571,6 +4630,10 @@ def resource_status(refresh=False):
                 "memory_current_bytes": None, "cpu_usage_percent": None,
                 "applies_to": "새로 시작하는 Linux 에이전트·백그라운드 작업",
                 "uncontrolled": "기존 실행·Windows·GPU·원격 API·브라우저"}
+        if IS_MAC:   # 없는 명령을 3초마다 찾지 않아요. 에이전트는 제한 없이 돌아요.
+            data["reason"] = "맥에는 작업별 사용량을 제한하는 기능이 없어요."
+            RESOURCE_CACHE.update(root=str(ROOT), at=now, value=data)
+            return dict(data)
         try:
             if RESOURCE_CACHE.get("configured") != (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"]):
                 apply_resource_limits(**limits)
@@ -4997,10 +5060,26 @@ else { Write-Output 'no-match' }
     return "behind" if reason == "behind" else "unknown"
 
 
+def open_report_path_mac(value, sid):
+    """폴더는 Finder로 열고, 파일은 Finder에서 선택해 보여줘요."""
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = wdir(sid) / path
+        path = path.resolve(strict=True)
+        subprocess.run(["open", str(path)] if path.is_dir() else ["open", "-R", str(path)],
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise UserError("경로를 열지 못했어요. 경로를 확인하거나 복사하세요.") from None
+    return {"ok": "Finder에서 경로를 열었어요."}
+
+
 def open_report_path(raw, sid):
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
         raise UserError("경로 확인 — 열 파일이나 폴더 경로를 확인하세요.")
     value = re.sub(r":\d+(?::\d+)?$", "", raw.strip())
+    if IS_MAC:
+        return open_report_path_mac(value, sid)
     try:
         if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith("\\\\"):
             result = subprocess.run(["wslpath", "-u", value], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=True)
@@ -5745,7 +5824,7 @@ class Office:
             x["busy"] = display_busy.get(x["id"], self.busy(x["id"]))
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
-                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_view())
+                    warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_view(), file_manager="Finder" if IS_MAC else "탐색기")
         team = self.teams[cur]["w"]
         for w in team.values():
             if w.status == "working":
@@ -5999,6 +6078,8 @@ class Office:
             cpu, memory = p.get("cpu_percent"), p.get("memory_high_gb")
             if type(cpu) is not int or not 1 <= cpu <= 100 or type(memory) not in (int, float) or not math.isfinite(memory) or not 0 <= memory <= physical_memory() / 1024**3:
                 raise UserError("리소스 한도 확인 — CPU는 1~100%, 메모리는 이 PC 용량 안에서 설정하세요. 메모리 0은 한도를 끄는 값이에요.")
+            if IS_MAC:
+                raise UserError("맥에서는 사용량 제한을 쓸 수 없어요.")
             try:
                 with RESOURCE_LOCK:
                     apply_resource_limits(cpu, memory)
@@ -6336,7 +6417,21 @@ def post_update_note():
         server_log("update.local_note", error)
 
 
+def raise_mac_file_limit():
+    """맥 터미널의 기본 열린 파일 수는 256개라 서버와 에이전트가 쓰기엔 모자라요."""
+    import resource
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = 10240 if hard == resource.RLIM_INFINITY else min(10240, hard)
+        if soft != resource.RLIM_INFINITY and soft < wanted:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+    except (OSError, ValueError) as error:
+        server_log("rlimit.nofile", error)
+
+
 def serve():
+    if IS_MAC:
+        raise_mac_file_limit()
     load_limits()   # 에이전트 시작 전에 지난 관측의 유효한 창을 복원
     post_update_note()
     office = Office()
@@ -6693,8 +6788,36 @@ Write-Output "updated:$changed"
         return False
 
 
+def mac_browser_app():
+    """맥에 깔린 Chrome·Edge 앱 경로. 없으면 None"""
+    for name in MAC_BROWSERS:
+        for folder in (Path("/Applications"), Path.home() / "Applications"):
+            if (folder / f"{name}.app").exists():
+                return folder / f"{name}.app"
+    return None
+
+
+def open_window_mac(url, app_only):
+    """open 으로 띄워요. 브라우저를 직접 실행하면 콘솔의 Ctrl+C 에 브라우저까지 같이 꺼져요."""
+    commands = []
+    app = mac_browser_app()
+    if app:
+        commands.append(["open", "-na", str(app), "--args", f"--app={url}", "--window-size=1500,920"])
+    if not app_only:
+        commands.append(["open", url])
+    for command in commands:
+        try:
+            subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=True)
+            return True
+        except (OSError, subprocess.SubprocessError) as error:
+            server_log("window.open", error)
+    return False
+
+
 def open_window(port, app_only=False):
     url = f"http://localhost:{port}/"
+    if IS_MAC:
+        return open_window_mac(url, app_only)
     for exe in (CHROME, EDGE):
         if Path(exe).exists():
             try:
@@ -6727,6 +6850,9 @@ def window_open(port):
 
 def process_started_at(pid):
     """프로세스 시작 시각(epoch). /proc/<pid>/stat의 부팅 후 틱 + 부팅 시각"""
+    if IS_MAC:
+        info = ps_process(pid)
+        return info and info[2]
     try:
         ticks = int((Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19])
         boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
@@ -6814,7 +6940,8 @@ def cmd_shot(a):
     info = running()
     if not info:
         sys.exit("실행 중인 Office가 없어 캡처할 수 없습니다.")
-    exe = next((p for p in (CHROME, EDGE) if Path(p).exists()), None)
+    app = mac_browser_app() if IS_MAC else None
+    exe = str(app / "Contents" / "MacOS" / app.stem) if app else next((p for p in (CHROME, EDGE) if not IS_MAC and Path(p).exists()), None)
     if not exe:
         sys.exit("Chrome/Edge를 찾지 못했습니다.")
     sizes = {"wide": "1500,920", "narrow": "1000,800"}
@@ -6826,12 +6953,16 @@ def cmd_shot(a):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     for size in ([a.size] if a.size != "both" else ["wide", "narrow"]):
         # 윈도우 브라우저가 쓸 수 있는 공용 폴더에 찍고 WSL 쪽으로 옮김. 실행 중인 브라우저와 안 겹치게 별도 프로필
-        win_tmp = Path("/mnt/c/Users/Public") / f"office-shot-{stamp}-{size}.png"
+        if IS_MAC:   # 맥은 브라우저가 Office 폴더에 바로 써요
+            win_tmp = out_dir / f"office-shot-{stamp}-{size}.png"
+            place = [f"--user-data-dir={D / 'shot-profile'}", f"--screenshot={win_tmp}"]
+        else:
+            win_tmp = Path("/mnt/c/Users/Public") / f"office-shot-{stamp}-{size}.png"
+            place = [r"--user-data-dir=C:\Users\Public\office-shot-profile", f"--screenshot=C:\\Users\\Public\\{win_tmp.name}"]
         args = [exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--window-size={sizes[size]}",
-                "--virtual-time-budget=5000", r"--user-data-dir=C:\Users\Public\office-shot-profile",
-                f"--screenshot=C:\\Users\\Public\\{win_tmp.name}", url]
+                "--virtual-time-budget=5000", *place, url]
         try:
-            subprocess.run(args, cwd="/mnt/c", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            subprocess.run(args, cwd=str(D) if IS_MAC else "/mnt/c", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as e:
             sys.exit(f"캡처 실패({size}): {type(e).__name__}")
         if not win_tmp.exists():
