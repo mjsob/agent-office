@@ -177,27 +177,8 @@ staging=$(mktemp -d "$prefix/.staging.XXXXXX")
 for name in "${files[@]}"; do cp -- "$payload/$name" "$staging/$name"; done
 chmod 700 "$staging/office.py"
 
-export PATH="$HOME/.local/bin:$PATH"
-# Download official installers as files; an HTTP failure never executes a partial script.
-install_cli() {
-  local name=$1 url=$2 shell=$3
-  if command -v "$name" >/dev/null; then
-    printf '%s: 이미 설치됨, 재설치하지 않습니다.\n' "$name"
-    return
-  fi
-  printf '%s 공식 설치기를 받습니다.\n' "$name"
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 "$url" -o "$staging/$name-install.sh"
-  # Installer processes may use their own global installation locations on the target PC.
-  DISABLE_AUTOUPDATER=1 "$shell" "$staging/$name-install.sh"
-}
-install_cli codex https://chatgpt.com/codex/install.sh sh
-install_cli claude https://claude.ai/install.sh bash
-# Official native installers put launchers here. This changes only this process PATH.
-export PATH="$HOME/.local/bin:$PATH"
-for cmd in codex claude; do command -v "$cmd" >/dev/null || fail "$cmd 설치 후 명령을 찾지 못했습니다. 설치기 출력과 PATH를 확인하세요"; done
-codex --version
-DISABLE_AUTOUPDATER=1 claude --version
-
+# OFFICE_CUSTOMIZATION_GUARD=1
+# 직접 고친 부분 검사는 CLI 설치보다 먼저 해서, 멈출 때 아무것도 바뀌지 않게 한다.
 # Keep pristine incoming files separate from any reapplied local edits.
 local_summary=$("$python_bin" - "$prefix" "$staging" "${files[@]}" <<'PYLOCAL'
 import datetime, hashlib, json, os, shutil, subprocess, sys
@@ -271,6 +252,10 @@ for name in (changed if old else []):
         conflicts.append(name); continue
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode == 0:
+        if name == 'office.py':
+            try: compile(result.stdout, name, 'exec')
+            except (SyntaxError, ValueError):
+                conflicts.append(name); continue
         target.write_bytes(result.stdout); merged.append(name)
     else:
         conflicts.append(name)
@@ -296,6 +281,27 @@ print('OFFICE_LOCAL: changed=%d merged=%s conflicts=%s backup=%s' %
       (len(changed) if old else 0, ','.join(merged) or '-', ','.join(conflicts) or '-', str(backup) if backup else '-') + (' legacy=1' if legacy else ''))
 PYLOCAL
 ) || fail '직접 고친 부분을 지킬 수 없어서 설치를 멈췄어요. 기존 설치는 그대로예요.'
+
+export PATH="$HOME/.local/bin:$PATH"
+# Download official installers as files; an HTTP failure never executes a partial script.
+install_cli() {
+  local name=$1 url=$2 shell=$3
+  if command -v "$name" >/dev/null; then
+    printf '%s: 이미 설치됨, 재설치하지 않습니다.\n' "$name"
+    return
+  fi
+  printf '%s 공식 설치기를 받습니다.\n' "$name"
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 "$url" -o "$staging/$name-install.sh"
+  # Installer processes may use their own global installation locations on the target PC.
+  DISABLE_AUTOUPDATER=1 "$shell" "$staging/$name-install.sh"
+}
+install_cli codex https://chatgpt.com/codex/install.sh sh
+install_cli claude https://claude.ai/install.sh bash
+# Official native installers put launchers here. This changes only this process PATH.
+export PATH="$HOME/.local/bin:$PATH"
+for cmd in codex claude; do command -v "$cmd" >/dev/null || fail "$cmd 설치 후 명령을 찾지 못했습니다. 설치기 출력과 PATH를 확인하세요"; done
+codex --version
+DISABLE_AUTOUPDATER=1 claude --version
 
 # ~/.local/bin/office 를 직접 고쳤는지 알아보려고 지난 설치 때 기록한 지문을 미리 읽어 둔다.
 file_sha() { "$python_bin" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1" 2>/dev/null || true; }
