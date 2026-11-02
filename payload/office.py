@@ -2637,7 +2637,10 @@ def process_command(pid):
 def process_group_members(group):
     """그 프로세스 그룹에 속한 PID 목록"""
     if IS_MAC:
-        result = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "pgid="], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        try:
+            result = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "pgid="], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        except subprocess.SubprocessError as error:
+            raise OSError("프로세스 그룹 목록을 읽지 못했어요") from error   # 호출부가 기록하고 종료는 건너뛰어요
         rows = (line.split() for line in result.stdout.splitlines())
         return [int(row[0]) for row in rows if len(row) == 2 and row[1] == str(group)]
     members = []
