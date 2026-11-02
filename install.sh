@@ -224,18 +224,29 @@ for name in names:
         expected = old['files'].get(name) if old else digest(incoming / name)
         if current.is_symlink() or not current.is_file() or digest(current) != expected:
             changed.append(name)
-backup = None
 merged, conflicts = [], []
 legacy = old is None and app.is_dir() and any(app.iterdir())
-if changed or legacy:
-    version = str((old or {}).get('version', 'legacy'))
-    version = ''.join(c if c.isalnum() or c in '.-+' else '_' for c in version)[:80] or 'legacy'
-    backups = root / 'backups'
-    if backups.is_symlink(): raise RuntimeError('백업 폴더가 심볼릭 링크예요')
-    backups.mkdir(exist_ok=True)
-    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
-    backup = backups / (version + '-' + stamp)
-    shutil.copytree(app, backup, symlinks=True)
+# 사용자가 고친 부분은 절대 덮어쓰지 않는다. 아래 문제가 하나라도 있으면 기존 설치를 건드리기 전에 멈춘다.
+blocked = []
+def launcher_ok(path, recorded, markers):
+    if not (path.exists() or path.is_symlink()): return True
+    if path.is_symlink() or not path.is_file(): return False
+    if recorded: return digest(path) == recorded
+    text = path.read_text(errors='replace')
+    return all(m in text for m in markers)
+recorded_launchers = (old or {}).get('launchers') or {}
+if not launcher_ok(root / 'bin' / 'office', recorded_launchers.get('office'), ('install_root=', '/app/office.py')):
+    blocked.append('실행 파일 bin/office를 직접 고친 것 같아요')
+if not launcher_ok(root / 'bin' / 'office-console.bashrc', recorded_launchers.get('console'), ('# Office 콘솔',)):
+    blocked.append('콘솔 파일 bin/office-console.bashrc를 직접 고친 것 같아요')
+try:
+    installed_version = (app / 'VERSION').read_text().strip()
+except OSError:
+    installed_version = ''
+if '+local' in installed_version and '+local' not in (incoming / 'VERSION').read_text():
+    blocked.append('이 PC 전용 버전(%s) 위에 공개 버전을 덮어쓸 수 없어요' % installed_version)
+if legacy and changed:
+    blocked.append('설치 기록이 없는 옛 설치라 어디를 직접 고쳤는지 알 수 없어요: ' + ','.join(changed))
 # Write baselines before merging. Never treat a locally edited result as upstream.
 orig = incoming / '.office-orig'
 orig.mkdir()
@@ -263,12 +274,32 @@ for name in (changed if old else []):
         target.write_bytes(result.stdout); merged.append(name)
     else:
         conflicts.append(name)
+if conflicts:
+    blocked.append('직접 고친 파일을 새 버전과 자동으로 합칠 수 없어요: ' + ','.join(conflicts))
+if blocked:
+    print('OFFICE_LOCAL: blocked=1 conflicts=%s' % (','.join(conflicts) or '-'))
+    sys.stderr.write('직접 고친 부분이 있어 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
+    for reason in blocked: sys.stderr.write('- ' + reason + '\n')
+    sys.exit(3)
+backup = None
+if changed or legacy:
+    version = str((old or {}).get('version', 'legacy'))
+    version = ''.join(c if c.isalnum() or c in '.-+' else '_' for c in version)[:80] or 'legacy'
+    backups = root / 'backups'
+    if backups.is_symlink(): raise RuntimeError('백업 폴더가 심볼릭 링크예요')
+    backups.mkdir(exist_ok=True)
+    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    backup = backups / (version + '-' + stamp)
+    shutil.copytree(app, backup, symlinks=True)
 (incoming / '.office-manifest.json').write_text(json.dumps(new_manifest, ensure_ascii=False) + '\n')
 print('OFFICE_LOCAL: changed=%d merged=%s conflicts=%s backup=%s' %
       (len(changed) if old else 0, ','.join(merged) or '-', ','.join(conflicts) or '-', str(backup) if backup else '-') + (' legacy=1' if legacy else ''))
 PYLOCAL
-) || fail '로컬 수정 백업 또는 병합에 실패했어요. 기존 설치를 그대로 둬요.'
+) || fail '직접 고친 부분을 지킬 수 없어서 설치를 멈췄어요. 기존 설치는 그대로예요.'
 
+# ~/.local/bin/office 를 직접 고쳤는지 알아보려고 지난 설치 때 기록한 지문을 미리 읽어 둔다.
+file_sha() { "$python_bin" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1" 2>/dev/null || true; }
+old_global=$("$python_bin" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("launchers") or {}).get("global",""))' "$prefix/app/.office-manifest.json" 2>/dev/null || true)
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
 # 바이트코드 캐시는 내용 해시로 검사하게 미리 만든다(수정 시각·길이가 같은 변경도 놓치지 않음).
@@ -315,7 +346,8 @@ if [[ ! -e $global && ! -L $global ]]; then
   printf 'office 명령 생성: %s\n' "$global"
 elif [[ -L $global && $(readlink -f -- "$global") == $(readlink -f -- "$prefix/bin/office") ]]; then
   :   # 이 설치의 실행 파일을 가리키는 링크면 그대로 둔다
-elif [[ -f $global && ! -L $global ]] && grep -q '^install_root=' "$global" && grep -q '/app/office.py' "$global"; then
+elif [[ -f $global && ! -L $global ]] && grep -q '^install_root=' "$global" && grep -q '/app/office.py' "$global" \
+     && [[ -z $old_global || $(file_sha "$global") == "$old_global" ]]; then
   if ! cmp -s -- "$staging/office-global" "$global"; then
     chmod 755 "$staging/office-global"
     mv -f -- "$staging/office-global" "$global"
@@ -357,6 +389,21 @@ if [[ $platform == Linux ]]; then
   chmod 600 "$staging/office-console.bashrc"
   mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
 fi
+
+# 실행 파일 지문을 기록해 다음 설치 때 직접 고친 파일을 알아본다.
+"$python_bin" - "$prefix" "$global" <<'PYREC'
+import hashlib, json, sys
+from pathlib import Path
+root, glob = Path(sys.argv[1]), Path(sys.argv[2])
+mf = root / 'app' / '.office-manifest.json'
+def dg(p):
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() and not p.is_symlink() else None
+data = json.loads(mf.read_text())
+rec = {'office': dg(root / 'bin' / 'office'), 'console': dg(root / 'bin' / 'office-console.bashrc')}
+if glob.is_file() and not glob.is_symlink() and dg(glob) == rec['office']: rec['global'] = rec['office']
+data['launchers'] = {k: v for k, v in rec.items() if v}
+mf.write_text(json.dumps(data, ensure_ascii=False) + '\n')
+PYREC
 
 # WSL이면 윈도우 바탕화면·시작 메뉴에 'Office' 바로가기를 둔다. 누르면 office를 실행해 앱 창으로 열고,
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
