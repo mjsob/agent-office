@@ -47,7 +47,8 @@ class StorageManual(unittest.TestCase):
     def write(self, reclaim, free, status='ok', age=0):
         self.notice_file.write_text(json.dumps({
             'schema_version': 1, 'checked_at': self.now - age, 'status': status,
-            'disk': {'vhdx_gb': 100 + reclaim, 'used_gb': 100, 'c_free_gb': free, 'drive': 'C:'}}))
+            'disk': {'vhdx_gb': 108 + reclaim, 'used_gb': 100, 'c_free_gb': free, 'drive': 'C:',
+                     'estimate_method': 'ext4-overhead-v1', 'metadata_gib': 8}}))
 
     def run_ok(self, *args):
         with patch.object(self.o.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)) as run:
@@ -66,18 +67,29 @@ class StorageManual(unittest.TestCase):
         with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True)
         self.assertEqual(self.run_ok(True, True).call_count, 1)
 
-    def test_manual_still_requires_confirmation_positive_reclaim_and_fresh_data(self):
+    def test_manual_still_requires_confirmation_and_fresh_data(self):
         self.write(11.7, 36.1)
         for confirmed in (False, 'true', 1, None):
             with self.assertRaises(self.o.UserError): self.o.start_storage_compact(confirmed, True)
-        self.write(0, 36.1)
-        with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
         self.write(11.7, 36.1, age=self.o.STORAGE_NOTICE_MAX_AGE + 5)
         with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
         self.notice_file.write_text('broken')
         with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
         self.write(0, 0, status='unavailable')
         with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
+
+    def test_zero_conservative_estimate_still_allows_manual_run(self):
+        self.write(0, 36.1)
+        self.assertEqual(self.run_ok(True, True).call_count, 1)
+
+    def test_legacy_estimate_cannot_launch_manual_run(self):
+        self.write(11.7, 36.1)
+        data = json.loads(self.notice_file.read_text())
+        del data['disk']['estimate_method']
+        self.notice_file.write_text(json.dumps(data))
+        with patch.object(self.o.subprocess, 'run') as run:
+            with self.assertRaises(self.o.UserError): self.o.start_storage_compact(True, True)
+            run.assert_not_called()
 
     def test_manual_must_be_exactly_true(self):
         self.write(11.7, 36.1)

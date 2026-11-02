@@ -4720,15 +4720,18 @@ def storage_notice_view(path=None, now=None):
         disk = notice.get("disk")
         if not isinstance(disk, dict):
             return {"status": status, "checked_at": checked} if status == "ok" else None
-        values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb")]
+        # 옛 단순 차이는 관리 공간까지 후보로 잡아요. 새 측정으로 갱신할 때까지 수치를 숨겨요.
+        if disk.get("estimate_method") != "ext4-overhead-v1":
+            return {"status": "stale", "checked_at": checked}
+        values = [disk.get(key) for key in ("vhdx_gb", "used_gb", "c_free_gb", "metadata_gib")]
         if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values):
             return {"status": status, "checked_at": checked} if status == "ok" else None
-        reclaim = max(0, values[0] - values[1])
+        reclaim = max(0, values[0] - values[1] - values[3])
         drive = disk.get("drive", "")
         if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
             drive = "디스크"
         if status == "ok" or (reclaim < 20 and not (values[2] < 30 and reclaim >= 10)):
-            # 추천 기준 밑이어도 설정에서 직접 줄일 수 있게 여유·회수 후보를 같이 내려요.
+            # 관리 공간을 제외한 보수적 추정이에요. 0이어도 실제 확보량을 확정하지 않아요.
             return {"status": "ok", "checked_at": checked, "free_gib": round(values[2], 1),
                     "reclaim_gib": round(reclaim, 1), "drive": drive}
         return {"status": "suggested", "checked_at": checked, "free_gib": values[2],
@@ -4900,9 +4903,10 @@ def start_storage_compact(confirmed, manual=False):
         if "storage_notice" in REFRESHING:
             raise UserError("디스크를 다시 재는 중이에요. 끝난 뒤 실행하세요.")
         notice = storage_notice_view()
-        # 직접 줄이기(manual)는 추천 기준과 무관하게 최신 측정에서 회수 후보가 있으면 허용해요.
+        # 보수적 추정이 0이어도 직접 실행할 수 있어요. 실패하거나 낡은 측정으로는 실행하지 않아요.
         manual_ok = (manual is True and notice and notice["status"] in ("suggested", "ok")
-                     and notice.get("reclaim_gib", 0) > 0)
+                     and type(notice.get("reclaim_gib")) in (int, float)
+                     and math.isfinite(notice["reclaim_gib"]) and notice["reclaim_gib"] >= 0)
         if not manual_ok and (not notice or notice["status"] != "suggested"):
             raise UserError("줄일 수 있는 최신 측정이 없어요. 다시 잰 뒤 실행하세요." if manual is True
                             else "최신 디스크 제안이 없어요. 다음 용량 점검 뒤 다시 실행하세요.")

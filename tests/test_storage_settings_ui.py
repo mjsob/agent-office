@@ -60,6 +60,11 @@ with sync_playwright() as p:
             run = page.locator('#storageManualRun')
             assert run.is_enabled() and page.locator('#storageNotice').is_hidden()
             assert '11.7GiB' in page.locator('#storageSettingsMetrics').inner_text()
+            assert '회수 추정' in page.locator('#storageSettingsMetrics').inner_text()
+            assert '회수 후보' not in page.locator('#storageDetails').inner_text()
+            page.locator('.storage-settings details summary').click()
+            assert '확보량이 적거나 없을 수 있어요' in page.locator('.storage-settings details').inner_text()
+            page.locator('.storage-settings details summary').click()
             assert page.locator('#storageSettingsChecked').inner_text()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             accept['value'] = False
@@ -73,7 +78,7 @@ with sync_playwright() as p:
                 state.update(storage_notice=notice, storage_compact=action)
                 page.evaluate('([n,a]) => renderStorageNotice(n,a,{hidden:true,mode:"never"})', [notice, action])
             render({**measured, 'reclaim_gib': 0})
-            assert run.is_disabled() and '회수할 공간이 없어요' in page.locator('#storageSettingsMetrics').inner_text()
+            assert run.is_enabled() and '추가로 확보할 공간이 적을 수 있어요' in page.locator('#storageSettingsMetrics').inner_text()
             render({'status': 'stale', 'checked_at': now - 7300})
             assert run.is_disabled() and page.locator('#storageRefresh').is_enabled()
             render(None)
@@ -124,7 +129,7 @@ with sync_playwright() as p:
             if output:
                 page.locator('.storage-settings').screenshot(path=str(output / f'settings-{width}-{theme}.png'))
             assert not errors, errors
-            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'valid-percent', 'zero-percent', 'pending-100', 'unknown-percent', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
+            results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero-manual-allowed', 'conservative-label', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'valid-percent', 'zero-percent', 'pending-100', 'unknown-percent', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
             context.close()
     finally:
         browser.close()

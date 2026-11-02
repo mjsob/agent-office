@@ -677,7 +677,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <button id="quit" class="ghost"><svg class="i sm"><use href="#i-power"/></svg><span class="lbl">Office 끄기</span></button>
   <aside id="storageNotice" class="storage-notice" role="status" aria-live="polite" hidden>
     <div class="storage-line"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><div class="storage-text"><strong id="storageTitle" tabindex="-1"></strong><span id="storageMetrics" class="storage-metrics"></span>
-    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 후보는 가상디스크 실점유와 WSL 사용량의 차이예요. 실제 확보량은 달라질 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 끝나면 Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.</p><p>[디스크 줄이기]를 누르고 안내를 확인하세요. Windows 창이 열리고 관리자 권한 창이 떠요. [예]를 누르면 1분 뒤 WSL이 꺼지고 디스크를 줄여요. [중단하기]를 누르면 취소가 끝날 때까지 기다려요.</p></details></div></div>
+    <details id="storageDetails"><summary>줄이기 전에 확인하세요</summary><p>회수 추정량은 디스크 관리 공간을 제외해 보수적으로 계산해요. 실제 확보량은 실행한 뒤 확인할 수 있어요.</p><p>진행 중인 작업이 없을 때 실행하세요. Office와 점검 서버를 포함한 WSL 작업이 모두 멈춰요. 끝나면 Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.</p><p>[디스크 줄이기]를 누르고 안내를 확인하세요. Windows 창이 열리고 관리자 권한 창이 떠요. [예]를 누르면 1분 뒤 WSL이 꺼지고 디스크를 줄여요. [중단하기]를 누르면 취소가 끝날 때까지 기다려요.</p></details></div></div>
     <div class="storage-actions">
       <button id="storageRun" class="storage-run" onclick="startStorageCompact()" hidden><svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 14h16M8 17h.01M12 7v4m-2-2 2 2 2-2"/></svg><span id="storageRunLabel">디스크 줄이기</span></button>
       <button id="storageCancel" class="storage-cancel" onclick="cancelStorageCompact()" hidden>취소</button>
@@ -708,7 +708,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <button id="storageManualRun" onclick="startStorageCompact(true)" disabled>디스크 줄이기</button>
     </div>
     <p id="storageSettingsAction" role="status" aria-live="polite"></p>
-    <details><summary>줄이기 전에 확인하세요</summary><p>파일을 지우지 않고 가상디스크의 빈 공간을 회수해요.</p><p>진행 중인 작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows 창에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요.</p></details>
+    <details><summary>줄이기 전에 확인하세요</summary><p>파일을 지우지 않고 가상디스크의 빈 공간을 회수해요.</p><p>회수 추정량은 관리 공간을 제외해 보수적으로 계산해요. 실행해도 확보량이 적거나 없을 수 있어요.</p><p>진행 중인 작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows 창에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요.</p></details>
   </div>
   </div>
   <div id="resbox" hidden></div>
@@ -2514,7 +2514,7 @@ function storageActionMessage(action) {
 }
 function storageManualReady(notice, action) {
   return action?.available === true && action.can_start === true && !notice?.refreshing && !storageRefreshing
-    && ["ok", "suggested"].includes(notice?.status) && Number.isFinite(notice.reclaim_gib) && notice.reclaim_gib > 0;
+    && ["ok", "suggested"].includes(notice?.status) && Number.isFinite(notice.reclaim_gib) && notice.reclaim_gib >= 0;
 }
 async function refreshStorageCapacity() {
   if (storageRefreshing || lastStorageNotice?.refreshing || !lastStorageAction?.available || !lastStorageAction?.can_start) return;
@@ -2535,10 +2535,10 @@ function renderStorageSettings(notice, action) {
   const metrics = $("#storageSettingsMetrics");
   metrics.textContent = !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
     : refreshing ? "디스크 정보를 다시 측정하고 있어요."
-    : measured ? `${notice.drive} 여유 ${notice.free_gib.toFixed(1)}GiB · 회수 후보 약 ${notice.reclaim_gib.toFixed(1)}GiB`
+    : measured ? `${notice.drive} 여유 ${notice.free_gib.toFixed(1)}GiB · 회수 추정 ${notice.reclaim_gib.toFixed(1)}GiB`
     : notice?.status === "stale" ? "지난 측정값이 오래됐어요. 다시 측정한 뒤 실행하세요."
     : "회수할 공간을 확인하려면 [다시 측정]을 누르세요.";
-  if (available && measured && notice.reclaim_gib <= 0 && !refreshing) metrics.textContent += " 지금은 회수할 공간이 없어요.";
+  if (available && measured && notice.reclaim_gib <= 0 && !refreshing) metrics.textContent += " 추가로 확보할 공간이 적을 수 있어요.";
   $("#storageSettingsChecked").textContent = available && Number.isFinite(notice?.checked_at)
     ? `최근 측정: ${new Date(notice.checked_at * 1000).toLocaleString("ko-KR")}` : "";
   const refresh = $("#storageRefresh"), run = $("#storageManualRun");
@@ -2607,7 +2607,7 @@ function renderStorageNotice(notice, action, preferences = lastStoragePreference
     ? notice.urgent ? "디스크 여유가 부족해요. 가상디스크 축소를 제안해요." : "가상디스크를 줄여 공간을 확보할 수 있어요."
     : status === "stale" ? notice.refreshing ? "디스크 정보를 확인하고 있어요." : "디스크 정보를 다시 확인해야 해요." : "디스크 용량을 확인하지 못했어요.";
   metrics.textContent = suggested
-    ? `${notice.drive} 여유 ${Number(notice.free_gib).toFixed(1)}GiB · 회수 후보 최대 약 ${Number(notice.reclaim_gib).toFixed(1)}GiB`
+    ? `${notice.drive} 여유 ${Number(notice.free_gib).toFixed(1)}GiB · 회수 추정 ${Number(notice.reclaim_gib).toFixed(1)}GiB`
     : status !== "stale" ? "다음 점검에서 다시 확인해요." : notice.refreshing ? "잠시만 기다리세요." : "10분 안에 다시 확인해요.";
   details.hidden = !suggested;
   if (!suggested) details.open = false;

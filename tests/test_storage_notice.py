@@ -36,23 +36,46 @@ class StorageNotice(unittest.TestCase):
         self.file = Path(self.temp.name, 'notice.json')
         self.now = 1800000000
         self.data = {'schema_version': 1, 'checked_at': self.now, 'status': 'suggested',
-                     'disk': {'vhdx_gb': 147.3, 'used_gb': 118.2, 'c_free_gb': 21.6, 'drive': 'C:'},
+                     'disk': {'vhdx_gb': 164.3, 'used_gb': 118.2, 'c_free_gb': 21.6, 'drive': 'C:',
+                              'estimate_method': 'ext4-overhead-v1', 'metadata_gib': 17},
                      'reclaim_gib': 9999}
 
     def view(self, data=None):
         self.file.write_text(json.dumps(self.data if data is None else data))
         return self.o.storage_notice_view(self.file, self.now)
 
-    def test_recomputes_reclaim_from_measurements(self):
+    def test_excludes_metadata_and_ignores_inflated_candidate(self):
         got = self.view()
         self.assertEqual((got['status'], got['reclaim_gib'], got['free_gib'], got['urgent']),
                          ('suggested', 29.1, 21.6, False))
+
+    def test_actual_post_compaction_does_not_suggest_another_11_gib(self):
+        self.data['disk'].update(vhdx_gb=140.8701171875, used_gb=129.43646621704102,
+                                 metadata_gib=17.146068572998047, c_free_gb=24.721294403076172)
+        got = self.view()
+        self.assertEqual((got['status'], got['reclaim_gib']), ('ok', 0))
+
+    def test_old_method_is_stale_and_refreshes_without_exposing_candidate(self):
+        for method in (None, 'simple-difference', 1, True):
+            self.data['disk']['estimate_method'] = method
+            got = self.view()
+            self.assertEqual(got, {'status': 'stale', 'checked_at': self.now})
+        with patch.object(self.o, 'STORAGE_WATCH_SCRIPT', self.file), \
+                patch.object(self.o.time, 'time', return_value=self.now), \
+                patch.object(self.o, 'refresh_later') as refresh:
+            self.o.STORAGE_NOTICE_REFRESH['at'] = 0
+            self.assertTrue(self.o.refresh_storage_notice(got, {'status': 'idle'})['refreshing'])
+            refresh.assert_called_once()
+
+    def test_missing_metadata_never_falls_back_to_old_difference(self):
+        del self.data['disk']['metadata_gib']
+        self.assertIsNone(self.view())
 
     def test_thresholds_keep_full_precision(self):
         for reclaim, free, expected in [(19.99, 30, 'ok'), (20, 30, 'suggested'),
                                         (10, 29.99, 'suggested'), (9.99, 1, 'ok')]:
             with self.subTest(reclaim=reclaim, free=free):
-                self.data['disk'].update(vhdx_gb=120 + reclaim, used_gb=120, c_free_gb=free)
+                self.data['disk'].update(vhdx_gb=137 + reclaim, used_gb=120, c_free_gb=free)
                 self.assertEqual(self.view()['status'], expected)
 
     def test_absent_broken_oversized_and_schema(self):
@@ -68,7 +91,7 @@ class StorageNotice(unittest.TestCase):
 
     def test_invalid_numbers_do_not_break_ui(self):
         for value in [-1, True, None, '123', float('inf'), float('nan')]:
-            for key in ['vhdx_gb', 'used_gb', 'c_free_gb']:
+            for key in ['vhdx_gb', 'used_gb', 'c_free_gb', 'metadata_gib']:
                 with self.subTest(key=key, value=value):
                     data = copy.deepcopy(self.data)
                     data['disk'][key] = value
