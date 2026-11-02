@@ -18,6 +18,7 @@ def ps(script):
 
 
 FAKE = r'''
+$cfg=[pscustomobject]@{distro='U';script_linux='/mnt/c/L/wsl-compact/reopen-office.sh';console_rc='/home/u/.local/share/office-app/bin/office-console.bashrc'}
 function P($id,$name,$parent,$cmd='',$created='20260101000000.000000+540'){[pscustomobject]@{ProcessId=$id;Name=$name;ParentProcessId=$parent;CommandLine=$cmd;CreationDate=$created}}
 '''
 
@@ -25,41 +26,61 @@ function P($id,$name,$parent,$cmd='',$created='20260101000000.000000+540'){[pscu
 @unittest.skipUnless(shutil.which("powershell.exe") and shutil.which("wslpath") and (WINDOWS/"common.ps1").is_file(), "Windows 시험 도구가 없어요")
 class ConsoleCleanup(unittest.TestCase):
     def select(self, procs, exclude=0):
-        out = ps(FAKE + f"$p=@({procs}); ConvertTo-Json -Compress @(Select-OfficeConsoles $p {exclude})")
+        out = ps(FAKE + f"$p=@({procs}); ConvertTo-Json -Compress @(Select-OfficeConsoles $p $cfg {exclude})")
         data = json.loads(out or "[]")
         return [data] if isinstance(data, dict) else data
 
     def test_shortcut_console_with_own_host_is_selected(self):
-        got = self.select("(P 10 'wsl.exe' 1 'wsl.exe -d U --cd ~ -e bash --rcfile C:\\x\\office-console.bashrc -i'),(P 11 'conhost.exe' 10)")
+        got = self.select("(P 10 'wsl.exe' 1 'wsl.exe -d U --cd ~ -e bash --rcfile /home/u/.local/share/office-app/bin/office-console.bashrc -i'),(P 11 'conhost.exe' 10)")
         self.assertEqual([(c["WslPid"], c["HostPid"]) for c in got], [(10, 11)])
 
     def test_reopened_console_is_selected(self):
-        got = self.select("(P 20 'wsl.exe' 1 'wsl.exe -d U -u chan --exec /bin/bash C:\\x\\reopen-office.sh'),(P 21 'OpenConsole.exe' 20)")
+        got = self.select("(P 20 'wsl.exe' 1 'wsl.exe -d U -u chan --exec /bin/bash /mnt/c/L/wsl-compact/reopen-office.sh'),(P 21 'OpenConsole.exe' 20)")
         self.assertEqual(len(got), 1)
 
     def test_other_wsl_terminal_is_not_selected(self):
         self.assertEqual(self.select("(P 30 'wsl.exe' 1 'wsl.exe -d U'),(P 31 'conhost.exe' 30)"), [])
 
     def test_shared_host_like_windows_terminal_tab_is_not_selected(self):
-        self.assertEqual(self.select("(P 40 'wsl.exe' 5 'wsl.exe -e bash --rcfile office-console.bashrc'),(P 5 'WindowsTerminal.exe' 1)"), [])
+        self.assertEqual(self.select("(P 40 'wsl.exe' 5 'wsl.exe -d U -e bash --rcfile /home/u/.local/share/office-app/bin/office-console.bashrc'),(P 5 'WindowsTerminal.exe' 1)"), [])
 
     def test_console_with_extra_client_is_not_selected(self):
-        self.assertEqual(self.select("(P 50 'wsl.exe' 1 'x office-console.bashrc'),(P 51 'conhost.exe' 50),(P 52 'notepad.exe' 50)"), [])
+        self.assertEqual(self.select("(P 50 'wsl.exe' 1 'wsl.exe -d U x /home/u/.local/share/office-app/bin/office-console.bashrc'),(P 51 'conhost.exe' 50),(P 52 'notepad.exe' 50)"), [])
 
     def test_real_layout_with_inner_wsl_is_selected_once(self):
-        got = self.select("(P 70 'wsl.exe' 1 'x reopen-office.sh'),(P 71 'conhost.exe' 70),(P 72 'wsl.exe' 70 'x reopen-office.sh'),(P 73 'chrome.exe' 72)")
+        got = self.select("(P 70 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 71 'conhost.exe' 70),(P 72 'wsl.exe' 70 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 73 'chrome.exe' 72)")
         self.assertEqual([(c["WslPid"], c["HostPid"]) for c in got], [(70, 71)])
 
     def test_new_console_can_be_excluded(self):
-        self.assertEqual(self.select("(P 60 'wsl.exe' 1 'x reopen-office.sh'),(P 61 'conhost.exe' 60)", exclude=60), [])
+        self.assertEqual(self.select("(P 60 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 61 'conhost.exe' 60)", exclude=60), [])
 
-    def test_close_requires_same_pid_and_creation_time(self):
-        out = ps(FAKE + r'''
-$t=[pscustomobject]@{WslPid=10;HostPid=999999;HostName='conhost.exe';HostCreated='A'}
-$same=@(P 999999 'conhost.exe' 10 '' 'B')
-$other=@(P 999999 'notepad.exe' 10 '' 'A')
-'{0}|{1}' -f @(Close-OfficeConsoles @($t) $same).Count,@(Close-OfficeConsoles @($t) $other).Count''')
-        self.assertEqual(out, "0|0")
+    def test_other_distro_is_not_selected(self):
+        self.assertEqual(self.select("(P 80 'wsl.exe' 1 'wsl.exe -d Other --exec /bin/bash /mnt/c/L/wsl-compact/reopen-office.sh'),(P 81 'conhost.exe' 80)"), [])
+
+    def test_other_office_install_is_not_selected(self):
+        self.assertEqual(self.select("(P 82 'wsl.exe' 1 'wsl.exe -d U -e bash --rcfile /home/other/office-console.bashrc -i'),(P 83 'conhost.exe' 82)"), [])
+        self.assertEqual(self.select("(P 84 'wsl.exe' 1 'wsl.exe -d U --exec /bin/bash /mnt/c/Other/wsl-compact/reopen-office.sh'),(P 85 'conhost.exe' 84)"), [])
+
+    def close(self, before, after):
+        out = ps(FAKE + f"""
+$a=@({before}); $t=@(Select-OfficeConsoles $a $cfg)
+$b=@({after})
+'{{0}}|{{1}}' -f $t.Count,@(Close-OfficeConsoles $t $cfg $b).Count""")
+        return out
+
+    LAYOUT = "(P 90 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 91 'conhost.exe' 90)"
+
+    def test_close_skips_when_another_program_attached_after_snapshot(self):
+        # 실제 Stop-Process는 없는 PID라 항상 0을 돌려줘요. 여기서는 '닫기 후보에서 빠지는지'를 Select 결과로 확인해요.
+        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT + ",(P 92 'notepad.exe' 90)"), "1|0")
+
+    def test_close_skips_when_pid_is_reused_or_time_changed(self):
+        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'wsl.exe -d U x /mnt/c/L/wsl-compact/reopen-office.sh'),(P 91 'conhost.exe' 90 '' '20270101000000.000000+540')"), "1|0")
+        self.assertEqual(self.close(self.LAYOUT, "(P 90 'wsl.exe' 1 'cmd.exe'),(P 91 'conhost.exe' 90)"), "1|0")
+
+    def test_close_requires_unchanged_layout(self):
+        # 같은 배치면 후보로 인정돼 Stop-Process까지 가지만, 없는 PID 오류는 삼켜서 0이에요.
+        self.assertEqual(self.close(self.LAYOUT, self.LAYOUT), "1|0")
 
 
 if __name__ == "__main__":
