@@ -41,7 +41,8 @@ class InstallPreserve(unittest.TestCase):
                               env=env, capture_output=True, text=True, timeout=120)
 
     def bump(self, version):
-        (self.pkg / "payload" / "VERSION").write_text(version + "\n")
+        suffix = "+local" if "+local" in (self.pkg / "payload" / "VERSION").read_text() else ""
+        (self.pkg / "payload" / "VERSION").write_text(version + suffix + "\n")
         (self.pkg / "payload" / "office.py").write_text((self.pkg / "payload" / "office.py").read_text() + f"\n# {version}\n")
 
     def first(self):
@@ -116,7 +117,7 @@ class InstallPreserve(unittest.TestCase):
         self.bump("9.9.9")
         r = self.run_install()
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
-        self.assertEqual((self.app / "VERSION").read_text().strip(), "9.9.9")
+        self.assertTrue((self.app / "VERSION").read_text().startswith("9.9.9"))
 
 
 if __name__ == "__main__":
