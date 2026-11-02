@@ -16,6 +16,10 @@ Office 설치기 (Linux/WSL/macOS)
   --dry-run              변경 없이 계획만 출력 (기본)
   --skip-login           로그인 확인/실행 생략
   --no-launch            Office 실행 생략
+  --review              충돌을 고르는 일회성 선택 화면을 열어요(옛 앱에서 업데이트할 때는 자동)
+  --review-plan 파일     미리 점검한 결과(plan JSON)가 지금 설치와 같을 때만 진행
+  --resolution 파일      충돌 선택(JSON). --review-plan과 함께만 쓸 수 있어요
+  --restore-backup 폴더  백업(<설치 폴더>/backups/…)으로 앱 파일을 되돌림
   --device-auth          Codex 기기 코드 로그인
   --install-system-deps  누락된 Python/git/curl을 apt 또는 Homebrew로 설치 허용
   -h, --help             도움말
@@ -32,6 +36,7 @@ EOF
 }
 fail() { printf '설치 중단: %s\n' "$*" >&2; exit 1; }
 original_path=${PATH:-}
+review_plan=; resolution=; restore_backup=; review=0
 apply=0; login=1; launch=1; device=0; system_deps=0; shortcut=1
 prefix="${HOME:?HOME이 필요합니다}/.local/share/office-app"
 workspace=$HOME/agent-office
@@ -41,6 +46,10 @@ while (($#)); do
     --dry-run) apply=0;;
     --prefix) (($# >= 2)) || fail '--prefix 뒤에 경로가 필요합니다'; prefix=$2; shift;;
     --workspace) (($# >= 2)) || fail '--workspace 뒤에 경로가 필요합니다'; workspace=$2; shift;;
+    --review) review=1;;
+    --review-plan) (($# >= 2)) || fail '--review-plan 뒤에 파일이 필요합니다'; review_plan=$2; shift;;
+    --resolution) (($# >= 2)) || fail '--resolution 뒤에 파일이 필요합니다'; resolution=$2; shift;;
+    --restore-backup) (($# >= 2)) || fail '--restore-backup 뒤에 폴더가 필요합니다'; restore_backup=$2; apply=1; login=0; launch=0; shortcut=0; shift;;
     --skip-login) login=0;;
     --no-launch) launch=0;;
     --device-auth) device=1;;
@@ -56,11 +65,27 @@ done
 [[ $workspace == /* && $workspace != / && $workspace != "$HOME" ]] || fail '작업 폴더는 홈 자체가 아닌 절대경로여야 합니다'
 [[ $workspace != *$'\n'* && $workspace != *$'\r'* ]] || fail '경로에 줄바꿈을 넣을 수 없습니다'
 [[ ! -e $workspace || -d $workspace ]] || fail "작업 폴더 경로가 폴더가 아닙니다: $workspace"
+[[ -z $resolution || -n $review_plan ]] || fail '--resolution은 --review-plan과 함께 써야 합니다'
+for opt_file in "$review_plan" "$resolution"; do
+  [[ -z $opt_file || ( $opt_file == /* && -f $opt_file && ! -L $opt_file ) ]] || fail "점검·선택 파일은 실제 파일의 절대경로여야 합니다: $opt_file"
+done
+[[ -z $restore_backup || ( -z $review_plan && -z $resolution ) ]] || fail '--restore-backup은 다른 점검 옵션과 함께 쓸 수 없습니다'
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 payload=$script_dir/payload
-files=(office.py office.html office.ico office-icon.png VERSION)
+[[ -f "$payload/SHA256SUMS" ]] || fail '배포 파일 누락: SHA256SUMS'
+# 설치할 파일 목록은 배포 묶음의 SHA256SUMS를 따라요. 파일 이름이 이상하면 멈춰요.
+files=()
+while read -r _hash name extra; do
+  [[ -n ${_hash:-} ]] || continue
+  name=${name#\*}
+  [[ -z ${extra:-} && $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "배포 파일 목록이 올바르지 않습니다: $name"
+  files+=("$name")
+done < "$payload/SHA256SUMS"
+for need in office.py VERSION office_customizations.py; do
+  [[ " ${files[*]-} " == *" $need "* ]] || fail "배포 파일 목록에 $need 가 없습니다"
+done
 for name in "${files[@]}" SHA256SUMS; do
-  [[ -f "$payload/$name" ]] || fail "배포 파일 누락: $name"
+  [[ -f "$payload/$name" && ! -L "$payload/$name" ]] || fail "배포 파일 누락: $name"
 done
 printf '설치 폴더: %s\n' "$prefix"
 printf '기본 작업 폴더: %s\n' "$workspace"
@@ -122,6 +147,11 @@ find_python() {
   return 1
 }
 python_bin=$(find_python || true)
+if [[ -n $restore_backup ]]; then
+  [[ -n $python_bin ]] || fail 'Python 3.11+가 필요해요'
+  "$python_bin" -I "$payload/office_customizations.py" --restore-backup "$restore_backup" --prefix "$prefix" --incoming "$payload" || exit $?
+  exit 0
+fi
 missing=()
 [[ -n $python_bin ]] || missing+=(python3)
 command -v git >/dev/null || missing+=(git)
@@ -156,12 +186,45 @@ fi
 [[ -n $python_bin ]] || fail 'Python 3.11+가 필요해요. macOS에서는 Homebrew Python을, Ubuntu에서는 24.04 이상 환경을 사용하세요.'
 for cmd in git curl; do command -v "$cmd" >/dev/null || fail "의존 설치 후에도 $cmd 명령이 없습니다"; done
 if [[ $platform == Linux ]]; then command -v flock >/dev/null || fail 'flock 명령이 필요해요'; fi
+# 옛 버전 앱에는 충돌 선택 화면이 없어요. 충돌이 선택으로 풀 수 있을 때만 일회성 선택 화면(bridge)을 열고,
+# 선택이 끝나면 그 화면이 새 설치기를 다시 실행해요. 설치 잠금을 잡기 전에 넘겨서 잠금이 겹치지 않아요.
+if [[ -z $review_plan && -z ${OFFICE_BRIDGE_ACTIVE:-} && -f $payload/office_update_bridge.py && -f $prefix/app/.office-manifest.json && ! -L $prefix/app/.office-manifest.json ]]; then
+  want_bridge=$review
+  if ((! want_bridge)); then
+    # 자동 진입: 설치된 버전이 0.10 미만이고, 이 설치기를 부른 쪽이 이 설치의 실행 중인 앱일 때만(ps는 맥에서도 같아요)
+    installed_version=$(head -n 1 -- "$prefix/app/VERSION" 2>/dev/null || true)
+    IFS=. read -r v_major v_minor _ <<<"${installed_version%%+*}"
+    parent_command=$(ps -o command= -p "$PPID" 2>/dev/null || true)
+    if [[ ${v_major:-x} == 0 && ${v_minor:-x} =~ ^[0-9]+$ ]] && ((v_minor < 10)) && [[ $parent_command == *"$prefix/app/office.py"* ]]; then want_bridge=1; fi
+  fi
+  if ((want_bridge)); then
+    bridge_plan=$(mktemp "${TMPDIR:-/tmp}/office-bridge-plan.XXXXXX")
+    bridge_resolvable=0
+    if "$python_bin" -I "$payload/office_customizations.py" --plan --prefix "$prefix" --incoming "$payload" --output "$bridge_plan" >/dev/null 2>&1; then
+      bridge_resolvable=$("$python_bin" -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(1 if p.get("blocked") and p.get("resolvable") else 0)' "$bridge_plan" 2>/dev/null || echo 0)
+    fi
+    rm -f -- "$bridge_plan"
+    if [[ $bridge_resolvable == 1 ]]; then
+      bridge_args=(--prefix "$prefix" --package "$script_dir" --workspace "$workspace")
+      ((review)) || bridge_args+=(--legacy-parent)
+      exec "$python_bin" -I "$payload/office_update_bridge.py" "${bridge_args[@]}"
+    fi
+  fi
+fi
 mkdir -p -- "$prefix"
 printf '%s\n' office-bootstrap-v1 > "$prefix/.office-install"
 [[ ! -L "$prefix/.install.lock" ]] || fail '설치 잠금 파일이 심볼릭 링크입니다'
 lock_dir=
 staging=
+swapping=0; swap_backup=
 cleanup() {
+  local status=$?
+  # 파일을 바꾸는 도중에 멈추면 방금 만든 백업으로 되돌려요.
+  if ((swapping)) && [[ -n $swap_backup ]]; then
+    printf '설치 도중 멈춰서 이전 파일로 되돌려요.\n' >&2
+    "$python_bin" -I "$payload/office_customizations.py" --restore-backup "$swap_backup" --prefix "$prefix" --incoming "$payload" --during-install >&2 \
+      || printf '자동으로 되돌리지 못했어요. 백업: %s\n' "$swap_backup" >&2
+  fi
   [[ -z $staging ]] || rm -rf -- "$staging"
   [[ -z $lock_dir ]] || rmdir -- "$lock_dir"
 }
@@ -180,106 +243,36 @@ chmod 700 "$staging/office.py"
 OFFICE_CUSTOMIZATION_GUARD=1
 # 직접 고친 부분 검사는 CLI 설치보다 먼저 해서, 멈출 때 아무것도 바뀌지 않게 한다.
 # Keep pristine incoming files separate from any reapplied local edits.
-local_summary=$("$python_bin" - "$prefix" "$staging" "${files[@]}" <<'PYLOCAL'
-import datetime, hashlib, json, os, shutil, subprocess, sys
-from pathlib import Path
-root, incoming = map(Path, sys.argv[1:3])
-names = sys.argv[3:]
-app = root / 'app'
-def digest(p):
-    return hashlib.sha256(p.read_bytes()).hexdigest()
-manifest_path = app / '.office-manifest.json'
-old = None
+apply_args=(--apply --prefix "$prefix" --incoming "$payload" --staging "$staging")
+if [[ -n $review_plan ]]; then
+  plan_id=$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$review_plan" 2>/dev/null) || fail '점검 파일을 읽을 수 없어요'
+  apply_args+=(--expect-plan-id "$plan_id")
+  [[ -z $resolution ]] || apply_args+=(--resolution "$resolution")
+fi
+local_rc=0
+local_summary=$("$python_bin" -I "$payload/office_customizations.py" "${apply_args[@]}") || local_rc=$?
+if ((local_rc)); then
+  printf '%s\n' "$local_summary"
+  printf '설치를 멈췄어요. 기존 설치는 그대로예요.\n' >&2
+  exit "$local_rc"
+fi
+[[ ! -f $staging/.backup-path ]] || swap_backup=$(<"$staging/.backup-path")
+# 점검 모듈이 든 묶음이면 파일을 바꾸기 전에 설치될 전체 사본을 실제로 실행해 봐요(문법·도움말·버전·설정 저장).
+# 바뀐 곳은 아직 준비 폴더뿐이라, 실패해도 기존 설치는 그대로예요.
+if [[ -f $staging/office_updates.py ]]; then
+  smoke_error=$("$python_bin" -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("office_updates_smoke", sys.argv[1] + "/office_updates.py")
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 try:
-    old = json.loads(manifest_path.read_text())
-    if not isinstance(old.get('files'), dict): old = None
-except (OSError, ValueError, TypeError):
-    pass
-changed = []
-for name in names:
-    current = app / name
-    if old and not current.exists() and not current.is_symlink():   # 기록에 없는 파일이 지워져 있어도 직접 지운 것으로 본다
-        changed.append(name)
-    elif current.exists() or current.is_symlink():
-        # An older install has no trustworthy baseline: preserve every differing file.
-        expected = old['files'].get(name) if old else digest(incoming / name)
-        if current.is_symlink() or not current.is_file() or digest(current) != expected:
-            changed.append(name)
-merged, conflicts = [], []
-legacy = old is None and app.is_dir() and any(app.iterdir())
-# 사용자가 고친 부분은 절대 덮어쓰지 않는다. 아래 문제가 하나라도 있으면 기존 설치를 건드리기 전에 멈춘다.
-blocked = []
-def launcher_ok(path, recorded, markers):
-    if not (path.exists() or path.is_symlink()): return True
-    if path.is_symlink() or not path.is_file(): return False
-    if recorded: return digest(path) == recorded
-    return True   # 기준이 없으면 막지 않는다. 대신 아래 셸에서 그 파일을 건드리지 않는다.
-recorded_launchers = (old or {}).get('launchers') or {}
-if not launcher_ok(root / 'bin' / 'office', recorded_launchers.get('office'), ('install_root=', '/app/office.py')):
-    blocked.append('실행 파일 bin/office를 직접 고친 것 같아요')
-if not launcher_ok(root / 'bin' / 'office-console.bashrc', recorded_launchers.get('console'), ('# Office 콘솔',)):
-    blocked.append('콘솔 파일 bin/office-console.bashrc를 직접 고친 것 같아요')
-try:
-    installed_version = (app / 'VERSION').read_text().strip()
-except OSError:
-    installed_version = ''
-if '+local' in installed_version and '+local' not in (incoming / 'VERSION').read_text():
-    blocked.append('이 PC 전용 버전(%s) 위에 공개 버전을 덮어쓸 수 없어요' % installed_version)
-if legacy and changed:
-    blocked.append('설치 기록이 없는 옛 설치라 어디를 직접 고쳤는지 알 수 없어요: ' + ','.join(changed))
-# Write baselines before merging. Never treat a locally edited result as upstream.
-orig = incoming / '.office-orig'
-orig.mkdir()
-new_manifest = {'version': (incoming / 'VERSION').read_text().strip(),
-                'files': {name: digest(incoming / name) for name in names}}
-for name in names:
-    shutil.copyfile(incoming / name, orig / name)
-for name in (changed if old else []):
-    current, base, target = app / name, app / '.office-orig' / name, incoming / name
-    # A missing/invalid baseline or binary edit stays in the backup only.
-    if (not old or name == 'VERSION' or not base.is_file() or base.is_symlink()
-            or not current.is_file() or current.is_symlink()
-            or digest(base) != old['files'].get(name)):
-        conflicts.append(name); continue
-    if any(b'\0' in p.read_bytes() for p in (base, current, target)):
-        conflicts.append(name); continue
-    if shutil.which('git'):
-        cmd = ['git', 'merge-file', '-p', str(current), str(base), str(target)]
-    elif shutil.which('diff3'):
-        cmd = ['diff3', '-m', str(current), str(base), str(target)]
-    else:
-        conflicts.append(name); continue
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode == 0:
-        if name == 'office.py':
-            try: compile(result.stdout, name, 'exec')
-            except (SyntaxError, ValueError):
-                conflicts.append(name); continue
-        target.write_bytes(result.stdout); merged.append(name)
-    else:
-        conflicts.append(name)
-if conflicts:
-    blocked.append('직접 고친 파일을 새 버전과 자동으로 합칠 수 없어요: ' + ','.join(conflicts))
-if blocked:
-    print('OFFICE_LOCAL: blocked=1 conflicts=%s' % (','.join(conflicts) or '-'))
-    sys.stderr.write('아래 이유로 설치를 멈췄어요. 기존 설치는 그대로예요.\n')
-    for reason in blocked: sys.stderr.write('- ' + reason + '\n')
-    sys.exit(3)
-backup = None
-if changed or legacy:
-    version = str((old or {}).get('version', 'legacy'))
-    version = ''.join(c if c.isalnum() or c in '.-+' else '_' for c in version)[:80] or 'legacy'
-    backups = root / 'backups'
-    if backups.is_symlink(): raise RuntimeError('백업 폴더가 심볼릭 링크예요')
-    backups.mkdir(exist_ok=True)
-    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
-    backup = backups / (version + '-' + stamp)
-    shutil.copytree(app, backup, symlinks=True)
-(incoming / '.office-manifest.json').write_text(json.dumps(new_manifest, ensure_ascii=False) + '\n')
-print('OFFICE_LOCAL: changed=%d merged=%s conflicts=%s backup=%s' %
-      (len(changed) if old else 0, ','.join(merged) or '-', ','.join(conflicts) or '-', str(backup) if backup else '-') + (' legacy=1' if legacy else ''))
-PYLOCAL
-) || fail '설치를 멈췄어요. 기존 설치는 그대로예요.'
+    module.smoke_candidate(sys.argv[1])
+except module.ReviewError as error:
+    sys.stderr.write(str(error)); sys.exit(1)
+' "$staging" 2>&1) || {
+    printf '설치를 멈췄어요. 기존 설치는 그대로예요.\n- 설치할 사본의 실행 검사에 실패했어요: %s\n' "$smoke_error" >&2
+    exit 3
+  }
+fi
 
 export PATH="$HOME/.local/bin:$PATH"
 # Download official installers as files; an HTTP failure never executes a partial script.
@@ -310,6 +303,7 @@ prev_ico_sha=$([[ -f $prefix/app/office.ico && ! -L $prefix/app/office.ico ]] &&
 kept=
 old_global=$("$python_bin" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("launchers") or {}).get("global",""))' "$prefix/app/.office-manifest.json" 2>/dev/null || true)
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
+swapping=1
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
 # 바이트코드 캐시는 내용 해시로 검사하게 미리 만든다(수정 시각·길이가 같은 변경도 놓치지 않음).
 # 만들지 못하면 캐시를 쓰지 않는 실행기로 둔다(옛 캐시가 남아 있어도 쓰지 않음).
@@ -319,6 +313,7 @@ if "$python_bin" -c 'import py_compile, sys; py_compile.compile(sys.argv[1], dor
 rm -rf -- "$prefix/app/.office-orig"
 mv -- "$staging/.office-orig" "$prefix/app/.office-orig"
 mv -f -- "$staging/.office-manifest.json" "$prefix/app/.office-manifest.json"
+swapping=0
 # The launcher always starts in the chosen workspace; ~/.local/bin/office is created only when absent.
 # printf %q safely handles spaces/quotes without evaluating paths as shell code.
 {

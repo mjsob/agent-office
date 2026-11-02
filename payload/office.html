@@ -472,6 +472,16 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .user-progress { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 6px 12px; white-space: pre-line; overflow-wrap: anywhere; }
 .task-level { color: var(--muted); font-size: 10px; margin-left: 6px; font-weight: 400; }
 /* 업데이트 알림 */
+
+#updateReview { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+#updateReview p { margin: 0 0 9px; line-height: 1.6; }
+#updateReviewFiles { margin: 0 0 10px; padding-left: 20px; color: var(--muted); }
+.update-review-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.update-review-actions button { flex: 1 1 120px; min-height: 36px; white-space: normal; }
+#updateKeep { background: var(--panel); color: var(--text); }
+#updateReviewReason { color: var(--warn); font-size: 12px; }
+.update-actions { flex-wrap: wrap; }
+
 body { grid-template-rows: auto minmax(0, 1fr) auto; }
 body > header { grid-row: 1; }
 body > main { grid-row: 2; }
@@ -733,6 +743,21 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   </div>
   <div id="updateError" role="status" hidden></div>
   <div id="updateMessage"></div>
+
+  <div id="updateReview" hidden>
+    <p id="updateReviewSummary"></p>
+    <ul id="updateReviewFiles" aria-label="겹치는 변경"></ul>
+    <p id="updateReviewReason" role="status"></p>
+    <div class="update-review-actions">
+      <button id="updateKeep" onclick="chooseUpdate('keep')">내 수정 유지</button>
+      <button id="updateMerge" onclick="reviewUpdate('update_merge')">합쳐 보기</button>
+      <button id="updateUpstream" class="ghost" onclick="chooseUpdate('upstream')">새 버전 사용</button>
+      <button id="updateVerify" onclick="reviewUpdate('update_verify')">합친 결과 확인</button>
+      <button id="updateApplyMerged" onclick="chooseUpdate('merged')">합친 버전 적용</button>
+      <button id="updateRestore" class="ghost" onclick="reviewUpdate('update_restore')">이전 설치로 되돌리기</button>
+    </div>
+  </div>
+
   <div id="updateDetails" hidden><div id="updateNotes" class="msg"><div class="body"></div></div></div>
 </section>
 
@@ -1004,14 +1029,15 @@ function renderUpdate(u = updateState) {
     }
   }
   const checking = updateChecking || u.checking === true;
-  const busy = updateSubmitting || ["running", "restarting"].includes(u.state);
-  const failed = u.state === "failed";
+  const busy = updateSubmitting || ["running", "restarting", "checking_candidate"].includes(u.state);
+  const failed = ["failed", "blocked"].includes(u.state);
+  const reviewVisible = !!u.review?.id && !["deferred", "restored"].includes(u.review.state);
   let dismissed = closedUpdateVersions.has(u.latest);
   try {
     const saved = JSON.parse(localStorage.officeUpdateHidden || "null");
     dismissed ||= saved?.date === updateDay() && saved?.version === u.latest;
   } catch (e) {}
-  const eligible = !!(u.available || busy || failed || u.error);
+  const eligible = !!(u.available || busy || failed || u.error || reviewVisible);
   const visible = $("#settings").hidden && (updatePanelOpen || (eligible && hiddenUpdateAlert !== updateAlertKey() && (busy || failed || !dismissed || reopenedUpdateKey === updateKey())));
   if (visible && $("#updateNotice").hidden) resetUpdateNotes();
   $("#updateNotice").hidden = !visible;
@@ -1022,18 +1048,19 @@ function renderUpdate(u = updateState) {
   if (unreadUpdate) versionButton.title = `새 버전 ${u.latest || ""}`;
   else versionButton.removeAttribute("title");
   versionButton.setAttribute("aria-label", versionHint);
-  $("#updateToday").hidden = busy || failed || !u.available;
+  $("#updateToday").hidden = busy || failed || reviewVisible || !u.available;
   $("#updateClose").hidden = false;
-  $("#updateButton").hidden = !u.available && !busy && !failed;
+  $("#updateButton").hidden = (!u.available && !busy && !failed) || (reviewVisible && !busy && u.review?.state !== "failed");
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
-    : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전이에요" : "새 버전을 확인하세요";
+    : u.state === "checking_candidate" ? "합친 사본을 확인해요" : u.state === "conflict" ? "겹치는 변경을 선택하세요" : u.state === "merging" ? "사본에서 합치고 있어요" : u.state === "ready" ? "합친 결과를 확인하세요" : u.state === "applied" ? "업데이트했어요" : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전이에요" : "새 버전을 확인하세요";
   $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
   const summary = releaseSummary(u.notes);
   $("#updateSummary").textContent = busy ? "설치가 끝나면 새 버전으로 다시 시작해요." : failed ? "오류 내용을 확인하고 다시 시도하세요." : u.available ? summary || "변경 내용을 확인하고 새 버전으로 업데이트하세요." : checking ? "새 버전이 있는지 확인하고 있어요." : u.error ? "다시 확인하거나 오류 내용을 확인하세요." : "Office를 최신 상태로 사용하고 있어요.";
   $("#updateDate").hidden = true;
   $("#updateDate").textContent = "";
-  $("#updateButton").textContent = busy ? "업데이트 중" : failed ? "다시 시도" : "업데이트";
+  $("#updateButton").textContent = busy ? "처리 중" : failed || u.state === "deferred" ? "다시 점검" : "업데이트";
   $("#updateButton").disabled = busy || !u.installable;
+  renderUpdateReview(u, busy);
   $("#updateMessage").textContent = u.message || (u.state === "restarting" ? "새 창이 열려요. 연결이 끊기면 이 창은 닫혀요."
     : busy ? "설치가 끝날 때까지 기다리세요." : u.available && !u.installable ? "이 설치에서는 앱 안에서 업데이트할 수 없어요." : "");
   const age = Number.isFinite(u.checked_at) && u.checked_at > 0 ? Math.max(0, Math.floor((Date.now() / 1000 - u.checked_at) / 60)) : null;
@@ -1052,6 +1079,53 @@ function renderUpdate(u = updateState) {
       (_, h, y, m, d) => `${h} · ${y.slice(2)}.${m}.${d}`), false);
   }
 }
+function renderUpdateReview(u, busy) {
+  const review = u.review || {}, box = $("#updateReview");
+  const active = !!review.id && ["conflict", "blocked", "merging", "ready", "deferred", "applied", "failed"].includes(review.state);
+  box.hidden = !active;
+  if (!active) return;
+  const pending = ["conflict", "blocked", "failed"].includes(review.state);
+  const ready = review.can_apply_merged === true;
+  $("#updateReviewSummary").textContent = review.state === "applied"
+    ? "업데이트한 기능을 확인하세요. 필요하면 이전 설치로 되돌릴 수 있어요."
+    : review.state === "deferred" ? "내 수정을 유지하고 업데이트를 보류했어요. 다시 점검하면 새로 선택할 수 있어요."
+    : ready ? "합친 사본의 기본 실행 검사를 통과했어요. 에이전트 보고를 확인하고 적용하세요."
+    : review.state === "merging" ? "에이전트가 사본에서 합치고 있어요. 작업이 끝나면 결과를 확인하세요."
+    : review.resolvable ? "내 수정과 새 변경을 자동으로 합칠 수 없는 부분이 있어요. 어떻게 할까요?"
+    : "수정을 안전하게 옮길 근거가 부족해요. 기존 설치를 유지했어요.";
+  const list = $("#updateReviewFiles");
+  list.replaceChildren();
+  for (const text of (review.labels || [])) {
+    const item = document.createElement("li"); item.textContent = text; list.append(item);
+  }
+  list.hidden = review.state === "applied" || review.state === "deferred" || !list.children.length;
+  $("#updateReviewReason").textContent = review.state === "blocked" ? (review.blocked || []).join(" ")
+    : review.can_merge && review.merge_available === false ? "합치려면 Claude 또는 Codex에 먼저 로그인하세요." : "";
+  $("#updateKeep").hidden = !pending && !ready;
+  $("#updateMerge").hidden = !review.can_merge && !review.can_retry_merge;
+  $("#updateMerge").textContent = review.can_retry_merge ? "다시 합치기" : "합쳐 보기";
+  $("#updateMerge").disabled = busy || review.merge_available === false;
+  $("#updateUpstream").hidden = !pending || !review.resolvable;
+  $("#updateVerify").hidden = !review.can_verify || ready;
+  $("#updateApplyMerged").hidden = !ready;
+  $("#updateRestore").hidden = !review.can_restore;
+  for (const id of ["updateKeep", "updateUpstream", "updateVerify", "updateApplyMerged", "updateRestore"]) $("#" + id).disabled = busy;
+}
+async function chooseUpdate(choice) {
+  if (updateSubmitting || !updateState.review?.id) return;
+  if (choice === "upstream" && !confirm("새 버전과 겹치는 내 수정은 백업에 남기고 새 변경으로 바꿔요. 겹치지 않는 내 수정은 유지해요. 계속할까요?")) return;
+  updateSubmitting = true; renderUpdate();
+  try { await api({action: "update_resolve", review_id: updateState.review.id, choice, confirmed: choice === "upstream"}); }
+  finally { updateSubmitting = false; renderUpdate(); }
+}
+async function reviewUpdate(action) {
+  if (updateSubmitting || !updateState.review?.id) return;
+  if (action === "update_restore" && !confirm("이번 업데이트 전 설치로 되돌릴까요? 대화와 설정은 그대로 유지해요. 업데이트 뒤 코드를 다시 고쳤다면 되돌리지 않아요.")) return;
+  updateSubmitting = true; renderUpdate();
+  try { await api({action, review_id: updateState.review.id, confirmed: action === "update_restore"}); }
+  finally { updateSubmitting = false; renderUpdate(); }
+}
+
 async function checkUpdateNow() {
   if (updateChecking || updateState.checking) return;
   updateChecking = true;

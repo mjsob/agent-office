@@ -5,6 +5,10 @@ set -Eeuo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 fail() { printf '빌드 중단: %s\n' "$*" >&2; exit 1; }
 files=(office.py office.html office.ico office-icon.png VERSION)
+# 기능 모듈(payload/office_*.py)은 이름순으로 자동 포함해요.
+for module in payload/office_*.py; do
+  [[ -e $module ]] && files+=("$(basename -- "$module")")
+done
 version=$(tr -d '[:space:]' < payload/VERSION)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "payload/VERSION 형식이 X.Y.Z가 아닙니다: $version"
 for name in "${files[@]}"; do [[ -f payload/$name ]] || fail "payload/$name 없음"; done

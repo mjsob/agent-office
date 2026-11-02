@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# bash publish.sh [--dry-run] patch|minor "릴리스 제목" 노트파일
+# bash publish.sh [--dry-run] [--no-install] patch|minor "릴리스 제목" 노트파일
 # --dry-run은 임시 사본에서 검사해요. 버전·커밋·공개 릴리스·설치본은 바꾸지 않아요.
 set -Eeuo pipefail
 umask 077
 fail() { printf '배포를 중단했어요: %s\n' "$*" >&2; exit 1; }
-usage() { printf '사용법: bash publish.sh [--dry-run] patch|minor "릴리스 제목" 노트파일\n'; }
-dry=0
+usage() { printf '사용법: bash publish.sh [--dry-run] [--no-install] patch|minor "릴리스 제목" 노트파일\n'; }
+dry=0; install_after=1
 args=()
 for arg in "$@"; do
-  if [[ $arg == --dry-run ]]; then dry=1; else args+=("$arg"); fi
+  if [[ $arg == --dry-run ]]; then dry=1; elif [[ $arg == --no-install ]]; then install_after=0; else args+=("$arg"); fi
 done
 [[ ${#args[@]} == 3 ]] || { usage >&2; exit 2; }
 kind=${args[0]} title=${args[1]} notes=${args[2]}
@@ -162,6 +162,11 @@ expected={'office-installer.tar.gz','office-installer.tar.gz.sha256'}
 if r.get('tag_name')!=sys.argv[2] or not expected.issubset(assets) or any(assets[n].get('size',0)<=0 for n in expected):
     sys.exit('공개 버전과 설치 파일을 확인하지 못했어요.')
 PY
+# 이 PC 전용판은 공개판으로 덮지 않고 별도 보존 설치해요.
+if ((! install_after)); then
+  printf '공개 배포를 마쳤어요: %s. 이 PC 설치는 별도로 진행해요.\n' "$tag"
+  exit 0
+fi
 # 설치는 서버를 열지 않아요. 현재 대화를 중단하지 않게 해요.
 python3 - "$work/unpacked/office-dist/install.sh" <<'PY'
 import os,subprocess,sys

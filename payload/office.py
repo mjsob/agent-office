@@ -3830,6 +3830,9 @@ class Worker:
     def _loop(self, office):
         sid = self.sid
         while not (self.stop.is_set() or office.stop.is_set()):
+            if getattr(office, "update_installing", False):
+                self.stop.wait(.25)
+                continue
             mark_now = self.state_mark()
             idle = self.idle_mark
             if idle and mark_now == idle[0] and not self.paused and not getattr(self, "retry_at", 0) and time.monotonic() - idle[1] < IDLE_RECHECK:
@@ -3903,7 +3906,12 @@ class Worker:
             if self.turn_pick.get("model"):
                 self.primary_model = self.turn_pick["model"]
             self.last_output = time.time()
-            self.status, self.since, self.doing = "working", time.time(), {"kind": desc, "job": job}
+            with getattr(office, "update_gate", threading.RLock()):
+                if getattr(office, "update_installing", False):
+                    self.read_upto = previous_read
+                    self.carry_msgs = previous_carry
+                    continue
+                self.status, self.since, self.doing = "working", time.time(), {"kind": desc, "job": job}
             self.save_checkpoint()   # 첫 차례 도중 서버가 꺼져도 재시작 후 이 메시지부터 다시 읽게 시작 위치를 남김
             self.act("start", f"{desc}|{job or ''}")
             rotated = self.rotate_session(job, desc)
@@ -4355,6 +4363,19 @@ def update_info():
         info.update(state="idle", message=None)
     if info["available"] and not info["installable"] and info["state"] == "idle":
         info["message"] = LOCAL_EDITION_UPDATE_TEXT if local_edition else "설치기로 설치한 Office에서만 바로 업데이트할 수 있어요."
+    review = update_review_view()
+    if review:
+        if review.get("merge_job"):
+            job = update_review_job(review)
+            completed = bool(job and job.get("status") == "done")
+            review["can_retry_merge"] = completed and review.get("state") in {"merging", "failed", "ready"}
+            review["can_verify"] = bool(review.get("can_verify") and completed and not job.get("cancelled"))
+        info["review"] = review
+        if review.get("state") not in {"restored"} and info["state"] not in {"running", "restarting", "checking_candidate"}:
+            if review.get("state") in {"conflict", "blocked", "merging", "ready", "deferred", "applied"}:
+                info["state"] = review["state"]
+            if review.get("message"):
+                info["message"] = review["message"]
     return info
 
 
@@ -4473,6 +4494,14 @@ def local_changes_text(output):
     """install.sh 의 'OFFICE_LOCAL: changed=N merged=a,b conflicts=c backup=경로' 줄을 화면 문구로"""
     line = next((x for x in reversed((output or "").splitlines()) if x.startswith("OFFICE_LOCAL:")), "")
     fields = dict(part.split("=", 1) for part in line[len("OFFICE_LOCAL:"):].split() if "=" in part)
+    structured = next((row[len("OFFICE_LOCAL_JSON: "):] for row in reversed((output or "").splitlines()) if row.startswith("OFFICE_LOCAL_JSON: ")), None)
+    if structured:
+        try:
+            record = json.loads(structured)
+            if isinstance(record, dict):
+                fields = {key: (",".join(value) if isinstance(value, list) else "-" if value is None else str(int(value)) if type(value) is bool else str(value)) for key, value in record.items()}
+        except (ValueError, TypeError):
+            pass
     try:
         changed = int(fields.get("changed", 0))
     except ValueError:
@@ -4486,7 +4515,10 @@ def local_changes_text(output):
     if merged:
         text += f" {', '.join(merged)}는 새 버전에 다시 넣었어요."
     if conflicts:
-        text += f" {', '.join(conflicts)}는 자동으로 반영할 수 없어요. 업데이트 결과를 확인하세요."
+        if fields.get("resolved") in ("upstream", "merged"):
+            text += " 겹치는 변경은 선택한 방식으로 반영했어요."
+        else:
+            text += f" {', '.join(conflicts)}는 자동으로 반영할 수 없어요. 업데이트 결과를 확인하세요."
     if fields.get("backup", "-") != "-":
         text += f" 예전 파일은 {fields['backup']}에 있어요."
     return text
@@ -4510,6 +4542,7 @@ def install_failure_text(error_output):
 def run_update(office):
     """최신 설치 묶음을 받아 해시를 확인하고 install.sh로 같은 경로에 다시 설치한 뒤 새 프로세스로 다시 시작"""
     def fail(text):
+        office.update_installing = False
         with UPDATE_LOCK:
             UPDATE.update(state="failed", message=text)
     paths = install_paths()
@@ -4537,12 +4570,17 @@ def run_update(office):
                 return fail("설치 파일에 설치기가 없어요.")
             if "OFFICE_CUSTOMIZATION_GUARD=1" not in script.read_text().splitlines():
                 return fail("이 설치기는 사용자 수정 보존을 확인할 수 없어요. 기존 설치를 유지해요. 최신 설치기를 사용하세요.")
+            if (script.parent / "payload/office_customizations.py").is_file():
+                return stage_review_update(office, script.parent, paths)
+            begin_update_install(office)
             r = subprocess.run(["bash", str(script), "--apply", "--skip-login", "--no-launch",
                                 "--prefix", prefix, "--workspace", workspace],
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
             if r.returncode:
                 server_log("update.install", (r.stderr or r.stdout)[-2000:])
                 return fail(install_failure_text(r.stderr or r.stdout))
+    except UserError as error:
+        return fail(str(error))
     except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
         server_log("update.run", error)
         return fail("업데이트 파일을 받지 못했어요. 인터넷 연결을 확인해 보세요.")
@@ -4558,6 +4596,264 @@ def run_update(office):
     office.restart = [sys.executable, str(Path(prefix) / "app" / "office.py"), *sys.argv[1:]]
     time.sleep(2)   # 화면이 restarting 상태를 한 번은 받아 가게
     office.shutdown()
+
+
+# ── 업데이트 선택·사본 검증 ─────────────────────────────
+_UPDATE_REVIEW_MODULE = None
+
+
+def update_review_module():
+    global _UPDATE_REVIEW_MODULE
+    if _UPDATE_REVIEW_MODULE is None:
+        import importlib.util
+        source = HERE / "office_updates.py"
+        spec = importlib.util.spec_from_file_location("_office_updates", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _UPDATE_REVIEW_MODULE = module
+    return _UPDATE_REVIEW_MODULE
+
+
+def update_review_store():
+    return update_review_module().ReviewStore(D / "update-review")
+
+
+def update_review_view():
+    if not (HERE / "office_updates.py").is_file():
+        return None
+    try:
+        return update_review_store().view()
+    except (OSError, ValueError, update_review_module().ReviewError):
+        return {"state": "failed", "message": "점검 기록을 읽지 못했어요. 기존 설치를 유지하고 다시 점검하세요."}
+
+
+def update_review_job(review):
+    try:
+        record = state_view_cached(review["merge_session"])[0]
+        return next((job for job in record["jobs"] if job["id"] == review["merge_job"]), None)
+    except (OSError, UserError, KeyError, TypeError):
+        return None
+
+
+def update_review_login_ready():
+    """로그인이 끝나면 보류 중인 합치기 버튼을 다시 켜요."""
+    try:
+        with UPDATE_LOCK:
+            if UPDATE["state"] in {"running", "restarting", "checking_candidate"}:
+                return
+            store = update_review_store()
+            saved = store.load()
+            if saved and saved["state"] == "conflict" and saved.get("merge_available") is False:
+                store.save(saved, merge_available=True)
+    except (OSError, ValueError, update_review_module().ReviewError) as error:
+        server_log("update.review.login", error)
+
+
+def update_any_working(office):
+    return any(w.status == "working" for team in getattr(office, "teams", {}).values() for w in team["w"].values())
+
+
+def begin_update_install(office):
+    if not hasattr(office, "update_gate"):
+        office.update_gate = threading.RLock()
+    with office.update_gate:
+        if update_any_working(office):
+            raise UserError("작업이 시작돼 업데이트를 보류했어요. 작업이 끝난 뒤 다시 적용하세요.")
+        office.update_installing = True
+
+
+def update_review_fail(text, saved=None):
+    if saved is not None:
+        try:
+            update_review_store().save(saved, state="failed", message=text)
+        except (OSError, ValueError, update_review_module().ReviewError):
+            server_log("update.review.record")
+    with UPDATE_LOCK:
+        UPDATE.update(state="failed", message=text)
+
+
+def finish_review_install(office, store, saved, result, restoring=False):
+    if result.returncode:
+        return update_review_fail(install_failure_text(result.stderr or result.stdout), saved)
+    if restoring:
+        store.save(saved, state="restored", message="이전 설치로 되돌렸어요.")
+        message = "이전 설치로 되돌렸어요. 대화와 설정은 그대로예요."
+    else:
+        saved = store.installed(saved, result.stdout)
+        expected = saved.get("expected_files")
+        if expected and any(hashlib.sha256((Path(saved["prefix"]) / "app" / name).read_bytes()).hexdigest() != digest for name, digest in expected.items()):
+            return update_review_fail("설치 결과가 점검한 사본과 달라요. 이전 설치로 되돌린 뒤 다시 점검하세요.", saved)
+        message = local_changes_text(result.stdout) or "업데이트했어요. 필요하면 이전 설치로 되돌릴 수 있어요."
+    try:
+        D.mkdir(parents=True, exist_ok=True)
+        (D / "update-note.txt").write_text(message)
+    except OSError as error:
+        server_log("update.review.note", error)
+    with UPDATE_LOCK:
+        UPDATE.update(state="restarting", message=message)
+    office.restart = [sys.executable, str(Path(saved["prefix"]) / "app/office.py"), *sys.argv[1:]]
+    time.sleep(2)
+    office.shutdown()
+
+
+def run_review_install(office, token, choice=None, restoring=False):
+    store = update_review_store()
+    saved = None
+    try:
+        saved = store.load(token)
+        paths = install_paths()
+        if not saved or not paths or Path(paths[0]).resolve() != Path(saved["prefix"]):
+            raise UserError("점검한 설치 위치와 달라요. 다시 점검하세요.")
+        if update_any_working(office):
+            raise UserError("일하는 에이전트가 있어요. 작업이 끝난 뒤 적용하세요.")
+        if restoring:
+            saved, command = store.restore_command(token)
+        else:
+            saved, command = store.install_command(token, choice)
+            checks, expected = store.validate_install(saved, choice)
+            saved = store.save(saved, install_checks=checks, expected_files=expected)
+        # 마지막 순간에 시작된 작업도 설치 전에 확인해요.
+        if update_any_working(office):
+            raise UserError("새 작업이 시작돼 업데이트를 보류했어요.")
+        begin_update_install(office)
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+        finish_review_install(office, store, saved, result, restoring=restoring)
+    except (UserError, update_review_module().ReviewError) as error:
+        update_review_fail(str(error), saved)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("update.review.install", error)
+        update_review_fail("업데이트를 마치지 못했어요. 설치 결과를 다시 점검하세요.", saved)
+    finally:
+        office.update_installing = False
+
+
+def stage_review_update(office, package, paths):
+    saved = None
+    try:
+        store = update_review_store()
+        saved = store.create(package, *paths)
+        if saved["state"] == "ready":
+            return run_review_install(office, saved["id"])
+        # 인증 확인은 다운로드를 처리하던 스레드에서만 해요. 화면 조회를 지연시키지 않아요.
+        merge_available = any(login_ok(name) for name in AGENTS) if saved["state"] == "conflict" else False
+        saved = store.save(saved, merge_available=merge_available)
+        with UPDATE_LOCK:
+            UPDATE.update(state=saved["state"], message="직접 고친 부분과 새 버전이 겹쳐요. 처리 방법을 선택하세요."
+                          if saved["state"] == "conflict" else "자동으로 적용하기 어려운 변경이 있어요. 기존 설치를 유지해요.")
+    except (UserError, update_review_module().ReviewError) as error:
+        update_review_fail(str(error), saved)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("update.review.prepare", error)
+        update_review_fail("업데이트 점검을 마치지 못했어요. 기존 설치는 그대로예요.", saved)
+
+
+def run_update_merge(office, token, sid):
+    store = update_review_store()
+    saved = None
+    try:
+        available = [name for name in AGENTS if login_ok(name)]
+        if not available:
+            saved = store.load(token)
+            if saved:
+                store.save(saved, merge_available=False)
+            raise UserError("합치려면 에이전트에 먼저 로그인하세요.")
+        saved = store.load(token)
+        retry = bool(saved and saved.get("merge_job"))
+        if retry:
+            previous = update_review_job(saved)
+            if not previous or previous["status"] != "done":
+                raise UserError("이전 합치기 작업이 아직 끝나지 않았어요.")
+        saved = store.prepare_merge(token, retry=retry)
+        office.ensure_team(sid)
+        usable = [name for name in available if not office.teams[sid]["w"][name].paused]
+        if not usable:
+            raise UserError("에이전트가 멈춰 있어요. 재개한 뒤 합치기를 시작하세요.")
+        text = store.merge_prompt(saved)
+        touch(sid, "업데이트 사본 합치기", request=True)
+        with state(True, sid=sid) as record:
+            jid = len(record["jobs"]) + 1
+            record["jobs"].append(state_transition({"id": jid, "text": text, "lead": usable[0],
+                "summary": "", "started_at": time.time(), "verification": "thorough", "update_review": token}, "planning"))
+            post(record, "user", "all", text, "request", job=jid)
+            event(record, f"요청 {jid} 접수 · 업데이트 사본 합치기", job=jid)
+        store.attach_job(saved, sid, jid)
+        with UPDATE_LOCK:
+            UPDATE.update(state="merging", message="에이전트가 사본에서 합쳐요. 기존 설치는 그대로예요.")
+    except (UserError, update_review_module().ReviewError) as error:
+        update_review_fail(str(error), saved)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("update.review.merge", error)
+        update_review_fail("합치기를 시작하지 못했어요. 기존 설치는 그대로예요.", saved)
+
+
+def run_update_verify(office, token):
+    saved = None
+    try:
+        store = update_review_store()
+        saved = store.load(token)
+        if not saved or not saved.get("merge_job"):
+            raise UserError("먼저 사본 합치기를 시작하세요.")
+        with state(sid=saved["merge_session"]) as record:
+            job = next((job for job in record["jobs"] if job["id"] == saved["merge_job"]), None)
+            if not job or job["status"] != "done" or job.get("cancelled"):
+                raise UserError("에이전트의 합치기 작업이 아직 끝나지 않았어요.")
+        if update_any_working(office):
+            raise UserError("에이전트가 작업 중이에요. 끝난 뒤 결과를 확인하세요.")
+        store.verify_candidate(token)
+        with UPDATE_LOCK:
+            UPDATE.update(state="ready", message="합친 사본의 기본 실행 검사를 통과했어요. 에이전트 보고를 확인하고 적용하세요.")
+    except (UserError, update_review_module().ReviewError) as error:
+        update_review_fail(str(error), saved)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("update.review.verify", error)
+        update_review_fail("합친 사본을 확인하지 못했어요. 기존 설치는 그대로예요.", saved)
+
+
+def handle_update_review(office, payload, sid=None):
+    store = update_review_store()
+    try:
+        token = payload.get("review_id")
+        saved = store.load(token)
+        if not isinstance(token, str) or not saved:
+            raise UserError("업데이트 선택이 오래됐어요. 다시 점검하세요.")
+        action = payload["action"]
+        with UPDATE_LOCK:
+            if UPDATE["state"] in {"running", "restarting", "checking_candidate"}:
+                raise UserError("이미 업데이트를 처리하고 있어요.")
+            if action == "update_resolve" and payload.get("choice") == "keep":
+                store.defer(token)
+                UPDATE.update(state="deferred", message="업데이트를 보류했어요. 내 수정과 현재 버전은 그대로예요.")
+                return {"ok": "내 수정을 유지하고 업데이트를 보류했어요."}
+            if action == "update_resolve":
+                choice = payload.get("choice")
+                if choice not in {"upstream", "merged"}:
+                    raise UserError("업데이트 처리 방법을 다시 선택하세요.")
+                if choice == "upstream" and payload.get("confirmed") is not True:
+                    raise UserError("겹치는 내 수정이 새 버전으로 바뀌는지 확인한 뒤 선택하세요.")
+                if update_any_working(office):
+                    raise UserError("일하는 에이전트가 있어요. 작업이 끝난 뒤 적용하세요.")
+                target, args = run_review_install, (office, token, choice)
+            elif action == "update_merge":
+                if saved.get("merge_job"):
+                    previous = update_review_job(saved)
+                    if not previous or previous["status"] != "done":
+                        raise UserError("이전 합치기 작업이 아직 끝나지 않았어요.")
+                target, args = run_update_merge, (office, token, sid)
+            elif action == "update_verify":
+                target, args = run_update_verify, (office, token)
+            elif action == "update_restore":
+                if payload.get("confirmed") is not True:
+                    raise UserError("이전 설치로 되돌릴지 확인하세요.")
+                if update_any_working(office):
+                    raise UserError("작업이 끝난 뒤 이전 설치로 되돌리세요.")
+                target, args = run_review_install, (office, token, None, True)
+            else:
+                raise UserError("알 수 없는 업데이트 선택이에요.")
+            UPDATE.update(state="checking_candidate" if action == "update_verify" else "running", message="선택한 작업을 처리하고 있어요.")
+        threading.Thread(target=target, args=args, daemon=True).start()
+        return {"ok": "선택을 받았어요."}
+    except update_review_module().ReviewError as error:
+        raise UserError(str(error)) from None
 
 
 # ── git worktree: 대화마다 작업 폴더·브랜치 분리 ─────────────
@@ -5173,6 +5469,8 @@ class Office:
         self.server_instance = uuid.uuid4().hex   # 같은 포트로 빠르게 다시 떠도 이전 창을 구별해요.
         self.teams = {}            # 대화 id → {"stop": Event, "w": {이름: Worker}}
         self.lock = threading.Lock()
+        self.update_gate = threading.RLock()
+        self.update_installing = False
         self.gitcache = {}
         self.rev_lock = threading.Lock()
         self.rev_counter = time.time_ns() // 1000
@@ -5475,6 +5773,8 @@ class Office:
 
     def login_post(self, sid, title, body):
         """로그인 안내는 에이전트가 멈춘 대화와, 사용자가 지금 보는 대화에 함께 띄워요. 다른 대화에는 링크가 없어서 찾느라 늦어지지 않게요"""
+        if title.endswith("로그인 완료"):
+            update_review_login_ready()
         targets = [sid]
         try:
             view = current_sid()
@@ -5991,10 +6291,12 @@ class Office:
         if not isinstance(p, dict) or not isinstance(p.get("action"), str):
             raise UserError("요청 형식 확인 — 요청 형식이 올바르지 않습니다.")
         act, msg = p["action"], None
+        if getattr(self, "update_installing", False) and act in {"job", "msg", "new_session", "merge"}:
+            raise UserError("업데이트를 적용하고 있어요. 다시 열린 뒤 작업을 보내세요.")
         if IS_MAC and act in MAC_BLOCKED_ACTIONS:
             raise UserError("맥에서는 쓸 수 없는 기능이에요.")
         known = {"hello", "new_session", "switch", "rename", "pin", "delete", "restore", "purge", "empty_trash",
-                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "open_path", "open_window", "resource_limits", "storage_compact", "storage_remeasure", "storage_refresh", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
+                 "merge", "job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "quit", "update", "update_check", "update_resolve", "update_merge", "update_verify", "update_restore", "open_path", "open_window", "resource_limits", "storage_compact", "storage_remeasure", "storage_refresh", "storage_compact_cancel", "chat_options", "ui_settings", "storage_notice_preferences", "storage_result_close"}
         if act == "storage_compact":
             return start_storage_compact(p.get("confirmed"), p.get("manual"))
         if act in ("storage_remeasure", "storage_refresh"):
@@ -6020,7 +6322,7 @@ class Office:
         if act in ("cancel_job", "remove_job") and (type(p.get("id")) is not int or p["id"] < 1):
             raise UserError("요청 선택 확인 — 올바른 요청을 선택하세요.")
         sid = None
-        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "merge", "open_path", "chat_options"):
+        if act in ("job", "msg", "pause", "pause_now", "cancel_job", "remove_job", "merge", "open_path", "chat_options", "update_merge"):
             sid = (p.get("id") or p.get("session") or current_sid()) if act == "merge" else (p.get("session") or current_sid())
             if not valid_sid(sid):
                 raise UserError("대화 선택 확인 — 올바른 대화를 다시 선택하세요.")
@@ -6038,6 +6340,8 @@ class Office:
                 raise UserError("리더 선택 확인 — 리더는 Claude 또는 Codex를 선택하세요.")
             if act == "msg" and p.get("to", "all") not in (*AGENTS, "all"):
                 raise UserError("받는 에이전트 확인 — 메시지를 받을 에이전트를 다시 선택하세요.")
+        if act in {"update_resolve", "update_merge", "update_verify", "update_restore"}:
+            return handle_update_review(self, p, sid)
         if act == "ui_settings":                # 화면 설정(색 모드)은 서버 쪽 파일에 저장해 서버를 다시 켜 포트가 바뀌어도 유지
             theme = p.get("theme")
             if theme not in ("auto", "light", "dark"):
@@ -6282,6 +6586,9 @@ class Office:
             if not blocked:
                 UPDATE_WAKE.set()
         elif act == "update":
+            review = update_review_view()
+            if review and review.get("state") in {"merging", "checking", "applying"}:
+                raise UserError("업데이트 사본을 처리 중이에요. 결과를 먼저 확인하세요.")
             if not update_info()["available"]:
                 raise UserError("이미 최신 버전이에요.")
             if any(w.status == "working" for t in self.teams.values() for w in t["w"].values()):

@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 ROOT = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else Path(__file__).resolve().parents[1]
-FILES = ('office.py','office.html','office.ico','office-icon.png','VERSION')
+FILES = ('office.py','office.html','office.ico','office-icon.png','VERSION','office_customizations.py')
 
 
 class InstallCustomizations(unittest.TestCase):
@@ -30,6 +30,7 @@ class InstallCustomizations(unittest.TestCase):
         data = {'office.py':b'print("base")\n# one\n# two\n# three\n# four\n# five\n# six\n# seven\n# eight\n# nine\n# ten\n', 'office.html':b'<p>base</p>\n', 'office.ico':b'\x00base-icon', 'office-icon.png':b'\x00base-png', 'VERSION':b'1.0.0\n'}
         for name, content in data.items():
             (payload/name).write_bytes(content)
+        shutil.copyfile(ROOT/'payload/office_customizations.py', payload/'office_customizations.py')
         commands = self.folder/'commands'
         commands.mkdir()
         for name in ('codex','claude'):
@@ -101,6 +102,153 @@ class InstallCustomizations(unittest.TestCase):
         self.assertNotIn('# custom one',original.read_text())
         self.assertIn('# upstream ten',original.read_text())
 
+    def test_old_five_file_install_gets_new_module_without_block(self):
+        self.first()
+        m=self.app/'.office-manifest.json'
+        manifest=json.loads(m.read_text());del manifest['files']['office_customizations.py']
+        m.write_text(json.dumps(manifest))
+        (self.app/'office_customizations.py').unlink()
+        (self.app/'.office-orig/office_customizations.py').unlink()
+        (self.app/'office.html').write_text('<p>custom</p>\n')
+        self.bump()
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue((self.app/'office_customizations.py').is_file())
+        self.assertEqual((self.app/'office.html').read_text(),'<p>custom</p>\n')
+        self.assertIn('office_customizations.py',json.loads(m.read_text())['files'])
+
+    def test_bad_checksum_list_name_stops_install(self):
+        self.first()
+        before=self.snapshot()
+        payload=self.pkg/'payload'
+        with (payload/'SHA256SUMS').open('a') as f: f.write('0'*64+'  ../escape\n')
+        result=subprocess.run(['bash',str(self.pkg/'install.sh'),'--apply','--skip-login','--no-launch','--no-shortcut'],env=self.env,capture_output=True,text=True,timeout=20)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(before,self.snapshot())
+
+    def plan_json(self, *extra):
+        out=self.folder/'plan.json'
+        r=subprocess.run([sys.executable,'-I',str(self.pkg/'payload/office_customizations.py'),'--plan','--prefix',str(self.prefix),'--incoming',str(self.pkg/'payload'),'--output',str(out),*extra],capture_output=True,text=True)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        return out,json.loads(out.read_text())
+
+    def install_with(self,*extra):
+        return subprocess.run(['bash',str(self.pkg/'install.sh'),'--apply','--skip-login','--no-launch','--no-shortcut',*extra],env=self.env,capture_output=True,text=True,timeout=30)
+
+    def test_review_plan_with_stale_state_is_refused_without_change(self):
+        self.first()
+        self.bump()
+        (self.pkg/'payload/SHA256SUMS').write_text(''.join(hashlib.sha256((self.pkg/'payload'/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+        plan_file,_=self.plan_json()
+        (self.app/'office.html').write_text('<p>edited after plan</p>\n')
+        before=self.snapshot()
+        result=self.install_with('--review-plan',str(plan_file))
+        self.assertEqual(result.returncode,4,result.stdout+result.stderr)
+        self.assertEqual(before,self.snapshot())
+
+    def test_resolution_without_plan_is_refused(self):
+        self.first()
+        before=self.snapshot()
+        decision=self.folder/'d.json'; decision.write_text('{}')
+        result=self.install_with('--resolution',str(decision))
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(before,self.snapshot())
+
+    def conflict_state(self):
+        self.first()
+        p=self.app/'office.py'
+        p.write_text(p.read_text().replace('# ten','# custom ten'))
+        self.bump()
+        (self.pkg/'payload/SHA256SUMS').write_text(''.join(hashlib.sha256((self.pkg/'payload'/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+
+    def test_upstream_choice_applies_new_version_and_keeps_backup(self):
+        self.conflict_state()
+        plan_file,plan=self.plan_json()
+        self.assertTrue(plan['resolvable'])
+        decision=self.folder/'d.json'
+        decision.write_text(json.dumps({'schema':1,'plan_id':plan['id'],'choice':'upstream'}))
+        result=self.install_with('--review-plan',str(plan_file),'--resolution',str(decision))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('# upstream ten',(self.app/'office.py').read_text())
+        self.assertNotIn('custom ten',(self.app/'office.py').read_text())
+        self.assertEqual((self.app/'VERSION').read_text(),'1.0.1\n')
+        self.assertTrue(any('custom ten' in (b/'office.py').read_text() for b in (self.prefix/'backups').iterdir()))
+        # 다음 업데이트의 기준은 새 버전 원본이에요
+        self.assertIn('# upstream ten',(self.app/'.office-orig/office.py').read_text())
+
+    def test_merged_choice_applies_checked_candidate(self):
+        self.conflict_state()
+        cand=self.folder/'cand'
+        plan_file,plan=self.plan_json('--candidate-dir',str(cand))
+        (cand/'files/office.py').write_text((cand/'files/office.py').read_text().replace('<<<<<<<','#').replace('>>>>>>>','#').replace('=======','#'))
+        text=(cand/'files/office.py').read_text()
+        decision=self.folder/'d.json'
+        decision.write_text(json.dumps({'schema':1,'plan_id':plan['id'],'choice':'merged','candidate_dir':str(cand),'candidate_sha':{'office.py':hashlib.sha256(text.encode()).hexdigest()}}))
+        # 충돌 표시 줄을 주석으로 바꿨으니 표시는 남지 않아요
+        result=self.install_with('--review-plan',str(plan_file),'--resolution',str(decision))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((self.app/'office.py').read_text(),text)
+
+    def test_failure_while_replacing_files_restores_previous_install(self):
+        self.first()
+        self.bump()
+        (self.pkg/'payload/SHA256SUMS').write_text(''.join(hashlib.sha256((self.pkg/'payload'/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+        before={k:v for k,v in self.snapshot().items() if '/backups/' not in k and not k.endswith('/backups')}
+        # 세 번째 mv에서 실패하는 가짜 mv
+        commands=self.folder/'commands'
+        counter=self.folder/'mvcount'
+        (commands/'mv').write_text('#!/bin/sh\nn=$(cat %s 2>/dev/null || echo 0); n=$((n+1)); echo $n > %s\ncase "$*" in *app/*) if [ "$n" -ge 3 ]; then exit 1; fi;; esac\nexec /bin/mv "$@"\n'%(counter,counter))
+        (commands/'mv').chmod(0o700)
+        result=self.install_with()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('되돌려요',result.stderr)
+        (commands/'mv').unlink()
+        after={k:v for k,v in self.snapshot().items() if '/backups/' not in k and not k.endswith('/backups')}
+        self.assertEqual(before,after)
+
+    def test_restore_after_custom_preserving_update_is_allowed(self):
+        self.first()
+        p=self.app/'office.py'
+        p.write_text(p.read_text().replace('# one','# custom one'))
+        self.bump()
+        (self.pkg/'payload/SHA256SUMS').write_text(''.join(hashlib.sha256((self.pkg/'payload'/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+        result=self.install_with()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('# custom one',p.read_text()); self.assertIn('# upstream ten',p.read_text())
+        backup=[b for b in (self.prefix/'backups').iterdir() if b.name.startswith('1.0.0-')][0]
+        result=self.install_with('--restore-backup',str(backup))   # 합쳐 보존된 내 수정은 '수정됨'으로 보지 않아야 해요
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('# custom one',p.read_text()); self.assertNotIn('# upstream ten',p.read_text())
+        # 되돌린 뒤 다시 업데이트해도 내 수정은 남아요
+        result=self.install_with()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('# custom one',p.read_text()); self.assertIn('# upstream ten',p.read_text())
+
+    def test_real_update_module_runs_candidate_smoke_before_replacing_files(self):
+        self.first()
+        self.bump()
+        shutil.copyfile(ROOT/'payload/office_updates.py', self.pkg/'payload/office_updates.py')
+        payload=self.pkg/'payload'
+        (payload/'SHA256SUMS').write_text(''.join(hashlib.sha256((payload/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in (*FILES,'office_updates.py')))
+        before=self.snapshot()
+        result=self.install_with()          # 토이 office.py 는 앱이 아니라서 실행 검사에서 막혀야 해요
+        self.assertEqual(result.returncode,3,result.stdout+result.stderr)
+        self.assertIn('실행 검사',result.stderr)
+        self.assertEqual({k:v for k,v in before.items() if '/backups' not in k},{k:v for k,v in self.snapshot().items() if '/backups' not in k})
+
+    def test_restore_backup_option_returns_previous_version(self):
+        self.first()
+        self.bump()
+        (self.pkg/'payload/SHA256SUMS').write_text(''.join(hashlib.sha256((self.pkg/'payload'/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+        result=self.install_with()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        backup=[b for b in (self.prefix/'backups').iterdir() if b.name.startswith('1.0.0-')][0]
+        self.assertEqual((self.app/'VERSION').read_text(),'1.0.1\n')
+        result=self.install_with('--restore-backup',str(backup))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((self.app/'VERSION').read_text(),'1.0.0\n')
+        self.assertNotIn('# upstream ten',(self.app/'office.py').read_text())
+
     def test_conflicting_text_preserves_entire_install(self):
         self.first()
         p=self.app/'office.py'
@@ -108,11 +256,21 @@ class InstallCustomizations(unittest.TestCase):
         self.bump()
         self.blocked_unchanged()
 
-    def test_binary_edit_preserves_entire_install(self):
+    def test_binary_edit_with_new_binary_preserves_entire_install(self):
         self.first()
         (self.app/'office.ico').write_bytes(b'\x00custom-icon')
         self.bump()
+        (self.pkg/'payload/office.ico').write_bytes(b'\x00upstream-icon')
         self.blocked_unchanged()
+
+    def test_binary_edit_without_new_binary_is_kept(self):
+        self.first()
+        (self.app/'office.ico').write_bytes(b'\x00custom-icon')
+        self.bump()
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((self.app/'office.ico').read_bytes(),b'\x00custom-icon')
+        self.assertIn('# upstream ten',(self.app/'office.py').read_text())
 
     def test_deleted_file_stays_deleted(self):
         self.first()
