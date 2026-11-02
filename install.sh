@@ -198,7 +198,7 @@ except (OSError, ValueError, TypeError):
 changed = []
 for name in names:
     current = app / name
-    if old and name in old['files'] and not current.exists() and not current.is_symlink():
+    if old and not current.exists() and not current.is_symlink():   # 기록에 없는 파일이 지워져 있어도 직접 지운 것으로 본다
         changed.append(name)
     elif current.exists() or current.is_symlink():
         # An older install has no trustworthy baseline: preserve every differing file.
@@ -213,8 +213,7 @@ def launcher_ok(path, recorded, markers):
     if not (path.exists() or path.is_symlink()): return True
     if path.is_symlink() or not path.is_file(): return False
     if recorded: return digest(path) == recorded
-    text = path.read_text(errors='replace')
-    return all(m in text for m in markers)
+    return True   # 기준이 없으면 막지 않는다. 대신 아래 셸에서 그 파일을 건드리지 않는다.
 recorded_launchers = (old or {}).get('launchers') or {}
 if not launcher_ok(root / 'bin' / 'office', recorded_launchers.get('office'), ('install_root=', '/app/office.py')):
     blocked.append('실행 파일 bin/office를 직접 고친 것 같아요')
@@ -305,6 +304,10 @@ DISABLE_AUTOUPDATER=1 claude --version
 
 # ~/.local/bin/office 를 직접 고쳤는지 알아보려고 지난 설치 때 기록한 지문을 미리 읽어 둔다.
 file_sha() { "$python_bin" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1" 2>/dev/null || true; }
+old_manifest_launcher() { "$python_bin" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("launchers") or {}).get(sys.argv[2],""))' "$prefix/app/.office-manifest.json" "$1" 2>/dev/null || true; }
+old_office=$(old_manifest_launcher office); old_console=$(old_manifest_launcher console)
+prev_ico_sha=$([[ -f $prefix/app/office.ico && ! -L $prefix/app/office.ico ]] && file_sha "$prefix/app/office.ico" || true)
+kept=
 old_global=$("$python_bin" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("launchers") or {}).get("global",""))' "$prefix/app/.office-manifest.json" 2>/dev/null || true)
 mkdir -p -- "$prefix/app" "$prefix/bin" "$workspace"
 for name in "${files[@]}"; do mv -f -- "$staging/$name" "$prefix/app/$name"; done
@@ -340,7 +343,14 @@ mv -f -- "$staging/.office-manifest.json" "$prefix/app/.office-manifest.json"
 } > "$staging/office-launcher"
 chmod 700 "$staging/office-launcher"
 cp -- "$staging/office-launcher" "$staging/office-global"
-mv -f -- "$staging/office-launcher" "$prefix/bin/office"
+if [[ ! -e $prefix/bin/office && ! -L $prefix/bin/office ]] \
+   || cmp -s -- "$staging/office-launcher" "$prefix/bin/office" \
+   || { [[ -n $old_office && -f $prefix/bin/office && ! -L $prefix/bin/office && $(file_sha "$prefix/bin/office") == "$old_office" ]]; }; then
+  mv -f -- "$staging/office-launcher" "$prefix/bin/office"
+else
+  kept="$kept office"
+  printf '주의: %s/bin/office는 수정 여부를 확인할 수 없어 그대로 둬요.\n' "$prefix"
+fi
 printf 'Office 설치 완료: %s/bin/office\n' "$prefix"
 # ~/.local/bin/office: 없으면 만들고, 예전에 이 설치기가 만든 실행 파일이면 새 설치로 바꾼다.
 # 사용자가 직접 만든 파일·링크는 바꾸지 않고 경고만 한다.
@@ -353,7 +363,7 @@ if [[ ! -e $global && ! -L $global ]]; then
 elif [[ -L $global && $(readlink -f -- "$global") == $(readlink -f -- "$prefix/bin/office") ]]; then
   :   # 이 설치의 실행 파일을 가리키는 링크면 그대로 둔다
 elif [[ -f $global && ! -L $global ]] && grep -q '^install_root=' "$global" && grep -q '/app/office.py' "$global" \
-     && [[ -z $old_global || $(file_sha "$global") == "$old_global" ]]; then
+     && { cmp -s -- "$staging/office-global" "$global" || [[ -n $old_global && $(file_sha "$global") == "$old_global" ]]; }; then
   if ! cmp -s -- "$staging/office-global" "$global"; then
     chmod 755 "$staging/office-global"
     mv -f -- "$staging/office-global" "$global"
@@ -393,20 +403,29 @@ if [[ $platform == Linux ]]; then
     printf '%q\n' "$prefix/bin/office"
   } > "$staging/office-console.bashrc"
   chmod 600 "$staging/office-console.bashrc"
-  mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
+  if [[ ! -e $prefix/bin/office-console.bashrc && ! -L $prefix/bin/office-console.bashrc ]] \
+     || cmp -s -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc" \
+     || { [[ -n $old_console && -f $prefix/bin/office-console.bashrc && ! -L $prefix/bin/office-console.bashrc && $(file_sha "$prefix/bin/office-console.bashrc") == "$old_console" ]]; }; then
+    mv -f -- "$staging/office-console.bashrc" "$prefix/bin/office-console.bashrc"
+  else
+    kept="$kept console"
+    printf '주의: %s/bin/office-console.bashrc는 수정 여부를 확인할 수 없어 그대로 둬요.\n' "$prefix"
+  fi
 fi
 
 # 실행 파일 지문을 기록해 다음 설치 때 직접 고친 파일을 알아본다.
-"$python_bin" - "$prefix" "$global" <<'PYREC'
+"$python_bin" - "$prefix" "$global" "$kept" <<'PYREC'
 import hashlib, json, sys
 from pathlib import Path
 root, glob = Path(sys.argv[1]), Path(sys.argv[2])
+kept = sys.argv[3].split()
 mf = root / 'app' / '.office-manifest.json'
 def dg(p):
     return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() and not p.is_symlink() else None
 data = json.loads(mf.read_text())
-rec = {'office': dg(root / 'bin' / 'office'), 'console': dg(root / 'bin' / 'office-console.bashrc')}
-if glob.is_file() and not glob.is_symlink() and dg(glob) == rec['office']: rec['global'] = rec['office']
+rec = {'office': None if 'office' in kept else dg(root / 'bin' / 'office'),
+       'console': None if 'console' in kept else dg(root / 'bin' / 'office-console.bashrc')}
+if rec['office'] and glob.is_file() and not glob.is_symlink() and dg(glob) == rec['office']: rec['global'] = rec['office']
 data['launchers'] = {k: v for k, v in rec.items() if v}
 mf.write_text(json.dumps(data, ensure_ascii=False) + '\n')
 PYREC
@@ -417,12 +436,18 @@ PYREC
 if (( shortcut )) && [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} ]] && command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
   if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
     cat > "$staging/office-shortcut.ps1" <<'PS1'
-param([string]$Distro, [string]$ShellInit, [string]$Icon)
+param([string]$Distro, [string]$ShellInit, [string]$Icon, [string]$PrevSha)
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'Office'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $ico = Join-Path $dir 'office.ico'
-Copy-Item -LiteralPath $Icon -Destination $ico -Force
+# 직접 바꾼 아이콘은 덮지 않는다. 없거나, 지난 설치가 둔 그대로일 때만 바꾼다.
+$newSha = (Get-FileHash -LiteralPath $Icon -Algorithm SHA256).Hash.ToLower()
+if (-not (Test-Path -LiteralPath $ico)) { Copy-Item -LiteralPath $Icon -Destination $ico }
+else {
+  $curSha = (Get-FileHash -LiteralPath $ico -Algorithm SHA256).Hash.ToLower()
+  if ($curSha -ne $newSha -and $PrevSha -and $curSha -eq $PrevSha.ToLower()) { Copy-Item -LiteralPath $Icon -Destination $ico -Force }
+}
 $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $shell = New-Object -ComObject WScript.Shell
 $made = @()
@@ -430,8 +455,10 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
   if (-not $folder) { continue }
   $path = Join-Path $folder 'Office.lnk'
   if (Test-Path -LiteralPath $path) {
+    # 이미 있는 바로가기는 이 설치기가 만든 그대로일 때만 다시 쓴다. 직접 고친 것은 그대로 둔다.
     $old = $shell.CreateShortcut($path)
     if ($old.TargetPath -notlike '*\wsl.exe') { continue }
+    if ($old.Arguments -ne "-d $Distro --cd ~ -e bash --rcfile $ShellInit -i" -or $old.IconLocation -notlike "$ico*") { continue }
   }
   $lnk = $shell.CreateShortcut($path)
   $lnk.TargetPath = $wsl
@@ -446,7 +473,7 @@ try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 $made -join "`n"
 PS1
     if made=$(timeout 30 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$staging/office-shortcut.ps1")" \
-        "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$prefix/app/office.ico")" 2>/dev/null | tr -d '\r') && [[ -n $made ]]; then
+        "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$prefix/app/office.ico")" "$prev_ico_sha" 2>/dev/null | tr -d '\r') && [[ -n $made ]]; then
       printf '바로가기를 만들었어요. 바탕화면이나 시작 메뉴의 Office를 누르면 앱 창으로 열려요.\n'
     else
       printf '윈도우 바로가기는 만들지 못했어요. office 명령으로 실행하세요.\n'
