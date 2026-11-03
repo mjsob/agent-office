@@ -5,7 +5,8 @@
 # 실패해도 설치는 계속돼요. 도우미가 없으면 PowerShell 경로를 써요.
 set -uo pipefail
 app=${1:-}
-result() { printf '{"ok":%s,"status":"%s","reason":"%s"}\n' "$1" "$2" "$(printf '%s' "$3" | tr -d '\r"\\' | tr '\n' ' ' | head -c 200)"; [[ $1 == true ]]; exit; }
+exe_path=
+result() { printf '{"ok":%s,"status":"%s","reason":"%s","path":"%s"}\n' "$1" "$2" "$(printf '%s' "$3" | tr -d '\r"\\' | tr '\n' ' ' | head -c 200)" "$([[ $1 == true ]] && printf '%s' "$exe_path")"; [[ $1 == true ]]; exit; }
 [[ -n $app && -f $app/office_win.cs ]] || result false failed "도우미 소스를 찾지 못했어요"
 app=$(cd -- "$app" && pwd -P)
 [[ -n ${WSL_DISTRO_NAME:-} ]] && command -v wslpath >/dev/null && command -v cmd.exe >/dev/null || result false unsupported "WSL이 아니에요"
@@ -23,7 +24,7 @@ fi
 [[ -n $csc && -f $csc ]] || result false failed "Windows 내장 컴파일러(csc.exe)를 찾지 못했어요"
 src_sha=$(sha256sum "$app/office_win.cs" | cut -d' ' -f1)
 mkdir -p "$target" 2>/dev/null || result false failed "도우미 폴더를 만들지 못했어요"
-exe=$target/office-win.exe; meta=$target/office-win.json
+exe=$target/office-win.exe; exe_path=$exe; meta=$target/office-win.json
 probe_ok() { [[ -f $1 ]] && timeout 15 "$1" probe </dev/null 2>/dev/null | tr -d '\r' | grep -q '"ok":true'; }
 if [[ -f $meta ]] && grep -q "\"source_sha256\":\"$src_sha\"" "$meta" && probe_ok "$exe"; then result true current "이미 최신이에요"; fi
 new=$target/office-win.new.exe

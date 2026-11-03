@@ -563,8 +563,13 @@ try: d=json.loads(sys.stdin.read())
 except ValueError: d={}
 print("1" if d.get("ok") is True else "0"); print(d.get("reason") or "빌드 결과를 읽지 못했어요")' 2>/dev/null || printf '0\n빌드 결과를 읽지 못했어요\n')
   if [[ $(printf '%s\n' "$win_helper_ok" | head -n 1) == 1 ]]; then
+    # 앱이 매번 cmd.exe로 위치를 묻지 않게 도우미 경로를 기록해요.
+    printf '%s' "$win_helper" | "$python_bin" -c 'import json,sys,os
+d=json.loads(sys.stdin.read()); p=sys.argv[1]
+tmp=p+".tmp"; open(tmp,"w").write(json.dumps({"path":d["path"],"api":1})+"\n"); os.replace(tmp,p)' "$prefix/windows-helper.json" 2>/dev/null || true
     printf 'Windows 도우미를 준비했어요. PowerShell이 막힌 PC에서도 아이콘 보정과 디스크 줄이기를 쓸 수 있어요.\n'
   else
+    rm -f -- "$prefix/windows-helper.json"
     printf 'Windows 도우미를 만들지 못했어요: %s\n' "$(printf '%s\n' "$win_helper_ok" | tail -n 1)"
     printf '  PowerShell이 되는 PC에서는 지금처럼 쓸 수 있어요. 막힌 PC에서는 아이콘 보정·디스크 줄이기가 꺼져요.\n'
   fi
