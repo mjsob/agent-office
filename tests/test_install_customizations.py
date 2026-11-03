@@ -5,6 +5,7 @@ CLI는 가짜 명령을 써요. 로그인·서버·네트워크·실제 설치 �
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -494,6 +495,122 @@ class WindowsShortcuts(unittest.TestCase):
         self.assertEqual(self.icon.read_bytes(),b'user-custom-icon')
         self.assertEqual(desktop.read_bytes(),before)
         self.assertTrue((self.folder/'Programs/Office.lnk').is_file())
+
+
+class WindowsShortcutFallback(unittest.TestCase):
+    """PowerShell이 막힌 PC: 가짜 powershell.exe/cscript.exe/wslpath 로 설치기가 고르는 길과 안내를 확인해요."""
+
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory(prefix='office-req158-ps-')
+        self.addCleanup(temporary.cleanup)
+        self.folder=Path(temporary.name)
+        self.home=self.folder/'home';self.home.mkdir()
+        self.win={name:self.folder/name for name in ('LocalAppData','Desktop','Programs')}
+        for path in self.win.values(): path.mkdir()
+        self.log=self.folder/'cscript.log'
+        pkg=self.folder/'package';payload=pkg/'payload';payload.mkdir(parents=True)
+        shutil.copyfile(ROOT/'install.sh',pkg/'install.sh')
+        shutil.copyfile(ROOT/'payload/office_customizations.py',payload/'office_customizations.py')
+        data={'office.py':b'print("base")\n','office.html':b'<p>base</p>\n','office.ico':b'\x00new-icon','office-icon.png':b'\x00png','VERSION':b'1.0.0\n'}
+        for name,content in data.items(): (payload/name).write_bytes(content)
+        (payload/'SHA256SUMS').write_text(''.join(hashlib.sha256((payload/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in FILES))
+        self.pkg=pkg
+        self.commands=self.folder/'commands';self.commands.mkdir()
+        for name in ('codex','claude'):
+            self.stub(name,'printf "test-cli\\n"')
+        self.stub('wslpath','printf "%s\\n" "$2"')
+        self.env={k:v for k,v in os.environ.items() if not k.startswith('OFFICE_')}
+        self.env.update(HOME=str(self.home),PATH=str(self.commands)+':'+os.environ['PATH'],WSL_DISTRO_NAME='OfficeTest',STUB_LOG=str(self.log),
+                        STUB_LOCAL=str(self.win['LocalAppData']),STUB_DESKTOP=str(self.win['Desktop']),STUB_PROGRAMS=str(self.win['Programs']))
+
+    def stub(self,name,body):
+        path=self.commands/name;path.write_text('#!/bin/sh\n'+body+'\n');path.chmod(0o700)
+
+    def powershell_blocked(self):
+        self.stub('powershell.exe','echo "액세스가 거부되었습니다" >&2; exit 1')
+
+    def cscript_works(self):
+        self.stub('cscript.exe','shift; shift\n'
+                  'if [ "$1" = query ]; then printf "%s\\n" "$STUB_LOCAL" "$STUB_DESKTOP" "$STUB_PROGRAMS"; exit 0; fi\n'
+                  'echo "$@" > "$STUB_LOG"\nshift 4\n'
+                  'for dir in "$@"; do\n'
+                  '  if [ -e "$dir/Office.lnk" ]; then echo "kept:$dir/Office.lnk"; else printf lnk > "$dir/Office.lnk"; echo "made:$dir/Office.lnk"; fi\n'
+                  'done')
+
+    def install(self):
+        return subprocess.run(['bash',str(self.pkg/'install.sh'),'--apply','--skip-login','--no-launch'],env=self.env,capture_output=True,text=True,timeout=60)
+
+    def test_powershell_blocked_uses_cscript_and_says_so(self):
+        self.powershell_blocked();self.cscript_works()
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('PowerShell을 쓸 수 없어',result.stdout)
+        self.assertIn('액세스가 거부되었습니다',result.stdout)
+        self.assertIn('작업 표시줄 아이콘 보정은 PowerShell이',result.stdout)
+        for folder in ('Desktop','Programs'): self.assertTrue((self.win[folder]/'Office.lnk').is_file())
+        self.assertEqual((self.win['LocalAppData']/'Office/office.ico').read_bytes(),b'\x00new-icon')
+        arguments=self.log.read_text()
+        self.assertIn('OfficeTest',arguments);self.assertIn('office-console.bashrc',arguments)
+
+    def test_existing_shortcuts_and_custom_icon_are_kept(self):
+        self.powershell_blocked();self.cscript_works()
+        for folder in ('Desktop','Programs'): (self.win[folder]/'Office.lnk').write_text('mine')
+        (self.win['LocalAppData']/'Office').mkdir();(self.win['LocalAppData']/'Office/office.ico').write_bytes(b'user-custom-icon')
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('이미 있어서 그대로 뒀어요',result.stdout)
+        for folder in ('Desktop','Programs'): self.assertEqual((self.win[folder]/'Office.lnk').read_text(),'mine')
+        self.assertEqual((self.win['LocalAppData']/'Office/office.ico').read_bytes(),b'user-custom-icon')
+
+    def test_both_blocked_reports_reasons_and_installs_anyway(self):
+        self.powershell_blocked()
+        self.stub('cscript.exe','echo "Windows Script Host 접근이 차단되었습니다" >&2; exit 1')
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('윈도우 바로가기는 만들지 못했어요',result.stdout)
+        self.assertIn('PowerShell: 액세스가 거부되었습니다',result.stdout)
+        self.assertIn('cscript: Windows Script Host',result.stdout)
+        self.assertTrue((self.home/'.local/share/office-app/app/VERSION').is_file())
+
+    def test_powershell_only_failure_is_explained_without_cscript(self):
+        self.powershell_blocked()
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('윈도우 바로가기는 만들지 못했어요',result.stdout)
+        self.assertIn('PowerShell: 액세스가 거부되었습니다',result.stdout)
+
+    def test_working_powershell_keeps_the_powershell_path(self):
+        self.stub('powershell.exe','case "$*" in *-File*) echo "made-by-powershell";; esac; exit 0')
+        self.cscript_works()
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('바로가기를 만들었어요',result.stdout)
+        self.assertFalse(self.log.exists())      # cscript는 쓰지 않았어요
+
+
+@unittest.skipUnless(shutil.which('cscript.exe') and shutil.which('wslpath'), 'cscript 시험 도구가 없어요')
+class RealCscriptShortcuts(unittest.TestCase):
+    def test_real_cscript_creates_missing_shortcuts_and_keeps_existing(self):
+        script=(ROOT/'install.sh').read_text().split("<<'JS'\n",1)[1].split('\nJS',1)[0]
+        base_js=tempfile.TemporaryDirectory(prefix='office-req158-js-');self.addCleanup(base_js.cleanup)
+        js=Path(base_js.name)/'shortcut.js';js.write_text(script,encoding='utf-8')
+        windows=lambda path:subprocess.check_output(['wslpath','-w',str(path)],text=True).strip()
+        def run(*args):
+            result=subprocess.run(['cscript.exe','//nologo',windows(js),*args],capture_output=True,timeout=30)
+            return result.stdout.decode('cp949',errors='replace').replace('\r','')
+        local=run('query').splitlines()[0]
+        local=re.sub(r'%u([0-9A-Fa-f]{4})|%([0-9A-Fa-f]{2})',lambda m:chr(int(m.group(1) or m.group(2),16)),local)
+        host=Path(subprocess.check_output(['wslpath','-u',local],text=True).strip())
+        temporary=tempfile.TemporaryDirectory(prefix='office-req158-real-',dir=host);self.addCleanup(temporary.cleanup)
+        folder=Path(temporary.name);(folder/'Desktop').mkdir();(folder/'Programs').mkdir()
+        icon=folder/'office.ico';icon.write_bytes(b'ico')
+        (folder/'Programs/Office.lnk').write_text('mine')
+        output=run('make','OfficeTest','/home/x/console.bashrc',windows(icon),windows(folder/'Desktop'),windows(folder/'Programs'),windows(folder/'Missing'))
+        self.assertIn('made:',output);self.assertIn('kept:',output)
+        self.assertTrue((folder/'Desktop/Office.lnk').is_file())
+        self.assertEqual((folder/'Programs/Office.lnk').read_text(),'mine')
+        again=run('make','OfficeTest','/home/x/console.bashrc',windows(icon),windows(folder/'Desktop'))
+        self.assertNotIn('made:',again);self.assertIn('kept:',again)
 
 
 if __name__=='__main__':
