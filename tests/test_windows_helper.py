@@ -28,6 +28,10 @@ class WindowsHelper(unittest.TestCase):
   self.assertTrue(self.built['ok'],self.built);self.assertEqual(self.built['status'],'built')
   r=subprocess.run(['bash',str(PAYLOAD/'office_win_build.sh'),str(PAYLOAD)],capture_output=True,text=True,env={**os.environ,'OFFICE_WIN_TARGET_DIR':str(self.build)},cwd='/mnt/c')
   self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])['status'],'current')
+ def test_build_result_has_existing_exe_path(self):
+  self.assertTrue(self.built['ok']);self.assertTrue(Path(self.built['path']).is_file(),self.built)
+  r=subprocess.run(['bash',str(PAYLOAD/'office_win_build.sh'),str(PAYLOAD)],capture_output=True,text=True,env={**os.environ,'OFFICE_WIN_TARGET_DIR':str(self.build)},cwd='/mnt/c')
+  d=json.loads(r.stdout.strip().splitlines()[-1]);self.assertEqual(d['status'],'current');self.assertTrue(Path(d['path']).is_file())
  def test_build_failures_are_reported_not_raised(self):
   env={**os.environ,'OFFICE_WIN_TARGET_DIR':str(self.root/'f1')}
   bad=self.work('badsrc');(bad/'office_win.cs').write_text('class {')
@@ -119,6 +123,12 @@ class Wrapper(unittest.TestCase):
   for name in re.findall(r'office_win_legacy_\$n|office_win_legacy_(\w[\w.-]*)',src):pass
   for n in 'CompactOperation.cs OfficeConsole.cs common.ps1 compact.ps1 install-recovery.ps1 measure.ps1 recover.ps1 reopen-office.ps1 run.ps1 status.ps1'.split():
    self.assertTrue((PAYLOAD/('office_win_legacy_'+n)).is_file(),n)
+ @unittest.skipUnless(WSL,'WSL에서만 돌려요')
+ def test_powershell_host_requires_full_language_mode(self):
+  self.assertIn('LanguageMode',(PAYLOAD/'office_storage_run.sh').read_text())
+ def test_status_writes_are_atomic_replace(self):
+  src=(PAYLOAD/'office_win.cs').read_text();self.assertIn('File.Replace(temp, target, null)',src);self.assertNotIn('File.Delete(target)',src)
+  self.assertIn('phase_elapsed_seconds',src);self.assertIn('phase_seconds',src)
  @unittest.skipUnless(WSL,'WSL에서만 돌려요')
  def test_neither_host_gives_clear_exit_5(self):
   with tempfile.TemporaryDirectory() as t:

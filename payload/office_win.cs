@@ -132,8 +132,9 @@ public static class OfficeWin {
         File.WriteAllText(temp, text, new UTF8Encoding(false));
         for (int i = 0; i < 5; i++) {
             try {
-                if (File.Exists(target)) File.Delete(target);
-                File.Move(temp, target); return;
+                // 기존 파일이 있으면 한 번에 바꿔서, 읽는 쪽이 파일 없음 상태를 보지 않게 해요.
+                if (File.Exists(target)) File.Replace(temp, target, null); else File.Move(temp, target);
+                return;
             } catch (IOException) { if (i == 4) { try { File.Delete(temp); } catch (Exception) { } throw; } Thread.Sleep(50); }
             catch (UnauthorizedAccessException) { if (i == 4) { try { File.Delete(temp); } catch (Exception) { } throw; } Thread.Sleep(50); }
         }
@@ -669,7 +670,9 @@ public sealed class CompactOperation : IDisposable {
 // compact.ps1을 옮긴 진행창. 상태 파일 이름과 키는 그대로예요.
 public static class Worker {
     [DllImport("kernel32.dll")] static extern bool FreeConsole();
-    static string dir, vhdx, distro, rid, testMode = "none";
+    static string dir, vhdx, distro, rid, testMode = "none", lastPhase = "";
+    static DateTime phaseStart = DateTime.Now;
+    static List<KeyValuePair<string, object>> phaseSeconds = new List<KeyValuePair<string, object>>();
     static int testSeconds = 1;
     static bool testing, noDialog;
     static FileStream lockStream;
@@ -690,7 +693,12 @@ public static class Worker {
     static System.Windows.Forms.Timer timer, reopenTimer;
 
     static void Publish(string state, string message, List<KeyValuePair<string, object>> extra) {
-        var f = OfficeWin.Obj("phase", phase, "elapsed_seconds", (int)(DateTime.Now - started).TotalSeconds,
+        if (phase != lastPhase) {
+            if (lastPhase != "") { int prev = (int)(DateTime.Now - phaseStart).TotalSeconds; OfficeWin.Set(phaseSeconds, lastPhase, prev); }
+            lastPhase = phase; phaseStart = DateTime.Now;
+        }
+        var f = OfficeWin.Obj("phase", phase, "phase_started_at", new DateTimeOffset(phaseStart).ToUnixTimeSeconds(), "phase_elapsed_seconds", (int)(DateTime.Now - phaseStart).TotalSeconds,
+            "phase_seconds", phaseSeconds, "elapsed_seconds", (int)(DateTime.Now - started).TotalSeconds,
             "can_cancel", (!terminal && !cancelRequested), "wsl_ready", !shutdownStarted, "recovery_required", false, "test_mode", testing);
         if (extra != null) foreach (var kv in extra) OfficeWin.Set(f, kv.Key, kv.Value);
         OfficeWin.WriteStatus(dir, rid, state, message, f);
@@ -780,6 +788,15 @@ public static class Worker {
         }
     }
 
+    static string PhaseName() {
+        switch (phase) {
+            case "countdown": return "시작 대기";
+            case "stopping": return "WSL 종료";
+            case "running": return "디스크 줄이기";
+            case "finalizing": return "마무리 확인";
+            default: return "";
+        }
+    }
     static Label MakeLabel(int x, int y, int w, int h) { var l = new Label(); l.Location = new Point(x, y); l.Size = new Size(w, h); return l; }
 
     static void BuildForm() {
@@ -823,7 +840,7 @@ public static class Worker {
             var request = OfficeWin.ReadJson(dir, "cancel.json");
             if (OfficeWin.Str(request, "request_id") == rid) RequestCancel();
             int elapsed = (int)(DateTime.Now - started).TotalSeconds;
-            timing.Text = "진행 시간: " + elapsed + "초";
+            timing.Text = "전체 " + elapsed + "초 · " + PhaseName() + " " + (int)(DateTime.Now - phaseStart).TotalSeconds + "초째";
             if (phase == "countdown") {
                 if (cancelRequested) { Finish("cancelled", "WSL을 끄기 전에 취소했어요."); return; }
                 int left = Math.Max(0, (int)Math.Ceiling((shutdownAt - DateTime.Now).TotalSeconds));
@@ -880,12 +897,12 @@ public static class Worker {
                     if (!finalizingStarted.HasValue) finalizingStarted = DateTime.Now;
                     heading.Text = cancelRequested ? "안전하게 중단하고 있어요." : "디스크 줄이기 진행 중이에요.";
                     bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = cancelRequested ? "중단 중" : "진행 중";
-                    detail.Text = "";
+                    detail.Text = "100%를 넘겨 Windows가 끝났다고 알리기를 기다려요. 이 단계는 오래 걸려도 정상일 수 있어요.";
                 } else {
                     phase = "running"; finalizingStarted = null;
                     if (!cancelRequested) heading.Text = "디스크를 줄이고 있어요.";
                     if (percent >= 0) { bar.Style = ProgressBarStyle.Continuous; bar.Value = percent; progressLabel.Text = percent + "%"; detail.Text = ""; OfficeWin.Set(fields, "percent", percent); }
-                    else { bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = "진행 중"; if (!cancelRequested) heading.Text = "디스크 줄이기 진행 중이에요."; detail.Text = ""; }
+                    else { bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = "진행 중"; if (!cancelRequested) heading.Text = "디스크 줄이기 진행 중이에요."; detail.Text = "Windows가 진행률을 알려 주지 않는 단계예요. 오래 걸려도 멈춘 게 아닐 수 있어요."; }
                     if (percent >= 0 && stalled >= 30) detail.Text += "\r\n" + stalled + "초 동안 같은 진행률이에요. 처리 중에도 숫자가 멈출 수 있어요.";
                 }
                 if (cancelRequested) progressLabel.Text = "중단 중";

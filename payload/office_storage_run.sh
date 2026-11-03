@@ -15,7 +15,7 @@ dest_w=$(wslpath -w "$dest")
 exe_w=$(wslpath -w "$exe")
 host=''
 if [ "${OFFICE_WIN_HOST:-}" != ps ] && [ -f "$exe" ] && timeout 15 "$exe" probe </dev/null 2>/dev/null | tr -d '\r' | grep -q '"ok":true';then host=exe
-elif [ "${OFFICE_WIN_HOST:-}" != exe ] && command -v powershell.exe >/dev/null && ps_note=$(timeout 20 powershell.exe -NoProfile -NonInteractive -Command 'exit 0' 2>&1 </dev/null);then host=ps;fi
+elif [ "${OFFICE_WIN_HOST:-}" != exe ] && command -v powershell.exe >/dev/null && ps_note=$(timeout 20 powershell.exe -NoProfile -NonInteractive -Command 'if($ExecutionContext.SessionState.LanguageMode -ne "FullLanguage"){exit 3}' 2>&1 </dev/null);then host=ps;fi
 if [ -z "$host" ] && [ "$mode" != '--result' ];then
   echo '이 PC에서는 디스크 줄이기를 쓸 수 없어요: PowerShell과 Office 도우미(office-win.exe)를 모두 실행할 수 없어요.' >&2;exit 5
 fi
