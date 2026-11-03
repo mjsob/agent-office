@@ -186,14 +186,14 @@ class Desktop(unittest.TestCase):
     def test_features_hide_unsupported(self):
         with patch.object(o, "mac_browser_app", lambda: None), patch.object(o.Path, "home", lambda: Path(TMP.name)):
             self.assertEqual(o.platform_features(), {"mac": True, "storage": False, "resources": False,
-                                                     "app_window": False, "claude_limits": False})
+                                                     "app_window": False, "claude_limits": False, "powershell": None})
         with patch.object(o, "mac_browser_app", lambda: Path("/Applications/Google Chrome.app")):
             self.assertTrue(o.platform_features()["app_window"])
         self.assertIsNone(o.resource_view())
         with patch.object(o, "IS_MAC", False), patch.object(o, "mac_browser_app", lambda: None):
             features = o.platform_features()
             self.assertEqual((features["storage"], features["resources"], features["app_window"], features["claude_limits"]),
-                             (True, True, True, True))
+                             (bool(os.environ.get("WSL_DISTRO_NAME")) and o.STORAGE_COMPACT_SCRIPT.is_file(), True, True, True))
 
     def test_console_drops_unreadable_claude_row(self):
         with patch.object(o.Path, "home", lambda: Path(TMP.name)):

@@ -706,6 +706,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="settings-heading"><h3>설정</h3><button class="ghost" aria-label="설정 닫기" onclick="toggleSettings(false, true)"><svg class="i sm"><use href="#i-x"/></svg></button></div>
   <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
   <div class="set-row" id="appWindowRow" hidden><span>창 모양</span><button id="appWindow" class="ghost" onclick="openAppWindow()">앱 창으로 열기</button></div>
+  <p id="powershellNotice" hidden>PowerShell을 쓸 수 없어 작업 표시줄 아이콘과 창 앞으로 가져오기가 적용되지 않아요.</p>
   <div id="storageSettingsGroup" hidden>
   <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
   <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
@@ -1667,7 +1668,8 @@ function applyPlatform(features) {
   platformFeatures = features;
   $("#appWindowRow").hidden = !window.toolbar?.visible || features.app_window === false;
   $("#storageSettingsGroup").hidden = features.storage === false;
-  if (features.storage === false) $("#storageNotice").hidden = true;
+  $("#powershellNotice").hidden = features.mac === true || features.powershell !== false;
+  if (features.mac === true) $("#storageNotice").hidden = true;
 }
 $("#appWindowRow").hidden = !window.toolbar?.visible;
 async function openAppWindow() {
@@ -2394,7 +2396,7 @@ async function doRefresh() {
   }
   downCount = 0;
   if (seq >= appliedSeq) applyPlatform(s.features || platformFeatures);
-  if (seq >= appliedSeq && platformFeatures.storage !== false) safe("storage", () => { if (!storageClosing && typeof s.storage_result_closed === "string") storageClosedKey = s.storage_result_closed; renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences); });
+  if (seq >= appliedSeq && platformFeatures.mac !== true) safe("storage", () => { if (!storageClosing && typeof s.storage_result_closed === "string") storageClosedKey = s.storage_result_closed; renderStorageNotice(s.storage_notice, s.storage_compact, s.storage_notice_preferences); });
   // 서버에 저장된 색 모드가 이 화면과 다르면 서버 값을 따르고, 서버에 없으면 이 화면의 선택을 올려 둠 (?theme= 점검 화면은 건드리지 않음)
   if (s.ui && Date.now() - themeTouched > 5000 && !new URLSearchParams(location.search).has("theme")) {
     if (s.ui.theme && s.ui.theme !== (localStorage.officeTheme || "auto")) { localStorage.officeTheme = s.ui.theme; applyTheme(s.ui.theme); }

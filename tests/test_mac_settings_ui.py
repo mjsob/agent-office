@@ -28,7 +28,7 @@ def state(features, file_manager, extra):
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    for name, features, manager, extra in (("mac", MAC, "Finder", {"resources": None}), ("wsl", WSL, "탐색기", {"resources": RES, **STORAGE})):
+    for name, features, manager, extra in (("mac", MAC, "Finder", {"resources": None}), ("wsl", WSL, "탐색기", {"resources": RES, **STORAGE}), ("wsl-limited", {**WSL, "storage": False, "powershell": False}, "탐색기", {"resources": RES, **STORAGE})):
         context = browser.new_context(viewport={"width": 1500, "height": 920})
         errors = []
         reply = state(features, manager, extra)
@@ -47,14 +47,21 @@ with sync_playwright() as p:
           return [...box.querySelectorAll(".path")].map(e => [e.dataset.path, e.title]);
         }""", MESSAGE)
         usage = page.evaluate("usageBlock('claude', {tokens: 0})")
+        font = Path("/mnt/c/Windows/Fonts/malgun.ttf")
+        if font.is_file():
+            context.route("**/test-font.ttf", lambda r: r.fulfill(body=font.read_bytes(), content_type="font/ttf"))
+            page.add_style_tag(content="@font-face{font-family:TestKorean;src:url('/test-font.ttf')}body,button{font-family:TestKorean,sans-serif}")
+            page.evaluate("document.fonts.ready")
         if output:
             output.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(output / f"settings-{name}.png"))
         assert not errors, errors
         mac = name == "mac"
         assert visible("#settings") and visible("#theme")
-        assert visible("#storageManualRun") is not mac, name
-        assert visible("#storageRestore") is not mac, name
+        limited = name == "wsl-limited"
+        assert visible("#powershellNotice") is limited, name
+        assert visible("#storageManualRun") == (not mac and not limited), name
+        assert visible("#storageRestore") == (not mac and not limited), name
         assert visible("#resbox") is not mac, name
         assert visible("#storageNotice") is not mac, name
         assert ("사용 한도 정보 아직 없음" in usage) is not mac, usage

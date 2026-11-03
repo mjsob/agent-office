@@ -5291,10 +5291,41 @@ def claude_limits_readable():
     return not IS_MAC or (Path.home() / ".claude" / ".credentials.json").exists()
 
 
+POWERSHELL_CACHE = {}
+POWERSHELL_CACHE_LOCK = threading.Lock()
+
+
+def windows_error_text(result):
+    raw = result.stderr or b""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    return " ".join(text.split())[:400]
+
+
+def powershell_available():
+    """WSL의 실행 제한을 짧게 확인하고 60초 동안 결과를 재사용해요."""
+    if IS_MAC or not os.environ.get("WSL_DISTRO_NAME"):
+        return None
+    with POWERSHELL_CACHE_LOCK:
+        if time.monotonic() - POWERSHELL_CACHE.get("at", -1000) < 60:
+            return POWERSHELL_CACHE["available"]
+        try:
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=2)
+            available = result.returncode == 0
+            if not available:
+                server_log(f"powershell.unavailable.exit={result.returncode}", windows_error_text(result))
+        except (OSError, subprocess.SubprocessError) as error:
+            available = False
+            server_log("powershell.unavailable", error)
+        POWERSHELL_CACHE.update(at=time.monotonic(), available=available)
+        return available
+
+
 def platform_features():
     """이 PC에서 쓸 수 있는 기능. 화면은 false인 기능을 아예 그리지 않아요."""
-    return {"mac": IS_MAC, "storage": not IS_MAC, "resources": not IS_MAC,
-            "app_window": app_window_available(), "claude_limits": claude_limits_readable()}
+    return {"mac": IS_MAC, "storage": not IS_MAC and bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file(), "resources": not IS_MAC,
+            "app_window": app_window_available(), "claude_limits": claude_limits_readable(),
+            "powershell": powershell_available()}
 
 
 def resource_view():
@@ -5404,11 +5435,15 @@ else { Write-Output 'no-match' }
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=10, cwd="/mnt/c")
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         reason = "timeout"
-    except (OSError, subprocess.SubprocessError):
+        server_log("explorer.focus.failed", error)
+    except (OSError, subprocess.SubprocessError) as error:
         reason = "oserror"
+        server_log("explorer.focus.failed", error)
     else:
+        if result.returncode:
+            server_log(f"explorer.focus.failed.exit={result.returncode}", windows_error_text(result))
         words = result.stdout.decode("utf-8", "replace").split()
         # 비정상 종료면 중간까지 찍힌 출력은 믿지 않아요
         reason = words[-1] if result.returncode == 0 and words and words[-1] in ("focused", "behind", "no-match") else "error"
@@ -7156,7 +7191,10 @@ Write-Output "updated:$changed"
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, cwd="/mnt/c")
         if result.returncode:
-            server_log(f"taskbar.icon.failed.exit={result.returncode}")
+            if result.stderr:
+                server_log(f"taskbar.icon.failed.exit={result.returncode}", windows_error_text(result))
+            else:
+                server_log(f"taskbar.icon.failed.exit={result.returncode}")
             return False
         outcome = result.stdout.decode("utf-8", "replace").strip()
         server_log("taskbar.icon." + (outcome if re.fullmatch(r"updated:\d+|missing-icon", outcome) else "unexpected-output"))

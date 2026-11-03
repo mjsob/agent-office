@@ -58,4 +58,39 @@ class TaskbarIcon(unittest.TestCase):
  def test_failed_browsers_do_not_start_icon_worker(self):
   with patch.object(Path,'exists',return_value=True),patch.object(self.o.subprocess,'Popen',side_effect=OSError('failed')),patch.object(self.o.threading,'Thread') as thread:
    self.assertFalse(self.o.open_window(12345,app_only=True));thread.assert_not_called()
+class PlatformAvailability(unittest.TestCase):
+ def setUp(self):
+  spec=importlib.util.spec_from_file_location('availability_target',SOURCE)
+  self.o=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.o)
+ def test_storage_requires_wsl_and_script(self):
+  for mac,wsl,exists,expected in [(False,'',True,False),(False,'Ubuntu',False,False),(False,'Ubuntu',True,True),(True,'Ubuntu',True,False)]:
+   with self.subTest(mac=mac,wsl=wsl,exists=exists),patch.object(self.o,'IS_MAC',mac),patch.dict(os.environ,{'WSL_DISTRO_NAME':wsl}),patch.object(self.o.Path,'is_file',return_value=exists),patch.object(self.o,'powershell_available',return_value=None):
+    self.assertEqual(self.o.platform_features()['storage'],expected)
+ def test_probe_is_cached_and_reports_denial(self):
+  o=self.o
+  with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}),patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],1,b'',b'Access is denied')) as run,patch.object(o,'server_log') as log:
+   self.assertFalse(o.powershell_available());self.assertFalse(o.powershell_available())
+   self.assertEqual(run.call_count,1);self.assertEqual(run.call_args.kwargs['timeout'],2)
+   self.assertIn('Access is denied',str(log.call_args))
+ def test_probe_success_timeout_and_non_wsl(self):
+  o=self.o
+  with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}):
+   with patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'',b'')):
+    self.assertTrue(o.powershell_available())
+   o.POWERSHELL_CACHE.clear()
+   with patch.object(o.subprocess,'run',side_effect=subprocess.TimeoutExpired([],2)):
+    self.assertFalse(o.powershell_available())
+  with patch.dict(os.environ,{'WSL_DISTRO_NAME':''}),patch.object(o.subprocess,'run') as run:
+   self.assertIsNone(o.powershell_available());run.assert_not_called()
+ def test_taskbar_error_has_stderr_and_exit(self):
+  o=self.o
+  with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}),patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],7,b'',b'Access denied')),patch.object(o,'server_log') as log:
+   self.assertFalse(o.configure_taskbar_icon());self.assertIn('exit=7',str(log.call_args));self.assertIn('Access denied',str(log.call_args))
+
+ def test_explorer_error_has_stderr_and_exit(self):
+  o=self.o
+  with patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],5,b'',b'Access denied')),patch.object(o,'server_log') as log:
+   self.assertEqual(o.focus_explorer_path('C:\\Users',True),'unknown')
+   events=str(log.call_args_list);self.assertIn('exit=5',events);self.assertIn('Access denied',events)
+
 if __name__=='__main__':unittest.main()
