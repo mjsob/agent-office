@@ -935,7 +935,7 @@ public static class SelfTest {
         if (a.Count < 1) return 64; RequireTemp(a[0]);
         var type = new StorageType { DeviceId = 3, VendorId = new Guid("EC984AEC-A0F9-47e9-901F-71415A66345B") };
         var p = new CreateParameters { Version = 1, MaximumSize = 64UL * 1024 * 1024 };
-        IntPtr h; uint r = CreateVirtualDisk(ref type, a[0], 0, IntPtr.Zero, 0, 0, ref p, IntPtr.Zero, out h);
+        IntPtr h; uint r = CreateVirtualDisk(ref type, a[0], 0x00100000, IntPtr.Zero, 0, 0, ref p, IntPtr.Zero, out h) /* VIRTUAL_DISK_ACCESS_CREATE */;
         if (r != 0) throw new Win32Exception((int)r);
         CloseHandle(h);
         OfficeWin.Print(OfficeWin.Obj("ok", true));

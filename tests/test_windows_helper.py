@@ -113,6 +113,14 @@ class WindowsHelper(unittest.TestCase):
   c=json.loads(self.run_exe('recover','--dir',w,'--check').stdout);self.assertEqual((c['distro'],c['admin'],c['running']),('Ubuntu',False,False))
   (d/'start').mkdir();self.assertEqual(self.run_exe('install-recovery','--dir',w,'--shortcut-dir',self.win(d/'start')).returncode,0)
   self.assertEqual([p.name for p in (d/'start').iterdir()],['Office 디스크 복구.lnk'])
+ def test_selftest_creates_real_temp_vhdx_and_preserves_existing(self):
+  d=self.work('selftest-create');disk=d/'sample.vhdx'
+  r=self.run_exe('selftest-make-vhdx',self.win(disk))
+  self.assertEqual(r.returncode,0,r.stderr);self.assertTrue(json.loads(r.stdout)['ok'])
+  self.assertGreater(disk.stat().st_size,0)
+  before=disk.read_bytes()
+  r=self.run_exe('selftest-make-vhdx',self.win(disk))
+  self.assertNotEqual(r.returncode,0);self.assertEqual(disk.read_bytes(),before)
  def test_compact_api_rejects_non_temp_vhdx(self):
   self.assertNotEqual(self.run_exe('selftest-compact','C:\\Users\\x.vhdx').returncode,0)
 class Wrapper(unittest.TestCase):
