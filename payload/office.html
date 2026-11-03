@@ -1668,7 +1668,7 @@ function applyPlatform(features) {
   platformFeatures = features;
   $("#appWindowRow").hidden = !window.toolbar?.visible || features.app_window === false;
   $("#storageSettingsGroup").hidden = features.storage === false;
-  $("#powershellNotice").hidden = features.mac === true || features.powershell !== false;
+  $("#powershellNotice").hidden = features.mac === true || features.powershell !== false || features.windows_helper === true;
   if (features.mac === true) $("#storageNotice").hidden = true;
 }
 $("#appWindowRow").hidden = !window.toolbar?.visible;
@@ -2577,16 +2577,25 @@ function storageActionMessage(action) {
     awaiting_admin: "관리자 권한 확인을 기다려요. 작업 표시줄에 깜빡이는 창이 있으면 눌러서 [예]를 선택하세요." + elapsed,
     countdown: "곧 WSL이 꺼져요. 멈추려면 Windows 실행 창에서 [중단하기]를 누르세요.",
     stopping: "WSL을 끄고 있어요." + elapsed,
-    running: action.phase === "finalizing" || !Number.isFinite(action.percent) || action.percent < 0 || action.percent >= 100
-      ? `디스크 줄이기 진행 중이에요.${elapsed}`
-      : `디스크 줄이기 진행 중이에요. (${Math.round(action.percent)}%)${elapsed}`,
+    running: action.phase === "finalizing" || action.percent >= 100
+      ? `디스크 변경 내용을 마무리하고 있어요. 완료 확인을 기다려요.${elapsed}`
+      : !Number.isFinite(action.percent) || action.percent < 0
+        ? `디스크를 줄이고 있어요. Windows가 진행률을 보내지 않아 완료 시간을 계산할 수 없어요.${elapsed}`
+        : `디스크를 줄이고 있어요. (${Math.round(action.percent)}%)${elapsed}`,
     cancelling: "취소하고 있어요. WSL을 다시 켤 수 있게 정리해요." + elapsed,
     completed: Number.isFinite(action.reclaimed_gb) ? `디스크를 ${action.reclaimed_gb}GB 줄였어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.` : "디스크 줄이기가 끝났어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.",
     cancelled: "실행을 취소했어요." + recovery,
     failed: (typeof action.message === "string" && action.message ? action.message : "디스크를 줄이지 못했어요.") + (action.recovery_required ? " WSL이 안 켜지면 Windows 시작 메뉴의 [Office 디스크 복구]를 실행하세요." : ""),
     uncertain: "실행 상태를 확인하지 못했어요. 다시 누르기 전에 Windows 실행 창을 확인하세요." + recovery
   };
-  return messages[status] || "";
+  let message = messages[status] || "";
+  if (["preparing", "launched"].includes(status) && action.phase === "trim") message = "빈 공간을 표시하고 있어요. 아직 WSL은 켜져 있어요." + elapsed;
+  if (["running", "cancelling", "stopping"].includes(status)) {
+    if (action.heartbeat_seconds >= 15) message += ` 상태 갱신이 ${Math.floor(action.heartbeat_seconds)}초 동안 없어요. Windows 실행 창을 확인하세요.`;
+    else if (action.stalled_seconds >= 30) message += ` ${Math.floor(action.stalled_seconds)}초 동안 진행률이 같지만 상태는 갱신되고 있어요.`;
+    if (Number.isFinite(action.phase_elapsed_seconds)) message += ` 이 단계 ${Math.floor(action.phase_elapsed_seconds / 60)}분 ${Math.floor(action.phase_elapsed_seconds % 60)}초째예요.`;
+  }
+  return message;
 }
 function storageManualReady(notice, action) {
   return action?.available === true && action.can_start === true && !notice?.refreshing && !storageRefreshing

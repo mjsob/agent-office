@@ -4987,9 +4987,10 @@ def resource_status(refresh=False):
         return dict(data)
 
 
-STORAGE_NOTICE_FILE = Path.home() / "resource-watch" / "compact-notice.json"
+STORAGE_NOTICE_FILE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "office/storage/compact-notice.json"
+STORAGE_NOTICE_LEGACY = Path.home() / "resource-watch" / "compact-notice.json"
 STORAGE_NOTICE_MAX_AGE = 2 * 3600
-STORAGE_WATCH_SCRIPT = Path.home() / "resource-watch" / "watch.py"
+STORAGE_WATCH_SCRIPT = HERE / "office_storage.py"
 STORAGE_NOTICE_RETRY = 600
 STORAGE_NOTICE_REFRESH = {"at": 0.0}
 
@@ -4998,8 +4999,12 @@ def refresh_storage_notice(notice, compact):
     """낡은 디스크 정보는 사용자가 기다리지 않게 뒤에서 한 번만 다시 재요. 실패하면 10분 뒤에 다시 시도해요."""
     if not notice and "storage_notice" in REFRESHING:   # 첫 측정 중에도 화면 버튼이 풀리지 않게 해요
         return {"status": "unavailable", "refreshing": True}
-    if not notice or compact.get("status") in STORAGE_COMPACT_ACTIVE or not STORAGE_WATCH_SCRIPT.is_file():
+    if compact.get("status") in STORAGE_COMPACT_ACTIVE or not STORAGE_WATCH_SCRIPT.is_file():
         return notice
+    if not notice:
+        if IS_MAC or not os.environ.get("WSL_DISTRO_NAME") or STORAGE_WATCH_SCRIPT.name != "office_storage.py":
+            return None
+        notice = {"status": "stale", "checked_at": 0}
     checked = notice.get("checked_at", 0)
     after_compact = compact.get("status") == "completed" and checked < (compact.get("updated_at") or 0)
     if notice["status"] != "stale" and not after_compact:
@@ -5019,7 +5024,10 @@ def storage_notice_view(path=None, now=None):
     """용량 감시가 쓴 최신 상태만 표시해요. 측정이나 축소는 실행하지 않아요."""
     now = time.time() if now is None else now
     try:
-        with Path(path or STORAGE_NOTICE_FILE).open("rb") as source:
+        source_path = Path(path or STORAGE_NOTICE_FILE)
+        if path is None and not source_path.exists() and source_path == Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "office/storage/compact-notice.json":
+            source_path = STORAGE_NOTICE_LEGACY
+        with source_path.open("rb") as source:
             raw = source.read(16385)
         if len(raw) > 16384:
             return None
@@ -5079,7 +5087,7 @@ def storage_notice_preferences_view():
     return {"mode": mode, "hidden": mode != "show", "hidden_on": hidden_on if mode == "today" else None}
 
 
-STORAGE_COMPACT_SCRIPT = Path.home() / "projects/wsl-compact/src/run-compact.sh"
+STORAGE_COMPACT_SCRIPT = HERE / "office_storage_run.sh"
 STORAGE_COMPACT_DIR = Path.home() / ".local/state/wsl-compact"
 STORAGE_COMPACT_LOCK = threading.RLock()
 STORAGE_COMPACT_PROBE = {}
@@ -5128,6 +5136,14 @@ def compact_progress(value):
         n = value.get(key)
         if type(n) in (int, float) and math.isfinite(n) and 0 <= n <= high:
             out[key] = round(n, 1)
+    for key in ("phase_elapsed_seconds", "stalled_seconds"):
+        n = value.get(key)
+        if type(n) in (int, float) and math.isfinite(n) and n >= 0:
+            out[key] = int(n)
+    if value.get("status") in STORAGE_COMPACT_ACTIVE:
+        updated = value.get("updated_at")
+        if type(updated) in (int, float) and math.isfinite(updated) and updated > 0:
+            out["heartbeat_seconds"] = max(0, int(time.time() - updated))
     for key in ("can_cancel", "wsl_ready", "recovery_required"):
         if type(value.get(key)) is bool:
             out[key] = value[key]
@@ -5291,6 +5307,33 @@ def claude_limits_readable():
     return not IS_MAC or (Path.home() / ".claude" / ".credentials.json").exists()
 
 
+STORAGE_MODULE = None
+
+
+def storage_module():
+    global STORAGE_MODULE
+    if STORAGE_MODULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_office_storage", HERE / "office_storage.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        STORAGE_MODULE = module
+    return STORAGE_MODULE
+
+
+def native_windows_call(action, *args):
+    if IS_MAC or not os.environ.get("WSL_DISTRO_NAME"):
+        return None
+    try:
+        module = storage_module()
+        if module.helper_path() is None:
+            return None
+        return json.loads(module.helper_call(action, *args, timeout=12).stdout.lstrip("\ufeff"))
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        server_log("windows.helper." + action, error)
+        return None
+
+
 POWERSHELL_CACHE = {}
 POWERSHELL_CACHE_LOCK = threading.Lock()
 
@@ -5301,31 +5344,55 @@ def windows_error_text(result):
     return " ".join(text.split())[:400]
 
 
-def powershell_available():
-    """WSL의 실행 제한을 짧게 확인하고 60초 동안 결과를 재사용해요."""
+def powershell_available(wait=False):
+    """실행과 Add-Type 사용 가능 여부를 뒤에서 확인해요. 시작 지연은 차단으로 단정하지 않아요."""
     if IS_MAC or not os.environ.get("WSL_DISTRO_NAME"):
         return None
-    with POWERSHELL_CACHE_LOCK:
-        if time.monotonic() - POWERSHELL_CACHE.get("at", -1000) < 60:
-            return POWERSHELL_CACHE["available"]
+    def probe():
+        available = None
+        native = native_windows_call("probe")
+        helper_available = isinstance(native, dict) and native.get("ok") is True and native.get("api") == 1
         try:
-            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=2)
-            available = result.returncode == 0
-            if not available:
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                     "Write-Output ('OfficePowerShell:' + $ExecutionContext.SessionState.LanguageMode)"],
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+            raw = result.stdout or b""
+            output = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            if result.returncode == 0:
+                available = "OfficePowerShell:FullLanguage" in output
+            else:
+                available = False
                 server_log(f"powershell.unavailable.exit={result.returncode}", windows_error_text(result))
+        except subprocess.TimeoutExpired as error:
+            server_log("powershell.probe.delayed", error)
         except (OSError, subprocess.SubprocessError) as error:
             available = False
             server_log("powershell.unavailable", error)
-        POWERSHELL_CACHE.update(at=time.monotonic(), available=available)
-        return available
+        finally:
+            with POWERSHELL_CACHE_LOCK:
+                POWERSHELL_CACHE.update(at=time.monotonic(), available=available, helper_available=helper_available, checking=False)
+    with POWERSHELL_CACHE_LOCK:
+        if time.monotonic() - POWERSHELL_CACHE.get("at", -1000) < 60:
+            return POWERSHELL_CACHE.get("available")
+        if POWERSHELL_CACHE.get("checking"):
+            return POWERSHELL_CACHE.get("available")
+        POWERSHELL_CACHE["checking"] = True
+    if wait:
+        probe()
+    else:
+        try:
+            threading.Thread(target=probe, name="office-powershell-probe", daemon=True).start()
+        except RuntimeError:
+            with POWERSHELL_CACHE_LOCK:
+                POWERSHELL_CACHE["checking"] = False
+    return POWERSHELL_CACHE.get("available")
 
 
 def platform_features():
     """이 PC에서 쓸 수 있는 기능. 화면은 false인 기능을 아예 그리지 않아요."""
     return {"mac": IS_MAC, "storage": not IS_MAC and bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file(), "resources": not IS_MAC,
             "app_window": app_window_available(), "claude_limits": claude_limits_readable(),
-            "powershell": powershell_available()}
+            "powershell": powershell_available(), "windows_helper": None if IS_MAC else POWERSHELL_CACHE.get("helper_available")}
 
 
 def resource_view():
@@ -5375,6 +5442,9 @@ def focus_explorer_path(windows, is_folder):
     """눌러서 연 경로의 탐색기를 복원하고 앞으로 가져와요.
     판정은 마지막에 맨 앞 창이 그 경로를 연 탐색기인지로만 해요(누가 앞으로 가져왔는지는 안 따져요).
     돌려주는 값: focused(앞에 옴) / behind(창은 찾았는데 다른 창이 앞) / unknown(확인 못 함)"""
+    native = native_windows_call("focus", windows, "folder" if is_folder else "file")
+    if isinstance(native, dict) and native.get("result") in ("focused", "behind", "no-match"):
+        return native["result"] if native["result"] != "no-match" else "unknown"
     import base64
     target = base64.b64encode(windows.encode("utf-8")).decode("ascii")
     script = r'''
@@ -7116,6 +7186,10 @@ def running():
 def configure_taskbar_icon():
     """작업 표시줄이 Chrome의 확대된 16px favicon 대신 원본 ICO를 읽게 해요.
     창의 아이콘 리소스 경로만 바꿔요. 창을 활성화하거나 브라우저 프로필을 바꾸지 않아요."""
+    native = native_windows_call("icon")
+    if isinstance(native, dict) and type(native.get("updated")) is int and native["updated"] >= 0:
+        server_log("taskbar.icon.native.updated:" + str(native["updated"]))
+        return native["updated"] > 0
     import base64
     script = r'''$ErrorActionPreference = 'Stop'
 $icon = Join-Path $env:LOCALAPPDATA 'Office\office.ico'

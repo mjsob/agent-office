@@ -93,15 +93,14 @@ with sync_playwright() as p:
             assert '사용할 수 없어요' in page.locator('#storageSettingsMetrics').inner_text()
             render(measured, {**idle, 'status': 'running', 'can_start': False, 'phase': 'finalizing', 'elapsed_seconds': 125})
             assert run.is_disabled() and page.locator('#storageRefresh').is_disabled()
-            assert '진행 중' in page.locator('#storageSettingsAction').inner_text()
-            assert '마무리' not in page.locator('#storageSettingsAction').inner_text()
+            assert '마무리' in page.locator('#storageSettingsAction').inner_text()
             assert '%' not in page.locator('#storageSettingsAction').inner_text()
-            for percent, label in [(45, '45%'), (0, '0%'), (100, '진행 중'), (None, '진행 중')]:
+            for percent, label in [(45, '45%'), (0, '0%'), (100, '마무리'), (None, '진행률을 보내지 않아')]:
                 action = {**idle, 'status': 'running', 'can_start': False}
                 if percent is not None: action['percent'] = percent
                 render(measured, action)
                 text = page.locator('#storageSettingsAction').inner_text()
-                assert label in text and '마무리' not in text
+                assert label in text
                 if percent is None or percent == 100: assert '%' not in text
             render(measured)
             page.locator('#storageRefresh').click()
@@ -132,6 +131,11 @@ with sync_playwright() as p:
             if output:
                 page.locator('.storage-settings').screenshot(path=str(output / f'settings-{width}-{theme}.png'))
             assert not errors, errors
+            render(measured, {**idle, 'status': 'running', 'can_start': False, 'percent': 45, 'stalled_seconds': 120, 'heartbeat_seconds': 1, 'phase_elapsed_seconds': 200})
+            assert '상태는 갱신' in page.locator('#storageSettingsAction').inner_text()
+            render(measured, {**idle, 'status': 'running', 'can_start': False, 'heartbeat_seconds': 40})
+            assert '상태 갱신이 40초' in page.locator('#storageSettingsAction').inner_text()
+            if output: page.screenshot(path=str(output / f'storage-status-delayed-{width}-{theme}.png'))
             results.append({'width': width, 'theme': theme, 'passed': True, 'cases': ['below-threshold-hidden-notice', 'confirmation-cancel', 'manual-contract', 'duplicate-disabled', 'zero-manual-allowed', 'conservative-label', 'unknown-estimate', 'stale', 'missing-notice', 'unavailable', 'missing-tool', 'finalizing', 'valid-percent', 'zero-percent', 'pending-100', 'unknown-percent', 'remeasure', 'expired-result-hidden', 'closed-result-hidden', 'recent-completed-hidden-in-settings', 'redundant-copy-removed', 'completed-banner-preserved', 'failed-visible', 'uncertain-visible', 'no-overflow'], 'errors': errors})
             context.close()
     finally:

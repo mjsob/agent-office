@@ -138,7 +138,7 @@ class StorageManual(unittest.TestCase):
         with patch.object(self.o, 'REFRESHING', {'storage_notice'}):
             self.assertEqual(self.o.refresh_storage_notice(None, {'status': 'idle'}),
                              {'status': 'unavailable', 'refreshing': True})
-        self.assertIsNone(self.o.refresh_storage_notice(None, {'status': 'idle'}))
+        self.assertTrue(self.o.refresh_storage_notice(None, {'status': 'idle'})['refreshing'])
 
     def test_handle_routes_both_refresh_names_and_manual_flag(self):
         for name in ('storage_refresh', 'storage_remeasure'):

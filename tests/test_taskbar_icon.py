@@ -69,19 +69,19 @@ class PlatformAvailability(unittest.TestCase):
  def test_probe_is_cached_and_reports_denial(self):
   o=self.o
   with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}),patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],1,b'',b'Access is denied')) as run,patch.object(o,'server_log') as log:
-   self.assertFalse(o.powershell_available());self.assertFalse(o.powershell_available())
-   self.assertEqual(run.call_count,1);self.assertEqual(run.call_args.kwargs['timeout'],2)
+   self.assertFalse(o.powershell_available(wait=True));self.assertFalse(o.powershell_available(wait=True))
+   self.assertEqual(run.call_count,1);self.assertEqual(run.call_args.kwargs['timeout'],10)
    self.assertIn('Access is denied',str(log.call_args))
  def test_probe_success_timeout_and_non_wsl(self):
   o=self.o
   with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}):
-   with patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'',b'')):
-    self.assertTrue(o.powershell_available())
+   with patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'OfficePowerShell:FullLanguage',b'')):
+    self.assertTrue(o.powershell_available(wait=True))
    o.POWERSHELL_CACHE.clear()
    with patch.object(o.subprocess,'run',side_effect=subprocess.TimeoutExpired([],2)):
-    self.assertFalse(o.powershell_available())
+    self.assertIsNone(o.powershell_available(wait=True))
   with patch.dict(os.environ,{'WSL_DISTRO_NAME':''}),patch.object(o.subprocess,'run') as run:
-   self.assertIsNone(o.powershell_available());run.assert_not_called()
+   self.assertIsNone(o.powershell_available(wait=True));run.assert_not_called()
  def test_taskbar_error_has_stderr_and_exit(self):
   o=self.o
   with patch.object(o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'Ubuntu'}),patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],7,b'',b'Access denied')),patch.object(o,'server_log') as log:
