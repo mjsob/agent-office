@@ -9,6 +9,10 @@ files=(office.py office.html office.ico office-icon.png VERSION)
 for module in payload/office_*.py; do
   [[ -e $module ]] && files+=("$(basename -- "$module")")
 done
+# Windows 도우미 소스·빌드 스크립트·PowerShell 대체 파일(office_win*)과 디스크 줄이기 실행 스크립트도 포함해요.
+for extra in payload/office_win* payload/office_storage_run.sh; do
+  [[ -e $extra ]] && files+=("$(basename -- "$extra")")
+done
 version=$(tr -d '[:space:]' < payload/VERSION)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "payload/VERSION 형식이 X.Y.Z가 아닙니다: $version"
 for name in "${files[@]}"; do [[ -f payload/$name ]] || fail "payload/$name 없음"; done

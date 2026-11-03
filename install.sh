@@ -554,6 +554,22 @@ JS
   fi
 fi
 
+# WSL이면 Windows 도우미(office-win.exe)를 이 PC에서 빌드해요. 작업 표시줄 아이콘·창 앞으로 가져오기·디스크 줄이기를
+# PowerShell 없이도 쓰게 해 줘요. 실패해도 설치는 계속하고, 그 경우엔 PowerShell 경로를 써요.
+if [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} && -f $prefix/app/office_win_build.sh ]]; then
+  win_helper=$(timeout 180 bash "$prefix/app/office_win_build.sh" "$prefix/app" 2>/dev/null </dev/null | tail -n 1 || true)
+  win_helper_ok=$(printf '%s' "$win_helper" | "$python_bin" -c 'import json,sys
+try: d=json.loads(sys.stdin.read())
+except ValueError: d={}
+print("1" if d.get("ok") is True else "0"); print(d.get("reason") or "빌드 결과를 읽지 못했어요")' 2>/dev/null || printf '0\n빌드 결과를 읽지 못했어요\n')
+  if [[ $(printf '%s\n' "$win_helper_ok" | head -n 1) == 1 ]]; then
+    printf 'Windows 도우미를 준비했어요. PowerShell이 막힌 PC에서도 아이콘 보정과 디스크 줄이기를 쓸 수 있어요.\n'
+  else
+    printf 'Windows 도우미를 만들지 못했어요: %s\n' "$(printf '%s\n' "$win_helper_ok" | tail -n 1)"
+    printf '  PowerShell이 되는 PC에서는 지금처럼 쓸 수 있어요. 막힌 PC에서는 아이콘 보정·디스크 줄이기가 꺼져요.\n'
+  fi
+fi
+
 if (( login )); then
   [[ -t 0 ]] || fail '로그인은 대화형 터미널에서 진행하세요. 자동 설치만 하려면 --skip-login --no-launch 사용.'
   if ! codex login status >/dev/null 2>&1; then
