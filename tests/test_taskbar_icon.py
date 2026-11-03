@@ -64,7 +64,7 @@ class PlatformAvailability(unittest.TestCase):
   self.o=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.o)
  def test_storage_requires_wsl_and_script(self):
   for mac,wsl,exists,expected in [(False,'',True,False),(False,'Ubuntu',False,False),(False,'Ubuntu',True,True),(True,'Ubuntu',True,False)]:
-   with self.subTest(mac=mac,wsl=wsl,exists=exists),patch.object(self.o,'IS_MAC',mac),patch.dict(os.environ,{'WSL_DISTRO_NAME':wsl}),patch.object(self.o.Path,'is_file',return_value=exists),patch.object(self.o,'powershell_available',return_value=None):
+   with self.subTest(mac=mac,wsl=wsl,exists=exists),patch.object(self.o,'IS_MAC',mac),patch.dict(os.environ,{'WSL_DISTRO_NAME':wsl}),patch.object(self.o.Path,'is_file',return_value=exists),patch.object(self.o,'powershell_available',return_value=True):
     self.assertEqual(self.o.platform_features()['storage'],expected)
  def test_probe_is_cached_and_reports_denial(self):
   o=self.o

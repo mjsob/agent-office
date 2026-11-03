@@ -190,7 +190,7 @@ class Desktop(unittest.TestCase):
         with patch.object(o, "mac_browser_app", lambda: Path("/Applications/Google Chrome.app")):
             self.assertTrue(o.platform_features()["app_window"])
         self.assertIsNone(o.resource_view())
-        with patch.object(o, "IS_MAC", False), patch.object(o, "mac_browser_app", lambda: None):
+        with patch.object(o, "IS_MAC", False), patch.object(o, "mac_browser_app", lambda: None), patch.object(o, "powershell_available", lambda: True):
             features = o.platform_features()
             self.assertEqual((features["storage"], features["resources"], features["app_window"], features["claude_limits"]),
                              (bool(os.environ.get("WSL_DISTRO_NAME")) and o.STORAGE_COMPACT_SCRIPT.is_file(), True, True, True))

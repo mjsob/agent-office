@@ -103,6 +103,12 @@ class Integration(unittest.TestCase):
             self.assertTrue(self.o.configure_taskbar_icon());run.assert_not_called()
         with patch.object(self.o,'native_windows_call',return_value={'result':'behind'}),patch.object(self.o.subprocess,'run') as run:
             self.assertEqual(self.o.focus_explorer_path('C:\\data',True),'behind');run.assert_not_called()
+    def test_settings_require_at_least_one_working_windows_host(self):
+        for ps,helper,expected in [(None,None,False),(False,False,False),(True,False,True),(False,True,True)]:
+            with self.subTest(ps=ps,helper=helper),patch.object(self.o,'IS_MAC',False),patch.dict(os.environ,{'WSL_DISTRO_NAME':'test'}),patch.object(self.o.Path,'is_file',return_value=True),patch.object(self.o,'powershell_available',return_value=ps):
+                self.o.POWERSHELL_CACHE['helper_available']=helper
+                self.assertEqual(self.o.platform_features()['storage'],expected)
+
     def test_progress_sanitizes_phase_and_heartbeat(self):
         p=self.o.compact_progress({'status':'running','phase':'finalizing','updated_at':time.time()-20,'phase_elapsed_seconds':80,'stalled_seconds':40})
         self.assertEqual((p['phase_elapsed_seconds'],p['stalled_seconds']),(80,40));self.assertGreaterEqual(p['heartbeat_seconds'],19)

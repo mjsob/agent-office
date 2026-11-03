@@ -5390,9 +5390,13 @@ def powershell_available(wait=False):
 
 def platform_features():
     """이 PC에서 쓸 수 있는 기능. 화면은 false인 기능을 아예 그리지 않아요."""
-    return {"mac": IS_MAC, "storage": not IS_MAC and bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file(), "resources": not IS_MAC,
+    powershell = powershell_available()
+    helper = None if IS_MAC else POWERSHELL_CACHE.get("helper_available")
+    storage = (not IS_MAC and bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file()
+               and (powershell is True or helper is True))
+    return {"mac": IS_MAC, "storage": storage, "resources": not IS_MAC,
             "app_window": app_window_available(), "claude_limits": claude_limits_readable(),
-            "powershell": powershell_available(), "windows_helper": None if IS_MAC else POWERSHELL_CACHE.get("helper_available")}
+            "powershell": powershell, "windows_helper": helper}
 
 
 def resource_view():
