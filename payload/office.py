@@ -1447,6 +1447,118 @@ def parse_resume_at(value):
         raise UserError(f"입력 내용 확인 — 다시 시작 시각 '{v}' 을 못 읽었어요. 20:10, +15m, ISO 시각 중 하나로 적어 주세요.")
 
 
+def continued_progress_sid(sid, task_id):
+    """이관한 작업의 진행 알림만 새 대화로 보내요. 예전 작업 번호는 유지해요."""
+    visited = set()
+    while sid not in visited:
+        visited.add(sid)
+        task = next((t for t in state_view(sid)['tasks'] if t['id'] == task_id), None)
+        target = (task or {}).get('continued_to')
+        if not target:
+            return sid
+        if not valid_sid(target) or not (sdir(target)/'state.json').is_file():
+            raise UserError('이어서 할 대화를 찾지 못했어요. 원래 대화의 이관 기록을 확인하세요.')
+        sid = target
+    raise UserError('대화 연결이 반복돼요. 이관 기록을 확인하세요.')
+
+
+@contextmanager
+def continued_progress_state(sid, task_id):
+    """진행 알림이 이관과 겹쳐도 저장 잠금 안에서 목적지를 다시 확인해요."""
+    visited = set()
+    while sid not in visited:
+        visited.add(sid)
+        with state(True, sid) as saved:
+            task = find(saved, task_id)
+            target = task.get('continued_to')
+            if not target:
+                yield saved
+                return
+            if not valid_sid(target) or not (sdir(target)/'state.json').is_file():
+                raise UserError('이어서 할 대화를 찾지 못했어요. 원래 대화의 이관 기록을 확인하세요.')
+        sid = target
+    raise UserError('대화 연결이 반복돼요. 이관 기록을 확인하세요.')
+
+
+def cmd_continue(a):
+    """멈춰 기다리는 요청을 원문 기록과 분리해 새 대화에서 이어가요."""
+    source = current_sid()
+    brief = Path(a.brief_file).expanduser().read_text().strip()
+    title = a.title.strip()
+    if not brief or len(brief) > 6000 or not title or len(title) > 80:
+        raise UserError('짧은 인계 내용과 제목을 적으세요. 인계는 6,000자, 제목은 80자까지 쓸 수 있어요.')
+    created = None
+    with meta(True) as m:
+        if not any(x['id'] == source and not x['deleted'] for x in m['sessions']):
+            raise UserError('원래 대화를 찾지 못했어요. 대화 목록을 확인하세요.')
+        with state(True, source) as old:
+            job = next((j for j in old['jobs'] if j['id'] == a.job), None)
+            if job is None or me() not in ('user', job.get('acting_lead', job['lead'])):
+                raise UserError('요청을 맡은 리더만 새 대화로 이어갈 수 있어요.')
+            created = job.get('continued_to')
+            if created:
+                if not valid_sid(created) or not (sdir(created)/'state.json').is_file():
+                    raise UserError('이관한 대화 기록을 찾지 못했어요. 원래 기록은 유지돼요.')
+                dest = state_view(created)
+                if dest.get('continued_from') != {'session': source, 'job': a.job}:
+                    raise UserError('이관한 대화의 연결 정보가 달라요. 원래 기록은 유지돼요.')
+            else:
+                if job['status'] == 'done' or job.get('cancelled'):
+                    raise UserError('열린 요청만 새 대화로 이어갈 수 있어요.')
+                tasks = [t for t in old['tasks'] if t.get('job') == a.job and t['status'] != 'done']
+                if any(t['status'] != 'waiting' or pending_user_request(t) for t in tasks):
+                    raise UserError('진행 중인 작업을 먼저 마치거나 기다림으로 바꾸세요. 사용자 확인 대기는 먼저 해결하세요.')
+                if any(live_bg_watch(t) for t in tasks):
+                    raise UserError('Office 백그라운드 작업이 끝난 뒤 대화를 이어가세요.')
+                created = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
+                newjob = copy.deepcopy(job)
+                newjob.update(id=1, continued_from={'session': source, 'job': a.job}, started_at=time.time())
+                newtasks = copy.deepcopy(tasks)
+                ids = {t['id'] for t in newtasks}
+                for t in newtasks:
+                    t['job'] = 1
+                    t['continued_from'] = {'session': source, 'task': t['id']}
+                    if t.get('wait_on'):
+                        t['wait_on'] = [i for i in t['wait_on'] if i in ids]
+                    if t.get('wait_on') == []:
+                        t.pop('wait_on', None)
+                dest = {'jobs': [newjob], 'tasks': newtasks, 'msgs': [], 'seq': old['seq'],
+                        'chat_options': copy.deepcopy(old.get('chat_options', CHAT_OPTION_DEFAULTS)),
+                        'continued_from': {'session': source, 'job': a.job}}
+                post(dest, 'system', newjob.get('acting_lead', newjob['lead']), brief, 'msg', job=1, requires_action=True)
+                # 새 기록을 먼저 준비해요. 원래 요청을 이관한 뒤에만 목록에 공개해요.
+                # 목록 저장에 실패하면 같은 명령을 다시 실행해 준비된 대화를 공개해요.
+                atomic_json(sdir(created)/'state.json', dest, state_valid)
+                # 처음 만든 팀도 인계 메시지를 미처리 상태로 읽게 해요.
+                lead = newjob.get('acting_lead', newjob['lead'])
+                atomic_json(sdir(created)/f'{lead}.worker.json',
+                            {'read_upto': 0, 'pending_events': [1]}, checkpoint_valid)
+                for t in tasks:
+                    state_transition(t, 'done', continued_to=created,
+                                     note='새 대화에서 이어가요. 연구 완료를 뜻하지 않아요.')
+                state_transition(job, 'done', scope='job', continued_to=created,
+                                 summary='새 대화에서 학습을 이어가요. 수익 목표를 달성한 결과가 아니에요.')
+                event(old, f'요청 {a.job}을 새 대화 {created}에서 이어가요.', me(), job=a.job)
+        if not any(x['id'] == created for x in m['sessions']):
+            m['sessions'].append({'id': created, 'title': title, 'created': time.time(),
+                                  'updated': time.time(), 'deleted': False, 'continued_from': source})
+        set_current(m, created)
+    # 화면이 옛 대화를 보고 있어도 실행 중인 서버에 새 대화 팀을 준비시켜요.
+    info = running()
+    active, url = False, None
+    if info:
+        url = f"http://localhost:{info['port']}/?session={created}"
+        try:
+            opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+            with opener.open(f"http://127.0.0.1:{info['port']}/api/state?session={created}", timeout=45) as response:
+                reply = json.load(response)
+                active = reply.get('session') == created and not reply.get('error')
+        except (OSError, ValueError):
+            server_log('continue.activate')
+    print(json.dumps({'session': created, 'job': 1, 'from_session': source, 'from_job': a.job,
+                      'team_activated': active, 'url': url}, ensure_ascii=False))
+
+
 def cmd_progress(a):
     """오래 도는 작업의 진행(몇 개 중 몇 개, 지금 상태, 다시 시작 시각)을 작업에 남긴다. 화면·작업판에 늘 보이고 상대를 깨우지 않는다.
     office bg 로 띄운 명령 안에서는 OFFICE_TASK 가 잡혀 있어 ID 를 생략할 수 있다"""
@@ -1457,16 +1569,17 @@ def cmd_progress(a):
     text = " ".join(" ".join(words).split())[:160]
     if a.done is not None and a.done < 0 or a.total is not None and a.total < 0:
         raise UserError("입력 내용 확인 — 개수는 0 이상으로 적어 주세요.")
+    progress_sid = continued_progress_sid(current_sid(), task_id)
     resume_at = parse_resume_at(a.resume_at)
     # 설명 글자만 바뀐 잦은 갱신(몇 초마다)은 저장하지 않음: 저장마다 상태 파일 잠금을 쥐어 화면 조회와 대화 전환이 늦어짐
     try:
-        previous = next((x.get("progress") for x in state_view(current_sid())["tasks"] if x["id"] == task_id), None) or {}
+        previous = next((x.get("progress") for x in state_view(progress_sid)["tasks"] if x["id"] == task_id), None) or {}
     except (StorageError, OSError, KeyError, TypeError):
         previous = {}
     if (previous and not a.notify and getattr(a, "state", None) is None and time.time() - previous.get("at", 0) < 5
             and previous.get("done") == a.done and previous.get("total") == a.total and previous.get("resume_at") == resume_at):
         return print(f"#{task_id} 진행 기록 생략 · 5초 안에 이미 기록함")
-    with state(True) as s:
+    with continued_progress_state(progress_sid, task_id) as s:
         t = find(s, task_id)
         if t["status"] == "done":
             sys.exit(f"#{task_id} 는 이미 끝난 작업입니다.")
@@ -7478,7 +7591,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "correction", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"continue", "login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "correction", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -7492,6 +7605,8 @@ def main():
     x = sp.add_parser("login", help="대화에서 로그인: start·code·status"); x.add_argument("step", choices=("start", "code", "status"))
     x.add_argument("name", choices=AGENTS); x.add_argument("code", nargs="?"); x.set_defaults(f=cmd_login)
     x = sp.add_parser("import", help="다른 작업 폴더의 대화 가져오기"); x.add_argument("source"); x.set_defaults(f=cmd_import)
+    x = sp.add_parser("continue", help="짧은 인계로 새 대화에서 이어가기"); x.add_argument("--job", type=int, required=True)
+    x.add_argument("--brief-file", required=True); x.add_argument("--title", required=True); x.set_defaults(f=cmd_continue)
     sp.add_parser("board").set_defaults(f=cmd_board)
     x = sp.add_parser("log"); x.add_argument("dir", nargs="?"); x.add_argument("-n", type=int, default=20); x.add_argument("-f", "--follow", action="store_true")
     x.set_defaults(f=cmd_log)
