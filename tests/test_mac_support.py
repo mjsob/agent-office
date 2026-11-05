@@ -186,7 +186,7 @@ class Desktop(unittest.TestCase):
     def test_features_hide_unsupported(self):
         with patch.object(o, "mac_browser_app", lambda: None), patch.object(o.Path, "home", lambda: Path(TMP.name)):
             self.assertEqual(o.platform_features(), {"mac": True, "storage": False, "resources": False,
-                                                     "app_window": False, "claude_limits": False, "powershell": None, "windows_helper": None})
+                                                     "app_window": False, "claude_limits": False, "powershell": None, "windows_helper": None, "taskbar_attention": False})
         with patch.object(o, "mac_browser_app", lambda: Path("/Applications/Google Chrome.app")):
             self.assertTrue(o.platform_features()["app_window"])
         self.assertIsNone(o.resource_view())

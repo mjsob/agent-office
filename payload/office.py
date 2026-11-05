@@ -5507,7 +5507,7 @@ def powershell_available(wait=False):
             server_log("powershell.unavailable", error)
         finally:
             with POWERSHELL_CACHE_LOCK:
-                POWERSHELL_CACHE.update(at=time.monotonic(), available=available, helper_available=helper_available, checking=False)
+                POWERSHELL_CACHE.update(at=time.monotonic(), available=available, helper_available=helper_available, attention_available=helper_available and native.get("taskbar_attention") is True, checking=False)
     with POWERSHELL_CACHE_LOCK:
         if time.monotonic() - POWERSHELL_CACHE.get("at", -1000) < 60:
             return POWERSHELL_CACHE.get("available")
@@ -5533,7 +5533,26 @@ def platform_features():
                and (powershell is True or helper is True))
     return {"mac": IS_MAC, "storage": storage, "resources": not IS_MAC,
             "app_window": app_window_available(), "claude_limits": claude_limits_readable(),
-            "powershell": powershell, "windows_helper": helper}
+            "powershell": powershell, "windows_helper": helper,
+            "taskbar_attention": bool(not IS_MAC and os.environ.get("WSL_DISTRO_NAME") and POWERSHELL_CACHE.get("attention_available"))}
+
+
+
+def window_attention(office, payload):
+    """화면을 소유한 창이 요청할 때 작업 표시줄 알림을 켜거나 꺼요."""
+    if IS_MAC or not os.environ.get("WSL_DISTRO_NAME"):
+        raise UserError("이 PC에서는 작업 표시줄 알림을 쓸 수 없어요.")
+    if not isinstance(payload, dict) or type(payload.get("active")) is not bool:
+        raise UserError("작업 표시줄 알림 설정을 확인하세요.")
+    client, title = payload.get("client"), payload.get("title")
+    if not isinstance(client, str) or not client or client != getattr(office, "window_owner", None):
+        raise UserError("현재 Office 창에서 다시 시도하세요.")
+    if not isinstance(title, str) or len(title) > 1000 or any(c in title for c in "\r\n\0") or not (title == "Office" or title.endswith(" — Office")):
+        raise UserError("Office 창 정보를 확인하지 못했어요.")
+    native = native_windows_call("attention", "start" if payload["active"] else "stop", title)
+    if not isinstance(native, dict) or type(native.get("matched")) is not int:
+        raise UserError("작업 표시줄 알림을 실행하지 못했어요. Windows 도우미를 확인하세요.")
+    return native
 
 
 def resource_view():
@@ -6378,7 +6397,7 @@ class Office:
         self.gitcache[sid] = (time.time(), info)
         return info
 
-    def snapshot(self, sid=None, since_rev=None, since_msgs=None):
+    def snapshot(self, sid=None, since_rev=None, since_msgs=None, mark_seen=True):
         cur = sid or current_sid()
         m = meta_view()
         if not valid_sid(cur) or not any(x["id"] == cur and not x["deleted"] for x in m["sessions"]):
@@ -6416,9 +6435,9 @@ class Office:
                 x.update(open=0, status_counts={}, status_kind="done", status_reason="")
                 notice[x["id"]] = 0
         # 알림 점: 사용자에게 온 보고·메시지·요청 완료가 있는데 아직 안 본 대화. 보고 있는 대화는 본 것으로 처리
-        if any("seen" not in x or (x["id"] == cur and x["seen"] < notice[x["id"]]) for x in sessions):
+        if any("seen" not in x or (mark_seen and x["id"] == cur and x["seen"] < notice[x["id"]]) for x in sessions):
             marks = {x["id"]: max(x.get("seen", 0), notice[x["id"]]) for x in sessions
-                     if "seen" not in x or x["id"] == cur}
+                     if "seen" not in x or (mark_seen and x["id"] == cur)}
             def save_seen(m):
                 for y in m["sessions"]:
                     if y["id"] in marks:
@@ -6428,6 +6447,8 @@ class Office:
                 x["seen"] = marks.get(x["id"], x.get("seen", notice[x["id"]]))
         for x in sessions:
             # 진행 중인 요청이 남아 있으면 중간 보고라도 반짝이지 않는다. 다 끝난 뒤(또는 요청 없이 온 결과)에만 알린다
+            x["notice_at"] = notice[x["id"]]
+            x["attention_unread"] = not x.get("deleted") and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
             x["unread"] = x["id"] != cur and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
             x["busy"] = display_busy.get(x["id"], self.busy(x["id"]))
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
@@ -6939,7 +6960,9 @@ def make_handler(office):
                     since_msgs = query.get("since_msgs", [None])[0]
                     if since_msgs is not None and (len(since_msgs) > 64 or not re.fullmatch(r"[0-9-]+", since_msgs)):
                         since_msgs = None
-                    if previous is not None or since_msgs:
+                    if query.get("focused", [None])[0] == "0":
+                        snapshot = office.snapshot(selected, since_rev=previous, since_msgs=since_msgs, mark_seen=False)
+                    elif previous is not None or since_msgs:
                         snapshot = office.snapshot(selected, since_rev=previous, since_msgs=since_msgs)
                     else:
                         snapshot = office.snapshot(selected) if selected else office.snapshot()
@@ -6986,7 +7009,8 @@ def make_handler(office):
                 self.json_reply(500, {"error": "화면 정보 처리 실패 — 화면 정보를 처리하지 못했습니다. 잠시 후 다시 시도하세요."})
 
         def do_POST(self):
-            if urlsplit(self.path).path != "/api":
+            request_path = urlsplit(self.path).path
+            if request_path not in ("/api", "/api/window-attention"):
                 return self.json_reply(404, {"error": "주소를 찾을 수 없음 — 주소를 찾을 수 없습니다."})
             if not self.trusted_request():
                 return self.json_reply(403, {"error": "요청 출처 확인 필요 — 다른 웹사이트에서 보낸 요청은 허용하지 않습니다."})
@@ -7009,7 +7033,7 @@ def make_handler(office):
                 self.close_connection = True
                 return self.json_reply(408, {"error": "요청 수신 시간 초과 — 요청 수신 시간이 초과됐습니다. 다시 보내세요."})
             try:
-                message = office.handle(payload)
+                message = window_attention(office, payload) if request_path == "/api/window-attention" else office.handle(payload)
                 self.json_reply(200, message if isinstance(message, dict) else ({"ok": message} if message else {}))
             except UserError as error:
                 self.json_reply(400, {"error": str(error)})

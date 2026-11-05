@@ -40,6 +40,7 @@ public static class OfficeWin {
                 case "probe": return Probe();
                 case "icon": return Icon();
                 case "focus": return Focus();
+                case "attention": return Attention();
                 case "measure": return Measure();
                 case "status": return Status();
                 case "launch": return Launch();
@@ -157,7 +158,7 @@ public static class OfficeWin {
     static void HideConsole() { try { FreeConsole(); } catch (Exception) { } }
 
     // ---------- probe ----------
-    static int Probe() { Print(Obj("ok", true, "api", Api, "admin", IsAdmin())); return 0; }
+    static int Probe() { Print(Obj("ok", true, "api", Api, "admin", IsAdmin(), "taskbar_attention", true)); return 0; }
 
     // ---------- measure ----------
     static int Measure() {
@@ -265,6 +266,52 @@ public static class OfficeWin {
         int changed = 0;
         for (int i = 0; i < 30; i++) { changed += IconUpdate(icon + ",0"); Thread.Sleep(200); }
         Print(Obj("updated", changed));
+        return 0;
+    }
+
+    // ---------- attention (작업 표시줄만 깜빡이고 포커스는 바꾸지 않아요) ----------
+    [StructLayout(LayoutKind.Sequential)] struct FlashInfo {
+        public uint size; public IntPtr window; public uint flags, count, timeout;
+    }
+    [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FlashInfo info);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    static bool IsOfficeBrowserWindow(IntPtr window, string caption) {
+        if (!IsWindowVisible(window)) return false;
+        StringBuilder title = new StringBuilder(1024); GetWindowText(window, title, title.Capacity);
+        if (title.ToString() != caption) return false;
+        uint pid; GetWindowThreadProcessId(window, out pid);
+        try {
+            string name = Process.GetProcessById((int)pid).ProcessName;
+            if (!string.Equals(name, "chrome", StringComparison.OrdinalIgnoreCase) && !string.Equals(name, "msedge", StringComparison.OrdinalIgnoreCase)) return false;
+        } catch (Exception) { return false; }
+        OfficeIconStore store; Guid iid = typeof(OfficeIconStore).GUID;
+        if (SHGetPropertyStoreForWindow(window, ref iid, out store) < 0) return false;
+        try {
+            string id = IconRead(store, 5);
+            return id.StartsWith("Chrome.localhost_/", StringComparison.Ordinal) || id.StartsWith("MSEdge.localhost_/", StringComparison.Ordinal);
+        } finally { Marshal.ReleaseComObject(store); }
+    }
+    static int Attention() {
+        if (rest.Count != 2 || (rest[0] != "start" && rest[0] != "stop" && rest[0] != "inspect")) return 64;
+        string caption = rest[1];
+        if (caption.Length > 1000 || (caption != "Office" && !caption.EndsWith(" — Office", StringComparison.Ordinal)) || caption.IndexOfAny(new char[] { '\r', '\n', '\0' }) >= 0) return 64;
+        var targets = new List<IntPtr>();
+        EnumWindows(delegate(IntPtr window, IntPtr unused) {
+            if (IsOfficeBrowserWindow(window, caption)) targets.Add(window);
+            return true;
+        }, IntPtr.Zero);
+        if (targets.Count != 1) { Print(Obj("ok", false, "matched", targets.Count, "flashing", false)); return 0; }
+        IntPtr target = targets[0];
+        bool foreground = target == GetForegroundWindow();
+        bool flash = rest[0] == "start" && !foreground;
+        uint flags = flash ? 0x0000000Eu : 0u; // FLASHW_TRAY | FLASHW_TIMERNOFG / FLASHW_STOP
+        if (rest[0] != "inspect") {
+            var info = new FlashInfo { size = (uint)Marshal.SizeOf(typeof(FlashInfo)), window = target, flags = flags, count = uint.MaxValue, timeout = 0 };
+            // 반환값은 성공 여부가 아니라 호출 전 활성 상태예요.
+            FlashWindowEx(ref info);
+        }
+        Print(Obj("ok", true, "matched", 1, "flashing", flash, "foreground", foreground, "hwnd", target.ToInt64(), "flags", flags));
         return 0;
     }
 
