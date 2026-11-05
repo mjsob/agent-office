@@ -36,7 +36,8 @@ def run(features):
                 return r.abort()
             if mode["now"] == "hold" and body["active"]:
                 held.append(r); return   # 켜기 응답을 붙잡아 두고 그 사이에 창으로 돌아와요
-            r.fulfill(json={"ok": True, "matched": 0 if mode["now"] == "matched0" else 1, "flashing": body["active"] and mode["now"] == "ok"})
+            matched = {"matched0": 0, "matched2": 2}.get(mode["now"], 1)
+            r.fulfill(json={"ok": mode["now"] != "okfalse", "matched": matched, "flashing": body["active"] and mode["now"] == "ok"})
         context.route("**/api/state*", state_route)
         context.route("**/api/window-attention", attention_route)
         context.route("**/api", lambda r: r.fulfill(json={}))
@@ -95,6 +96,12 @@ def run(features):
         retry["stop_fails"] = new_posts(lambda: sessions())
         mode["now"] = "ok"
         retry["stop_retry_ok"] = new_posts(lambda: (sessions(), sessions()))
+        notice["c"] = 3
+        for bad in ("matched2", "okfalse"):
+            mode["now"] = bad
+            retry[bad] = new_posts(lambda: (sessions("c"), sessions("c")))
+            mode["now"] = "ok"; sessions()
+            page.wait_for_timeout(1300)
         mode["now"] = "fail"; notice["a"] = 2
         retry["gives_up_after_5"] = new_posts(lambda: [sessions("a") for _ in range(8)])
         mode["now"] = "ok"
@@ -138,6 +145,7 @@ r = win["retry"]
 assert r["matched0_first"][:1] == [True] and set(r["matched0_first"] + r["matched0_retry"]) == {True} and len(r["matched0_first"] + r["matched0_retry"]) >= 2, r
 assert r["found_after_retry"] in ([True], []) and r["after_found_quiet"] == [], r
 assert r["stop_fails"][:1] == [False] and set(r["stop_fails"] + r["stop_retry_ok"]) == {False} and len(r["stop_fails"] + r["stop_retry_ok"]) >= 2, r
+assert r["matched2"][0] is True and len(r["matched2"]) >= 2 and r["okfalse"][0] is True and len(r["okfalse"]) >= 2, r   # 성공으로 안 치고 다시 보내요
 assert r["gives_up_after_5"] == [True] * 5, r
 assert r["start_held"] == [True] and r["focus_during_start"] == [] and r["after_start_reply"] == [False], r   # 늦게 온 켜기 응답 뒤에 끄기가 마지막으로 가요
 assert win["away_query"] == "0" and win["back_query"] == "1", (win["away_query"], win["back_query"])
