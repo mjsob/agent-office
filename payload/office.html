@@ -1382,7 +1382,8 @@ const windowAway = () => document.hidden || !document.hasFocus();
 function sendAttention(active) {
   if (attentionActive === active) return;
   attentionActive = active;
-  fetch("/api/window-attention", {method: "POST", body: JSON.stringify({active}), signal: AbortSignal.timeout(5000)}).catch(() => {});
+  if (!clientId) return;   // headless 점검 화면은 실제 창이 없어요
+  fetch("/api/window-attention", {method: "POST", body: JSON.stringify({active, title: document.title, client: clientId}), signal: AbortSignal.timeout(5000)}).catch(() => {});
 }
 function applyAttention() {
   for (const id of attentionSeen) if (!unreadIds.has(id)) attentionSeen.delete(id);   // 읽은 대화가 다시 끝나면 또 알려요
@@ -1400,8 +1401,8 @@ function cycleAttention() {
   try { localStorage.officeAttention = attentionOn() ? "off" : "on"; } catch (e) {}
   renderAttention(); applyAttention();
 }
-window.addEventListener("focus", applyAttention); window.addEventListener("blur", applyAttention);
-document.addEventListener("visibilitychange", applyAttention);   // 설정 줄은 서버가 기능을 알려 준 뒤(applyPlatform) 그려요
+window.addEventListener("focus", () => { applyAttention(); refresh(); }); window.addEventListener("blur", applyAttention);   // 돌아오면 바로 다시 조회해 읽음으로 바꿔요
+document.addEventListener("visibilitychange", () => { applyAttention(); if (!windowAway()) refresh(); });   // 설정 줄은 서버가 기능을 알려 준 뒤(applyPlatform) 그려요
 function renderSessions(list, cur) {
   window._sessions = list;
   const live = list.filter(x => !x.deleted).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.pinned && b.pinned ? (a.pinned_at || 0) - (b.pinned_at || 0) || a.id.localeCompare(b.id) : b.updated - a.updated));
@@ -1419,7 +1420,7 @@ function renderSessions(list, cur) {
   $("#emptyTrash").hidden = !dead.length;
   const curTitle = list.find(x => x.id === cur)?.title;
   document.title = curTitle && curTitle !== "새 대화" ? `${curTitle} — Office` : "Office";
-  unreadIds = new Set(live.filter(x => x.unread).map(x => x.id));
+  unreadIds = new Set(live.filter(x => x.attention_unread ?? x.unread).map(x => `${x.id}:${x.notice_at ?? ""}`));   // 같은 대화라도 새로 끝나면 다시 알려요
   if (!attentionPrimed) { attentionPrimed = true; unreadIds.forEach(id => attentionSeen.add(id)); }   // 화면을 열 때 이미 있던 완료는 다시 알리지 않아요
   applyAttention();
   $("#tlist").innerHTML = dead.map(x => `<div class="sitem">
@@ -2399,6 +2400,7 @@ async function doRefresh() {
     if (curSession && !follow && lastMessagesSession === curSession && lastMessagesKey)
       q += (q ? "&" : "?") + "since_msgs=" + encodeURIComponent(lastMessagesKey);
     if (clientId) q += (q ? "&" : "?") + "client=" + encodeURIComponent(clientId);
+    q += (q ? "&" : "?") + "focused=" + (windowAway() ? 0 : 1);   // 창이 뒤에 있으면 보고 있는 대화도 읽음으로 바꾸지 않아요
     const r = await fetch("/api/state" + q, {signal: AbortSignal.timeout(15000)});
     s = await r.json().catch(() => ({}));
     if (!r.ok || s.error) {
