@@ -26,7 +26,7 @@ from urllib.parse import urlsplit, parse_qs
 
 AGENTS = ("claude", "codex")
 PROTOCOL_REFRESH_TURNS = 8   # 이어지는 차례에서 작업 지침 전문을 다시 보내는 주기
-ROTATE_CTX = int(os.environ.get("OFFICE_ROTATE_CTX") or 150_000)   # 새 요청 시작 때 이보다 긴 세션은 새로 시작
+ROTATE_CTX = int(os.environ.get("OFFICE_ROTATE_CTX") or 150_000)   # 차례 경계에서 이보다 긴 작업 세션은 같은 요청 안에서도 새로 시작
 IDLE_RECHECK = 10      # 초: 할 일 없이 쉬는 동안 기록이 그대로여도 장애 전환·멈춤 점검은 이 간격으로 다시 해요
 POLL = 1              # 초: 작업 배정·사용자 메시지를 빠르게 반영
 MODEL_FALLBACKS = {"codex": ["gpt-6-sol", "gpt-6-luna"], "claude": ["sonnet", "opus"]}
@@ -1478,6 +1478,33 @@ def continued_progress_state(sid, task_id):
                 raise UserError('이어서 할 대화를 찾지 못했어요. 원래 대화의 이관 기록을 확인하세요.')
         sid = target
     raise UserError('대화 연결이 반복돼요. 이관 기록을 확인하세요.')
+
+
+def cmd_fresh(a):
+    """같은 Office 대화에서 다음 차례의 작업용 채팅만 새로 시작해요."""
+    name = a.name or me()
+    if name not in AGENTS or me() not in ('user', name):
+        raise UserError('자기 작업용 세션만 새로 시작할 수 있어요. 사용자라면 담당 이름을 지정하세요.')
+    sid = current_sid()
+    folder = sdir(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder/f'{name}.run.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Codex는 시작 때만 세션 ID를 저장해요. 자기 실행 중에도 다음 차례를 준비할 수 있어요.
+            # Claude는 차례 끝에 ID를 다시 쓰므로 실행이 끝난 뒤에만 바꿔요.
+            if name != 'codex' or me() != name or not os.environ.get('OFFICE_RUN_TOKEN'):
+                raise UserError('담당의 현재 차례가 끝난 뒤 새 작업 세션을 준비하세요.')
+            require_run_token()
+        pointer = folder/f'{name}.sid'
+        if not pointer.exists():
+            print('다음 차례는 이미 새 작업 세션으로 시작해요.')
+            return
+        pointer.replace(folder/f'{name}.sid.previous')
+    with state(True) as record:
+        event(record, f'{disp(name)}의 다음 차례를 새 작업 세션으로 시작해요. 대화와 작업은 그대로 유지해요.', me(), job=message_job(record))
+    print('다음 차례에 새 작업 세션을 시작해요. 기존 대화와 학습은 그대로 유지해요.')
 
 
 def cmd_continue(a):
@@ -3905,16 +3932,13 @@ class Worker:
         return "\n".join(out)
 
     def rotate_session(self, job, desc):
-        """세션이 길어지면 차례마다 이전 대화를 통째로 다시 읽어 느려지고 사용량도 많이 든다.
-        새 요청을 처음 맡는 차례에서 컨텍스트가 ROTATE_CTX 토큰을 넘었으면 새 세션으로 시작한다(요청 도중엔 안 바꿈)"""
-        new_request = job is not None and job != getattr(self, "ctx_job", None)
-        if new_request:
-            self.ctx_job = job
-        if not new_request or getattr(self, "ctx_tokens", 0) <= ROTATE_CTX:
+        """같은 요청을 이어가는 중에도 차례 경계에서 긴 작업 세션을 새로 시작해요."""
+        self.ctx_job = job
+        if getattr(self, 'ctx_tokens', 0) <= ROTATE_CTX:
             return False
-        (sdir(self.sid) / f"{self.name}.sid").unlink(missing_ok=True)
-        self.agent_log(f"대화가 길어져 새 세션으로 이어서 시작해요 (요청 {job}, 기억 {self.ctx_tokens:,}토큰 > 기준 {ROTATE_CTX:,}토큰). 최근 요청·보고는 넘겨줘요")
-        server_log("agent.rotate." + self.name)
+        (sdir(self.sid) / f'{self.name}.sid').unlink(missing_ok=True)
+        self.agent_log(f'작업 세션이 길어져 새로 시작해요 (요청 {job}, 기억 {self.ctx_tokens:,}토큰 > 기준 {ROTATE_CTX:,}토큰). Office 대화와 작업은 유지해요.')
+        server_log('agent.rotate.' + self.name)
         self.ctx_tokens = 0
         return True
 
@@ -7591,7 +7615,7 @@ def main():
     if argv[:1] in (["--version"], ["-V"], ["version"]):
         print(f"Office {office_version()}")
         return
-    sub = {"continue", "login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "correction", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
+    sub = {"fresh", "continue", "login", "import", "stop", "board", "log", "add", "claim", "done", "wait", "need-user", "resolve-user", "bg", "progress", "handoff", "say", "retag", "finish", "scores", "verdict", "correction", "title", "lesson", "shot", "reserve", "release", "write", "-h", "--help"}
     if not argv or argv[0] not in sub:          # office [폴더]  → GUI
         if argv:
             # 오타난 명령이 새 작업 폴더로 열리지 않게, 이미 있는 폴더만 받는다
@@ -7607,6 +7631,7 @@ def main():
     x = sp.add_parser("import", help="다른 작업 폴더의 대화 가져오기"); x.add_argument("source"); x.set_defaults(f=cmd_import)
     x = sp.add_parser("continue", help="짧은 인계로 새 대화에서 이어가기"); x.add_argument("--job", type=int, required=True)
     x.add_argument("--brief-file", required=True); x.add_argument("--title", required=True); x.set_defaults(f=cmd_continue)
+    x = sp.add_parser("fresh", help="다음 차례에 새 작업용 채팅 시작"); x.add_argument("name", nargs="?", choices=AGENTS); x.set_defaults(f=cmd_fresh)
     sp.add_parser("board").set_defaults(f=cmd_board)
     x = sp.add_parser("log"); x.add_argument("dir", nargs="?"); x.add_argument("-n", type=int, default=20); x.add_argument("-f", "--follow", action="store_true")
     x.set_defaults(f=cmd_log)
