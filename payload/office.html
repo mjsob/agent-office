@@ -1376,22 +1376,37 @@ function sessionStatusHtml(x) {
 }
 // 창이 뒤에 있을 때 새로 끝난 대화가 생기면 Windows 작업 표시줄의 Office 아이콘을 깜빡여요. 창을 보거나 다 읽으면 멈춰요.
 let unreadIds = new Set(), attentionSeen = new Set(), attentionActive = false, attentionPrimed = false;
+let attentionSynced = true, attentionInflight = false, attentionTries = 0, attentionGen = 0;
 function attentionOn() { try { return localStorage.officeAttention !== "off"; } catch (e) { return true; } }
 const attentionAvailable = () => platformFeatures.taskbar_attention === true && platformFeatures.mac !== true;
 const windowAway = () => document.hidden || !document.hasFocus();
-function sendAttention(active) {
-  if (attentionActive === active) return;
-  attentionActive = active;
-  if (!clientId) return;   // headless 점검 화면은 실제 창이 없어요
-  fetch("/api/window-attention", {method: "POST", body: JSON.stringify({active, title: document.title, client: clientId}), signal: AbortSignal.timeout(5000)}).catch(() => {});
+// 실패하거나 아직 창을 못 찾으면(matched 0) 다음 화면 갱신 때 다시 보내요. 5번 넘게 실패하면 다음 상태 변화까지 멈춰요.
+function postAttention() {
+  if (!clientId) { attentionSynced = true; return; }   // headless 점검 화면은 실제 창이 없어요
+  const active = attentionActive, gen = attentionGen;
+  attentionInflight = true;
+  fetch("/api/window-attention", {method: "POST", body: JSON.stringify({active, title: document.title, client: clientId}), signal: AbortSignal.timeout(5000)})
+    .then(r => r.json().then(j => r.ok && !j.error && (!active || j.matched > 0)).catch(() => false))
+    .catch(() => false)
+    .then(ok => {
+      attentionInflight = false;
+      if (gen !== attentionGen) return postAttention();   // 보내는 사이 상태가 바뀌거나 새 완료가 생기면 바로 다시 보내요
+      attentionSynced = ok || ++attentionTries >= 5;
+    });
+}
+function sendAttention(active, again = false) {
+  if (attentionActive === active && !again) return;
+  attentionActive = active; attentionSynced = false; attentionTries = 0; attentionGen++;
+  if (!attentionInflight) postAttention();
 }
 function applyAttention() {
+  if (!attentionSynced && !attentionInflight) postAttention();
   for (const id of attentionSeen) if (!unreadIds.has(id)) attentionSeen.delete(id);   // 읽은 대화가 다시 끝나면 또 알려요
   const fresh = [...unreadIds].some(id => !attentionSeen.has(id));
   const away = windowAway(), enabled = attentionOn() && attentionAvailable();
   if (!away || !enabled) { unreadIds.forEach(id => attentionSeen.add(id)); sendAttention(false); return; }   // 보고 있던 완료는 나중에 알리지 않아요
   if (!unreadIds.size) return sendAttention(false);
-  if (fresh) { unreadIds.forEach(id => attentionSeen.add(id)); if (attentionActive) attentionActive = false; sendAttention(true); }
+  if (fresh) { unreadIds.forEach(id => attentionSeen.add(id)); sendAttention(true, true); }
 }
 function renderAttention() {
   const b = $("#attention"); if (b) b.textContent = attentionOn() ? "켜짐" : "꺼짐";

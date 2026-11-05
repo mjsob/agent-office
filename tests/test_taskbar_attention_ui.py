@@ -18,6 +18,7 @@ def run(features):
              "messages": [], "tasks": [], "jobs": [], "features": features, "file_manager": "탐색기"}
     posts, errors, bodies, focused = [], [], [], []
     notice = {"s": 1, "a": 1, "b": 1, "c": 1}
+    mode = {"now": "ok"}
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(viewport={"width": 1400, "height": 900}, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36")
@@ -30,7 +31,9 @@ def run(features):
             body = json.loads(r.request.post_data)
             bodies.append(body)
             posts.append(body["active"])
-            r.fulfill(json={"ok": True, "matched": 1, "flashing": body["active"]})
+            if mode["now"] == "fail":
+                return r.abort()
+            r.fulfill(json={"ok": True, "matched": 0 if mode["now"] == "matched0" else 1, "flashing": body["active"] and mode["now"] == "ok"})
         context.route("**/api/state*", state_route)
         context.route("**/api/window-attention", attention_route)
         context.route("**/api", lambda r: r.fulfill(json={}))
@@ -76,13 +79,29 @@ def run(features):
         notice["b"] = 2
         steps["same_chat_done_again_unread"] = sessions("a", "b")
         steps["all_read_while_away"] = sessions()
+        def new_posts(fn):
+            start = len(posts); fn(); return posts[start:]
+        retry = {}
+        mode["now"] = "matched0"; notice["c"] = 2
+        retry["matched0_first"] = new_posts(lambda: sessions("c"))
+        retry["matched0_retry"] = new_posts(lambda: sessions("c"))
+        mode["now"] = "ok"
+        retry["found_after_retry"] = new_posts(lambda: sessions("c"))
+        retry["after_found_quiet"] = new_posts(lambda: (sessions("c"), sessions("c")))
+        mode["now"] = "fail"
+        retry["stop_fails"] = new_posts(lambda: sessions())
+        mode["now"] = "ok"
+        retry["stop_retry_ok"] = new_posts(lambda: (sessions(), sessions()))
+        mode["now"] = "fail"; notice["a"] = 2
+        retry["gives_up_after_5"] = new_posts(lambda: [sessions("a") for _ in range(8)])
+        mode["now"] = "ok"
         away_query, before = focused[-1], len(focused)
         page.evaluate("window.__focus = true; window.dispatchEvent(new Event('focus'))"); page.wait_for_timeout(150)
         back_query = focused[before] if len(focused) > before else None   # 돌아오자마자 바로 다시 조회해요
         title = page.title()
         icon_after = page.evaluate("document.querySelector('link[rel=icon]').getAttribute('href')")
         browser.close()
-    return {"bodies": bodies, "away_query": away_query, "back_query": back_query, "row": row, "label": label, "steps": steps, "errors": errors, "title": title, "icon": [icon, icon_after]}
+    return {"retry": retry, "bodies": bodies, "away_query": away_query, "back_query": back_query, "row": row, "label": label, "steps": steps, "errors": errors, "title": title, "icon": [icon, icon_after]}
 
 
 win = run(WIN)
@@ -103,6 +122,10 @@ assert s["new_while_off"] == s["setting_off"] and s["setting_on_no_new"] == s["s
 assert s["new_after_on"] == s["setting_off"] + [True]
 assert s["same_chat_done_again_unread"] == s["setting_off"] + [True, True]
 assert s["all_read_while_away"] == s["setting_off"] + [True, True, False]
+r = win["retry"]
+assert r["matched0_first"] == [True] and r["matched0_retry"] == [True] and r["found_after_retry"] == [True] and r["after_found_quiet"] == [], r
+assert r["stop_fails"] == [False] and r["stop_retry_ok"] == [False], r
+assert r["gives_up_after_5"] == [True] * 5, r
 assert win["away_query"] == "0" and win["back_query"] == "1", (win["away_query"], win["back_query"])
 assert all(set(b) == {"active", "title", "client"} and b["title"].endswith(" — Office") and len(b["client"]) == 36 for b in win["bodies"]), win["bodies"]
 assert "(" not in win["title"] and win["icon"][0] == win["icon"][1] == "/favicon.ico"
