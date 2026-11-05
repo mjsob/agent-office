@@ -705,6 +705,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <section id="settings" class="settings-panel" aria-label="설정" hidden>
   <div class="settings-heading"><h3>설정</h3><button class="ghost" aria-label="설정 닫기" onclick="toggleSettings(false, true)"><svg class="i sm"><use href="#i-x"/></svg></button></div>
   <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
+  <div class="set-row"><span>안 읽은 대화 표시</span><button id="attention" class="ghost" onclick="cycleAttention()"></button></div>
   <div class="set-row" id="appWindowRow" hidden><span>창 모양</span><button id="appWindow" class="ghost" onclick="openAppWindow()">앱 창으로 열기</button></div>
   <p id="powershellNotice" hidden>PowerShell을 쓸 수 없어 작업 표시줄 아이콘과 창 앞으로 가져오기가 적용되지 않아요.</p>
   <div id="storageSettingsGroup" hidden>
@@ -1373,6 +1374,45 @@ function sessionStatusHtml(x) {
   const waiting = x.status_kind === "waiting";
   return ask + `<span class="live ${waiting ? "waiting" : ""}"${why}>${waiting ? icon("waiting", "sm") : ""}${esc(parts.join(" · ") || `진행 중 ${x.open}`)}</span>`;
 }
+// 창이 뒤에 있을 때 안 읽은 대화가 있으면 제목 앞에 (N)을 붙이고 아이콘에 파란 점을 얹어요. 창을 보면 원래대로 돌아와요.
+let baseTitle = "Office", unreadCount = 0, iconBase = null, iconBadged = "", iconState = "";
+const iconLink = () => document.querySelector('link[rel="icon"]');
+const ORIGINAL_ICON = {href: iconLink().getAttribute("href"), sizes: iconLink().getAttribute("sizes")};
+function attentionOn() { try { return localStorage.officeAttention !== "off"; } catch (e) { return true; } }
+function drawBadgedIcon(img) {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d");
+  if (img) g.drawImage(img, 0, 0, 64, 64);
+  g.beginPath(); g.arc(48, 48, 15, 0, Math.PI * 2); g.fillStyle = "#4c8dff"; g.fill();
+  g.lineWidth = 4; g.strokeStyle = "#fff"; g.stroke();
+  return c.toDataURL("image/png");
+}
+function setIcon(badged) {
+  const l = iconLink(); if (!l) return;
+  if (!badged) { l.setAttribute("href", ORIGINAL_ICON.href); if (ORIGINAL_ICON.sizes) l.setAttribute("sizes", ORIGINAL_ICON.sizes); return; }
+  const apply = () => { l.setAttribute("href", iconBadged); l.removeAttribute("sizes"); };
+  if (iconBadged) return apply();
+  const img = new Image();
+  img.onload = () => { iconBadged = drawBadgedIcon(img); if (iconState === "on") apply(); };
+  img.onerror = () => { iconBadged = drawBadgedIcon(null); if (iconState === "on") apply(); };
+  img.src = ORIGINAL_ICON.href;
+}
+function applyAttention() {
+  const on = attentionOn() && unreadCount > 0 && (document.hidden || !document.hasFocus());
+  document.title = on ? `(${unreadCount}) ${baseTitle}` : baseTitle;
+  const state = on ? "on" : "off";
+  if (state !== iconState) { iconState = state; setIcon(on); }
+}
+function renderAttention() {
+  const b = $("#attention"); if (b) b.textContent = attentionOn() ? "켜짐" : "꺼짐";
+}
+function cycleAttention() {
+  try { localStorage.officeAttention = attentionOn() ? "off" : "on"; } catch (e) {}
+  renderAttention(); applyAttention();
+}
+window.addEventListener("focus", applyAttention); window.addEventListener("blur", applyAttention);
+document.addEventListener("visibilitychange", applyAttention);
+renderAttention();
 function renderSessions(list, cur) {
   window._sessions = list;
   const live = list.filter(x => !x.deleted).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.pinned && b.pinned ? (a.pinned_at || 0) - (b.pinned_at || 0) || a.id.localeCompare(b.id) : b.updated - a.updated));
@@ -1389,7 +1429,9 @@ function renderSessions(list, cur) {
   $("#trashLabel").textContent = dead.length ? `휴지통 (${dead.length})` : "휴지통";
   $("#emptyTrash").hidden = !dead.length;
   const curTitle = list.find(x => x.id === cur)?.title;
-  document.title = curTitle && curTitle !== "새 대화" ? `${curTitle} — Office` : "Office";
+  baseTitle = curTitle && curTitle !== "새 대화" ? `${curTitle} — Office` : "Office";
+  unreadCount = live.filter(x => x.unread).length;
+  applyAttention();
   $("#tlist").innerHTML = dead.map(x => `<div class="sitem">
       <div class="sm-meta"><div class="stitle" title="${esc(x.title)}">${esc(x.title)}</div><div class="ssub">${ago(x.deleted_at)} 삭제</div></div>
       <div class="acts">
