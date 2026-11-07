@@ -439,7 +439,9 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 /* 채팅 폭을 유지하면서 입력 영역 바로 위에 작업 상태를 보여요. */
 #typing { min-width: 0; background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 8px 14px; font-size: 12.5px; color: var(--muted); }
 #typing .tp { display: flex; align-items: center; gap: 6px; }
-#typing .tp::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--ok)); animation: pulse 1.2s ease-in-out infinite; }
+#typing .tp::before { flex: none; content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--ok)); animation: pulse 1.2s ease-in-out infinite; }
+#typing .tp-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#typing .tp.quiet::before { animation: none; background: var(--faint); }
 #typing .tp.quiet { color: var(--muted); }
 #typing .tp.err { color: var(--warn); }
 #typing .tp.err::before { animation: none; }
@@ -2240,6 +2242,20 @@ function updatePulses() {
     el.textContent = d < 300 ? "" : `응답 없음 ${Math.floor(d / 60)}분`;
   });
 }
+// 차례가 끝나도 실행·대기 중인 작업은 상태 줄에 남겨요. 완료·취소·이관한 작업은 빼요.
+function heldTypingRows(agents) {
+  return (lastTasks || []).filter(t => ["doing", "waiting"].includes(t.status) && t.owner
+    && !t.continued_to && !lastJobs.some(j => j.id === t.job && (j.cancelled || j.removed))
+    && (agents?.[t.owner]?.status !== "working" || t.status === "waiting" || t.wait_alive != null)).map(t => {
+    const p = t.progress || {}, stopped = t.wait_alive === false;
+    const waiting = t.wait_kind === "user" || t.wait_kind === "waiting" || p.state === "waiting" || p.resume_at > Date.now()/1000;
+    const running = !stopped && !waiting && t.wait_alive === true;
+    const state = stopped ? "결과 확인 대기" : t.wait_kind === "user" ? "사용자 확인 대기" : running ? "백그라운드 실행 중" : "기다리는 중";
+    const title = `${NAME[t.owner] || t.owner} · ${state} · 작업 ${tno(t)}`;
+    const detail = [t.title, stopped ? t.wait_detail || t.wait_reason : taskProgressText(t) || t.wait_detail || t.wait_reason].filter(Boolean).join(" · ");
+    return `<div class="tp ${running ? "" : "quiet"}" style="--c:var(--${t.owner})" data-held-task="${t.id}"><span class="tp-label" title="${esc(title)}">${esc(title)}</span></div><div class="tp-act" title="${esc(detail)}">${esc(detail)}</div>`;
+  }).join("");
+}
 // 대화창 바닥의 '돌아가는 중' 표시: 일하는 에이전트마다 한 줄 (뭘 하는지·걸린 시간·마지막 움직임). 멈춤·일시정지도 같이
 function updateTyping(agents) {
   const el = $("#typing"), sec = $("#tlsec");
@@ -2260,7 +2276,8 @@ function updateTyping(agents) {
     const last = liveNow ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
-  setHtmlIfChanged(el, rows); el.hidden = !rows;
+  const content = rows + heldTypingRows(agents);
+  setHtmlIfChanged(el, content); el.hidden = !content;
   if (stick) sec.scrollTop = sec.scrollHeight;
 }
 // '짧은 제목 — 상세 설명' 문구를 [제목, 상세]로 (구분자 없으면 상세 없음)
