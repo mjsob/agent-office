@@ -10,7 +10,7 @@ class TaskbarIcon(unittest.TestCase):
   for key in list(os.environ):
    if key.startswith('OFFICE_'):del os.environ[key]
   os.environ['OFFICE_DIR']=self.tmp.name
-  sp=importlib.util.spec_from_file_location('target',SOURCE);self.o=importlib.util.module_from_spec(sp);sp.loader.exec_module(self.o);self.o.server_log=lambda *a:None
+  sp=importlib.util.spec_from_file_location('target',SOURCE);self.o=importlib.util.module_from_spec(sp);sp.loader.exec_module(self.o);self.o.server_log=lambda *a:None;self.restore=self.o.restore_windows_assets;self.o.restore_windows_assets=lambda:False
  def test_native_script_uses_resource_path_and_scopes_office_windows(self):
   with patch.object(self.o.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=b'updated:1\r\n',stderr=b'')) as run:
    self.assertTrue(self.o.configure_taskbar_icon())
@@ -92,5 +92,48 @@ class PlatformAvailability(unittest.TestCase):
   with patch.object(o.subprocess,'run',return_value=subprocess.CompletedProcess([],5,b'',b'Access denied')),patch.object(o,'server_log') as log:
    self.assertEqual(o.focus_explorer_path('C:\\Users',True),'unknown')
    events=str(log.call_args_list);self.assertIn('exit=5',events);self.assertIn('Access denied',events)
+
+class RestoreWindowsAssets(unittest.TestCase):
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory(prefix='office-assets-test-');self.addCleanup(self.tmp.cleanup)
+  old=os.environ.copy();self.addCleanup(lambda:(os.environ.clear(),os.environ.update(old)))
+  for key in list(os.environ):
+   if key.startswith('OFFICE_'):del os.environ[key]
+  os.environ['OFFICE_DIR']=self.tmp.name;os.environ['WSL_DISTRO_NAME']='Ubuntu'
+  sp=importlib.util.spec_from_file_location('target2',SOURCE);self.o=importlib.util.module_from_spec(sp);sp.loader.exec_module(self.o);self.o.server_log=lambda *a:None
+  root=Path(self.tmp.name);self.app=root/'app';self.app.mkdir();(self.app/'office.ico').write_bytes(b'ICO');(self.app/'office_win_build.sh').write_text('#')
+  self.o.HERE=self.app;self.o.IS_MAC=False;self.o.WINDOWS_ASSET_REPAIR['at']=0.0;self.win=root/'Local'/'Office'
+  self.record=root/'windows-helper.json'
+ def built(self,path):
+  return subprocess.CompletedProcess([],0,stdout='noise\n'+'{"ok":true,"status":"built","reason":"x","path":"%s"}\n'%path,stderr='')
+ def test_deleted_folder_rebuilds_helper_and_icon(self):
+  self.record.write_text('{"path": "%s", "api": 1}'%(self.win/'office-win.exe'))
+  def run(cmd,**kw):
+   self.win.mkdir(parents=True);(self.win/'office-win.exe').write_bytes(b'x');return self.built(self.win/'office-win.exe')
+  with patch.object(self.o.subprocess,'run',side_effect=run) as r:
+   self.assertTrue(self.o.restore_windows_assets())
+  self.assertEqual(r.call_args.args[0][:2],['bash',str(self.app/'office_win_build.sh')])
+  self.assertEqual((self.win/'office.ico').read_bytes(),b'ICO')
+  self.assertIn(str(self.win/'office-win.exe'),self.record.read_text())
+ def test_existing_helper_only_fills_missing_icon_and_keeps_custom_icon(self):
+  self.win.mkdir(parents=True);(self.win/'office-win.exe').write_bytes(b'x');self.record.write_text('{"path": "%s", "api": 1}'%(self.win/'office-win.exe'))
+  with patch.object(self.o.subprocess,'run') as r:
+   self.assertTrue(self.o.restore_windows_assets());r.assert_not_called()
+   self.assertEqual((self.win/'office.ico').read_bytes(),b'ICO')
+   (self.win/'office.ico').write_bytes(b'MINE');self.o.restore_windows_assets()
+  self.assertEqual((self.win/'office.ico').read_bytes(),b'MINE')
+ def test_failed_build_is_throttled_and_nonfatal(self):
+  with patch.object(self.o.subprocess,'run',return_value=subprocess.CompletedProcess([],1,stdout='{"ok":false,"reason":"no csc"}\n',stderr='')) as r:
+   self.assertFalse(self.o.restore_windows_assets());self.assertFalse(self.o.restore_windows_assets())
+  self.assertEqual(r.call_count,1);self.assertFalse(self.record.exists())
+  with patch.object(self.o.subprocess,'run',side_effect=subprocess.TimeoutExpired([],200)):
+   self.o.WINDOWS_ASSET_REPAIR['at']=0.0;self.assertFalse(self.o.restore_windows_assets())
+ def test_not_wsl_or_mac_does_nothing(self):
+  del os.environ['WSL_DISTRO_NAME']
+  with patch.object(self.o.subprocess,'run') as r:
+   self.assertFalse(self.o.restore_windows_assets());r.assert_not_called()
+  os.environ['WSL_DISTRO_NAME']='Ubuntu';self.o.IS_MAC=True
+  with patch.object(self.o.subprocess,'run') as r:
+   self.assertFalse(self.o.restore_windows_assets());r.assert_not_called()
 
 if __name__=='__main__':unittest.main()

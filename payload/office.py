@@ -7348,10 +7348,58 @@ def running():
     return info
 
 
+WINDOWS_ASSET_REPAIR = {"at": 0.0}
+WINDOWS_ASSET_REPAIR_GAP = 600   # 초: 도우미 다시 만들기는 오래 걸려서 이 간격보다 자주 시도하지 않아요
+
+
+def restore_windows_assets():
+    """Windows 쪽 Office 폴더(%LOCALAPPDATA%\\Office)가 지워졌을 때 아이콘 파일과 도우미를 설치본에서 다시 채워요.
+    없는 파일만 채우고, 사용자가 바꾼 아이콘은 덮지 않아요. 도우미를 다시 만들었거나 있으면 True."""
+    if IS_MAC or not os.environ.get("WSL_DISTRO_NAME"):
+        return False
+    record_path = HERE.parent / "windows-helper.json"
+    record = read_json_file(record_path, {})
+    recorded = Path(record["path"]) if isinstance(record, dict) and isinstance(record.get("path"), str) else None
+
+    def put_icon(folder):
+        icon, source = Path(folder) / "office.ico", HERE / "office.ico"
+        if source.is_file() and not icon.exists() and Path(folder).is_dir():
+            shutil.copyfile(source, icon)
+            server_log("windows.assets.icon_restored")
+
+    try:
+        if recorded is not None and recorded.is_file():
+            put_icon(recorded.parent)
+            return True
+        if time.time() - WINDOWS_ASSET_REPAIR["at"] < WINDOWS_ASSET_REPAIR_GAP:
+            return False
+        WINDOWS_ASSET_REPAIR["at"] = time.time()
+        build = HERE / "office_win_build.sh"
+        if not build.is_file():
+            return False
+        result = subprocess.run(["bash", str(build), str(HERE)], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=200)
+        lines = (result.stdout or "").strip().splitlines()
+        found = json.loads(lines[-1]) if lines else {}
+        if not (isinstance(found, dict) and found.get("ok") is True and isinstance(found.get("path"), str)):
+            server_log("windows.assets.helper_failed", str((found or {}).get("reason") if isinstance(found, dict) else "")[:200])
+            return False
+        tmp = record_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"path": found["path"], "api": 1}) + "\n")
+        os.replace(tmp, record_path)
+        put_icon(Path(found["path"]).parent)
+        server_log("windows.assets.helper_restored")
+        return True
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        server_log("windows.assets.restore_failed", error)
+        return False
+
+
 def configure_taskbar_icon():
     """작업 표시줄이 Chrome의 확대된 16px favicon 대신 원본 ICO를 읽게 해요.
     창의 아이콘 리소스 경로만 바꿔요. 창을 활성화하거나 브라우저 프로필을 바꾸지 않아요."""
     native = native_windows_call("icon")
+    if (native is None or isinstance(native, dict) and native.get("updated") == 0) and restore_windows_assets():
+        native = native_windows_call("icon")   # Windows 쪽 Office 폴더가 지워졌었으면 아이콘·도우미를 다시 채운 뒤 한 번 더 해요
     if isinstance(native, dict) and type(native.get("updated")) is int and native["updated"] >= 0:
         server_log("taskbar.icon.native.updated:" + str(native["updated"]))
         return native["updated"] > 0
