@@ -2252,7 +2252,7 @@ function heldTypingRows(agents) {
     const running = !stopped && !waiting && t.wait_alive === true;
     const state = stopped ? "결과 확인 대기" : t.wait_kind === "user" ? "사용자 확인 대기" : running ? "백그라운드 실행 중" : "기다리는 중";
     const title = `${NAME[t.owner] || t.owner} · ${state} · 작업 ${tno(t)}`;
-    const detail = [t.title, stopped ? t.wait_detail || t.wait_reason : taskProgressText(t) || t.wait_detail || t.wait_reason].filter(Boolean).join(" · ");
+    const detail = [stopped ? t.wait_detail || t.wait_reason : taskProgressShort(t), p.text, t.title].filter(Boolean).join(" · ");
     return `<div class="tp ${running ? "" : "quiet"}" style="--c:var(--${t.owner})" data-held-task="${t.id}"><span class="tp-label" title="${esc(title)}">${esc(title)}</span></div><div class="tp-act" title="${esc(detail)}">${esc(detail)}</div>`;
   }).join("");
 }
