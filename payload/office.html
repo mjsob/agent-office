@@ -332,7 +332,7 @@ details.fold summary::-webkit-details-marker { display: none; }
 details.fold[open] > summary svg { transform: rotate(90deg); }
 details.progress .steps { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px 7px; padding-left: 12px; border-left: 2px solid var(--line); }
 details.progress .steps .event { align-self: flex-start; text-align: left; }
-.tobottom { position: sticky; bottom: 8px; display: flex; width: max-content; margin: 8px auto 0; box-shadow: 0 4px 16px rgba(0,0,0,.14); border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
+.tobottom { position: sticky; bottom: calc(8px + var(--typing-height, 0px)); z-index: 3; display: flex; width: max-content; margin: 8px auto 0; box-shadow: 0 4px 16px rgba(0,0,0,.14); border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
 .tobottom .newmark { display: none; color: var(--ok); font-weight: 600; }
 .tobottom.new .newmark { display: inline; }
 details.turn .archived-note { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
@@ -436,7 +436,7 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .livebar.warn { background: var(--warn-soft); color: var(--warn); }
 .livebar .cancel { font-size: 12px; padding: 3px 8px; }
 /* 대화 맨 끝 '돌아가는 중' 줄: 마지막 메시지 아래에 붙고 스크롤은 따라오지 않음 */
-#typing { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); }
+#typing { position: sticky; bottom: 0; z-index: 2; background: var(--bg); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); }
 #typing .tp { display: flex; align-items: center; gap: 6px; }
 #typing .tp::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--ok)); animation: pulse 1.2s ease-in-out infinite; }
 #typing .tp.quiet { color: var(--muted); }
@@ -2257,6 +2257,7 @@ function updateTyping(agents) {
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
   setHtmlIfChanged(el, rows); el.hidden = !rows;
+  sec.style.setProperty("--typing-height", el.hidden ? "0px" : `${el.offsetHeight + 8}px`);
   if (stick) sec.scrollTop = sec.scrollHeight;
 }
 // '짧은 제목 — 상세 설명' 문구를 [제목, 상세]로 (구분자 없으면 상세 없음)
