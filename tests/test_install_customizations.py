@@ -621,6 +621,8 @@ class WindowsShortcutFallback(unittest.TestCase):
 class RealCscriptShortcuts(unittest.TestCase):
     def test_real_cscript_creates_missing_shortcuts_and_keeps_existing(self):
         script=(ROOT/'install.sh').read_text().split("<<'JS'\n",1)[1].split('\nJS',1)[0]
+        # 시험은 바로가기만 확인하고 실제 탐색기 아이콘 캐시는 건드리지 않아요.
+        script=script.replace('  try { sh.Run(system + "ie4uinit.exe -show", 0, false); } catch (e) { }', '')
         base_js=tempfile.TemporaryDirectory(prefix='office-req158-js-');self.addCleanup(base_js.cleanup)
         js=Path(base_js.name)/'shortcut.js';js.write_text(script,encoding='utf-8')
         windows=lambda path:subprocess.check_output(['wslpath','-w',str(path)],text=True).strip()
