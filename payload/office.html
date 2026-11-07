@@ -1840,10 +1840,10 @@ const noticeLinks = s => esc(s).replace(/https:\/\/(?:(?!&(?:quot|#39|lt|gt);)[^
 
 const readNote = m => m.from === "user" && Number.isFinite(m.id) && m.at
   ? `<div class="readnote" hidden data-mid="${m.id}" data-at="${m.at}" data-to="${esc(m.to || "all")}"></div>` : "";
-// 메시지마다 data-k 를 달아요: 다시 그린 뒤에도 보던 메시지를 찾아 같은 자리에 두려고요
+// 메시지마다 data-msg-key를 달아요: 다시 그린 뒤에도 보던 메시지를 찾아 같은 자리에 두려고요
 function msgHtml(m, compact) {
   const h = msgHtmlRaw(m, compact);
-  return m && m.id != null ? h.replace(/^(\s*<[a-z]+)/, `$1 data-k="m${m.id}"`) : h;
+  return m && m.id != null ? h.replace(/^(\s*<[a-z]+)/, `$1 data-msg-key="m${m.id}"`) : h;
 }
 function msgHtmlRaw(m, compact) {
   if (m.kind === "progress") return `<div class="user-progress">${esc(NAME[m.from] || "Office")} · ${esc(m.text)}</div>`;
@@ -2030,8 +2030,8 @@ function renderTimeline(msgs, jobs) {
   const anchorId = anchor?.id, anchorTop = anchor?.getBoundingClientRect().top;
   // 묶음 안에서 읽던 중이면 보던 메시지를 따로 기억: 위쪽 진행 기록이 접혀도 읽던 줄이 안 움직이게
   const secTop = sec.getBoundingClientRect().top;
-  const msgAnchor = stick || rv ? null : [...tl.querySelectorAll("[data-k]")].find(el => el.getBoundingClientRect().bottom > secTop);
-  const msgKey = msgAnchor?.dataset.k, msgTop = msgAnchor?.getBoundingClientRect().top;
+  const msgAnchor = stick || rv ? null : [...tl.querySelectorAll("[data-msg-key]")].find(el => el.getBoundingClientRect().bottom > secTop);
+  const msgKey = msgAnchor?.dataset.msgKey, msgTop = msgAnchor?.getBoundingClientRect().top;
   // 끝난 요청이 쌓이면 최근 KEEP개만 펼치고, 그 이전은 맨 위 '이전 요청 N건'에 한 줄씩 압축 (눌러서 개별로 펼침)
   // 대화에서 지운(취소한) 요청은 묶음째 숨김. 요청 순서로 번호를 맞추는 threads()엔 전체 목록을 넘김
   const items = threads(msgs, jobs).filter(x => !x.job?.removed), KEEP = 5;
@@ -2063,7 +2063,7 @@ function renderTimeline(msgs, jobs) {
     if (saved) sec.scrollTop += saved.getBoundingClientRect().top - sec.getBoundingClientRect().top - rv.anchorTop;
     else sec.scrollTop = rv.top;
   } else {
-    const sameMsg = msgKey && [...tl.querySelectorAll("[data-k]")].find(el => el.dataset.k === msgKey && el.getClientRects().length);
+    const sameMsg = msgKey && [...tl.querySelectorAll("[data-msg-key]")].find(el => el.dataset.msgKey === msgKey && el.getClientRects().length);
     const again = sameMsg ? null : anchorId && document.getElementById(anchorId);
     if (sameMsg) sec.scrollTop += sameMsg.getBoundingClientRect().top - msgTop;
     else if (again) sec.scrollTop += again.getBoundingClientRect().top - anchorTop;
