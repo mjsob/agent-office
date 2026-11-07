@@ -1898,6 +1898,16 @@ function threads(msgs, jobs) {
     else if (m.kind === "report" || (m.kind === "msg" && m.from !== "user" && m.to === "user") || (m.kind === "event" && m.to === "user")) t.reports.push(m);
     else t.steps.push(m);
   }
+  // 이어받은 요청은 원본 메시지가 없어도 저장된 요청 내용으로 이동할 수 있게 해요.
+  for (const j of jobs) {
+    let t = byJob[j.id];
+    if (!t) {
+      t = byJob[j.id] = {job: j, req: null, steps: [], reports: []};
+      const next = items.findIndex(x => x.job && x.job.id > j.id);
+      items.splice(next < 0 ? items.length : next, 0, t);
+    }
+    if (!t.req && j.text) t.req = {kind: "request", from: "user", text: j.text, ts: "", _at: j.started_at};
+  }
   // 단독 대화의 답장(re=답한 사용자 메시지 id)은 시간순 대신 그 질문 바로 아래(앞선 답장 뒤)로 옮긴다
   const replies = items.filter(x => x.m?.re != null && items.some(y => y.m && y.m.id === x.m.re && y.m.from === "user"));
   for (const x of replies) {
