@@ -160,17 +160,6 @@ def process_table():
     return table
 
 
-def subtree(table, roots):
-    found, todo = set(), list(roots)
-    while todo:
-        pid = todo.pop()
-        if pid in found:
-            continue
-        found.add(pid)
-        todo.extend(p for p, (parent, _) in table.items() if parent == pid)
-    return found
-
-
 class Bridge:
     def __init__(self, args):
         self.args = args
