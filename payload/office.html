@@ -147,7 +147,7 @@ main { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 0; }
 .toast .toast-x { text-decoration: none; font-weight: 400; font-size: 16px; line-height: 1; padding: 2px 6px; }
 section { min-height: 0; overflow: auto; padding: 14px; }
 section + section, .conversation, .conversation + .side { border-left: 1px solid var(--line); }
-.conversation { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; overflow: hidden; }
+.conversation { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; overflow: hidden; }
 h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 10px; }
 
 /* 에이전트 */
@@ -436,8 +436,8 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .livebar .stage .arr { color: var(--faint); }
 .livebar.warn { background: var(--warn-soft); color: var(--warn); }
 .livebar .cancel { font-size: 12px; padding: 3px 8px; }
-/* 대화 맨 끝 '돌아가는 중' 줄: 마지막 메시지 아래에 붙고 스크롤은 따라오지 않음 */
-#typing { background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 8px 14px; font-size: 12.5px; color: var(--muted); }
+/* 채팅 폭을 유지하면서 입력 영역 바로 위에 작업 상태를 보여요. */
+#typing { min-width: 0; background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 8px 14px; font-size: 12.5px; color: var(--muted); }
 #typing .tp { display: flex; align-items: center; gap: 6px; }
 #typing .tp::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--ok)); animation: pulse 1.2s ease-in-out infinite; }
 #typing .tp.quiet { color: var(--muted); }
