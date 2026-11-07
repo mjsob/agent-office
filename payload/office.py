@@ -1801,11 +1801,11 @@ def task_scores(record):
         row["rework"] += metrics.get("rework", 0)
         row["corrections"] += metrics.get("corrections", 0)
         row["enough"] = row["n"] >= 5
+    medians = {key: statistics.median(values) for key, values in baselines.items() if len(values) >= 5}
     ratios = {}
     for owner, kind, level, duration in samples:
-        baseline = baselines[(kind, level)]
-        if len(baseline) >= 5:
-            ratios.setdefault((owner, kind), []).append(duration / statistics.median(baseline))
+        if (kind, level) in medians:
+            ratios.setdefault((owner, kind), []).append(duration / medians[(kind, level)])
     for (owner, kind), values in ratios.items():
         result[owner][kind].update(speed_ratio=round(statistics.median(values), 3), speed_n=len(values))
     return result
@@ -6417,10 +6417,11 @@ class Office:
             if t["status"] == "waiting":
                 t.update(task_wait_status(t, display_now))
         data["jobs"] = [dict(j) for j in data.get("jobs", [])]
+        current_workers = worker_status(cur)
         for j in data["jobs"]:
             j["needs_user"] = [{"task_id": t["id"], **request} for t in data["tasks"] if t.get("job") == j["id"] and (request := pending_user_request(t, display_now))]
             j["verification"] = j.get("verification", "standard")
-            j["display_status"], j["display_reason"] = job_display_status(j, data["tasks"], worker_status(cur), display_now)
+            j["display_status"], j["display_reason"] = job_display_status(j, data["tasks"], current_workers, display_now)
         sessions = [dict(x) for x in m["sessions"]]
         notice, display_busy = {}, {}
         for x in sessions:              # 목록에 띄울 진행 상황 요약
@@ -6450,7 +6451,7 @@ class Office:
             x["notice_at"] = notice[x["id"]]
             x["attention_unread"] = not x.get("deleted") and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
             x["unread"] = x["id"] != cur and x["open"] == 0 and notice[x["id"]] > x.get("seen", 0)
-            x["busy"] = display_busy.get(x["id"], self.busy(x["id"]))
+            x["busy"] = display_busy[x["id"]] if x["id"] in display_busy else self.busy(x["id"])
             x["stopped"] = any(w.paused or w.error for w in self.teams.get(x["id"], {}).get("w", {}).values())
         data.update(root=str(ROOT), session=cur, sessions=sessions, parallel=WT, git=self.git_info(cur),
                     warnings=list(STORAGE_WARNINGS.values())[-10:], update=update_info(), resources=resource_view(), file_manager="Finder" if IS_MAC else "탐색기")
@@ -6468,7 +6469,6 @@ class Office:
                               "tokens": w.tokens, "cached_tokens": w.cached_tokens, "legacy_tokens": w.legacy_tokens,
                               "usage_since": w.usage_since, "limits": limits_for(n), "subs": list(getattr(w, "subs", {}).values()) if w.status == "working" else [],
                               "activity": list(w.activity)[-25:], **self.live_view(w, data["msgs"])} for n, w in team.items()}
-        data["jobs"] = [dict(j) for j in data.get("jobs", [])]   # 화면용 값을 붙여도 저장된 상태엔 안 섞이게
         for j in data["jobs"]:
             j["wait_why"] = self.job_wait_reason(data, j, team) if j["status"] != "done" and not j.get("cancelled") else None
         # since/since(epoch)는 시작 시각이며 매초 경과 숫자는 화면에서 계산한다.
