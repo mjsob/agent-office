@@ -429,6 +429,9 @@ PYREC
 # 이미 떠 있으면 같은 창을 다시 연다(주소 복사·일반 탭 없이). 실패해도 설치는 계속한다.
 # 같은 이름의 바로가기가 이미 있으면(누가 만들었든) 건드리지 않고, 없을 때만 만든다. 아이콘도 없거나 지난 설치 그대로일 때만 바꾼다.
 windows_shortcut_done=0
+desktop_shortcut=1
+# 이 PC에서 바탕화면 바로가기를 끈 설정은 업데이트 뒤에도 유지해요.
+[[ ! -e $HOME/.config/office/no-desktop-shortcut ]] || desktop_shortcut=0
 if (( shortcut )) && [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} ]] && command -v wslpath >/dev/null && { command -v powershell.exe >/dev/null || command -v cscript.exe >/dev/null; }; then
   if [[ $prefix =~ ^[A-Za-z0-9._/-]+$ && $WSL_DISTRO_NAME =~ ^[A-Za-z0-9._-]+$ ]]; then
     # PowerShell이 막힌 PC(보안 정책 등)에서는 조용히 실패하지 않고 이유를 알려 주며, cscript(WSH)로 대신 만들어요.
@@ -442,7 +445,7 @@ if (( shortcut )) && [[ $platform == Linux && -n ${WSL_DISTRO_NAME:-} ]] && comm
     fi
     if (( ps_usable )); then
       cat > "$staging/office-shortcut.ps1" <<'PS1'
-param([string]$Distro, [string]$ShellInit, [string]$Icon, [string]$PrevSha)
+param([string]$Distro, [string]$ShellInit, [string]$Icon, [string]$PrevSha, [int]$DesktopShortcut = 1)
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'Office'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -457,11 +460,14 @@ else {
 $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $shell = New-Object -ComObject WScript.Shell
 $made = @()
-foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+$folders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))
+foreach ($folder in $folders) {
+  if (-not $DesktopShortcut -and $folder -eq $folders[0]) { continue }
   if (-not $folder) { continue }
   $path = Join-Path $folder 'Office.lnk'
   if (Test-Path -LiteralPath $path) {
     # 이미 있는 Office.lnk는 누가 만들었는지 알 수 없어 그대로 둔다.
+    $made += "kept:$path"
     continue
   }
   $lnk = $shell.CreateShortcut($path)
@@ -477,8 +483,12 @@ try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 $made -join "`n"
 PS1
       if made=$(timeout 30 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$staging/office-shortcut.ps1")" \
-          "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$prefix/app/office.ico")" "$prev_ico_sha" 2>&1 | tr -d '\r') && [[ -n $made ]]; then
-        printf '바로가기를 만들었어요. 바탕화면이나 시작 메뉴의 Office를 누르면 앱 창으로 열려요.\n'
+          "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$prefix/app/office.ico")" "$prev_ico_sha" "$desktop_shortcut" 2>&1 | tr -d '\r') && [[ -n $made ]]; then
+        if (( desktop_shortcut )); then
+          printf '바로가기를 준비했어요. 바탕화면이나 시작 메뉴의 Office를 누르면 앱 창으로 열려요.\n'
+        else
+          printf '시작 메뉴의 Office 바로가기를 준비했어요. 바탕화면에는 만들지 않아요.\n'
+        fi
         windows_shortcut_done=1
       else
         ps_reason=$(printf '%s' "${made:-실행 결과가 비어 있어요}" | tr '\n' ' ' | head -c 160)
@@ -528,13 +538,16 @@ JS
             if [[ $cur_ico_sha != "$new_ico_sha" && -n $prev_ico_sha && $cur_ico_sha == "$prev_ico_sha" ]]; then cp -f -- "$prefix/app/office.ico" "$icon_dir/office.ico" 2>/dev/null || true; fi
           fi
         fi
-        if made=$(timeout 30 cscript.exe //nologo "$js_win" make "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$icon_dir/office.ico")" "$desktop_dir" "$programs_dir" 2>&1 </dev/null | tr -d '\r') && [[ $made == *made:* || $made == *kept:* ]]; then
+        shortcut_folders=("$programs_dir")
+        if (( desktop_shortcut )); then shortcut_folders=("$desktop_dir" "$programs_dir"); fi
+        if made=$(timeout 30 cscript.exe //nologo "$js_win" make "$WSL_DISTRO_NAME" "$prefix/bin/office-console.bashrc" "$(wslpath -w "$icon_dir/office.ico")" "${shortcut_folders[@]}" 2>&1 </dev/null | tr -d '\r') && [[ $made == *made:* || $made == *kept:* ]]; then
           if [[ $made == *made:* ]]; then
             printf 'PowerShell을 쓸 수 없어(%s) 대신 cscript로 바로가기를 만들었어요.\n' "${ps_reason:-사유 없음}"
           else
             printf '바로가기가 이미 있어서 그대로 뒀어요. (PowerShell은 쓸 수 없는 상태예요: %s)\n' "${ps_reason:-사유 없음}"
           fi
           printf '작업 표시줄 아이콘 보정은 PowerShell이 있어야 해서 이번에는 적용되지 않아요.\n'
+          if (( ! desktop_shortcut )); then printf '바탕화면에는 바로가기를 만들지 않아요.\n'; fi
           windows_shortcut_done=1
         else
           js_reason=$(printf '%s' "${made:-바로가기 폴더를 찾지 못했어요}" | tr '\n' ' ' | head -c 160)

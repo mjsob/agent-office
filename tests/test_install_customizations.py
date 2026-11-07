@@ -482,6 +482,13 @@ class WindowsShortcuts(unittest.TestCase):
         self.execute()
         self.assertEqual(target.read_bytes(),before)
 
+    def test_desktop_opt_out_creates_programs_only(self):
+        command='$env:OFFICE_TEST_ROOT='+self.quote(self.windows(self.folder))+'; $env:LOCALAPPDATA='+self.quote(self.windows(self.folder/'LocalAppData'))+'; & '+self.quote(self.windows(self.script))+" -Distro 'OfficeTest' -ShellInit 'C:\\office-test\\console.bashrc' -Icon "+self.quote(self.windows(self.source))+" -DesktopShortcut 0"
+        self.powershell(command)
+        self.assertFalse((self.folder/'Desktop/Office.lnk').exists())
+        self.assertTrue((self.folder/'Programs/Office.lnk').exists())
+        self.assertEqual(self.icon.read_bytes(),self.source.read_bytes())
+
     def test_missing_shortcuts_and_icon_are_created(self):
         self.execute()
         self.assertEqual(self.icon.read_bytes(),self.source.read_bytes())
@@ -540,6 +547,28 @@ class WindowsShortcutFallback(unittest.TestCase):
     def install(self):
         return subprocess.run(['bash',str(self.pkg/'install.sh'),'--apply','--skip-login','--no-launch'],env=self.env,capture_output=True,text=True,timeout=60)
 
+    def disable_desktop(self):
+        flag=self.home/'.config/office/no-desktop-shortcut'
+        flag.parent.mkdir(parents=True);flag.touch()
+
+    def test_desktop_opt_out_keeps_programs_on_install_and_upgrade(self):
+        self.disable_desktop();self.powershell_blocked();self.cscript_works()
+        for _ in range(2):
+            result=self.install()
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertFalse((self.win['Desktop']/'Office.lnk').exists())
+            self.assertTrue((self.win['Programs']/'Office.lnk').exists())
+            self.assertNotIn(str(self.win['Desktop']),self.log.read_text())
+            self.assertIn('바탕화면에는 바로가기를 만들지 않아요',result.stdout)
+
+    def test_powershell_receives_desktop_opt_out(self):
+        self.disable_desktop()
+        self.stub('powershell.exe','case "$*" in *-File*) printf "%s\\n" "$@" > "$STUB_LOG"; echo "kept:Programs/Office.lnk";; esac; exit 0')
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.log.read_text().splitlines()[-1],'0')
+        self.assertIn('바탕화면에는 만들지 않아요',result.stdout)
+
     def test_powershell_blocked_uses_cscript_and_says_so(self):
         self.powershell_blocked();self.cscript_works()
         result=self.install()
@@ -584,7 +613,7 @@ class WindowsShortcutFallback(unittest.TestCase):
         self.cscript_works()
         result=self.install()
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('바로가기를 만들었어요',result.stdout)
+        self.assertIn('바로가기를 준비했어요',result.stdout)
         self.assertFalse(self.log.exists())      # cscript는 쓰지 않았어요
 
 
