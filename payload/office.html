@@ -2274,7 +2274,7 @@ function updateTyping(agents) {
     const actText = !act ? "" : act.kind === "edit" ? "수정: " + act.text.replace(/^(Edit|Write|MultiEdit): /, "")
       : act.kind === "tool" ? act.text.replace(/^\$ /, "").replace(/^Bash: /, "") : act.text;
     const liveNow = liveText(a);
-    const last = liveNow ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";   // 상세가 비어 있으면 줄 자리를 만들지 않고, 맨 아래를 보던 중이면 아래 stick 으로 위치를 유지해요
+    const last = liveNow?.trim() ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText.trim() ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";   // 상세가 비어 있으면 줄 자리를 만들지 않고, 맨 아래를 보던 중이면 아래 stick 으로 위치를 유지해요
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
   const content = rows + heldTypingRows(agents);
