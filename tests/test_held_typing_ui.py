@@ -65,6 +65,9 @@ with sync_playwright() as p:
                 assert row.count() == 0, name
             m = page.evaluate('''()=>{const s=document.querySelector('#tlsec'),t=document.querySelector('#typing'),f=document.querySelector('footer');return {over:s.scrollWidth-s.clientWidth,body:document.body.scrollWidth-innerWidth,gap:t.hidden?0:f.getBoundingClientRect().top-t.getBoundingClientRect().bottom}}''')
             assert m['over'] <= 1 and m['body'] <= 1 and abs(m['gap']) <= 1, (name, m)
+        # 개수 없이 진행 문구만 있으면 같은 문구를 두 번 쓰지 않아요.
+        page.evaluate("lastTasks=[structuredClone(baseTask)];lastTasks[0].progress={text:'장기 계좌를 계산해요.',state:'working'};updateTyping({codex:{status:'idle'}})")
+        assert page.locator('[data-held-task="188"] + .tp-act').inner_text().count('장기 계좌를 계산해요.') == 1
         # 읽던 위치와 맨 아래 따라가기를 렌더링이 끝난 뒤 확인해요.
         page.evaluate("lastTasks=[structuredClone(baseTask)];lastJobs=structuredClone(baseJobs);updateTyping(lastAgentState);document.querySelector('#tlsec').scrollTop=300")
         before = page.locator('#tlsec').evaluate('e=>e.scrollTop')
@@ -75,7 +78,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(60)
         assert abs(page.locator('#tlsec').evaluate('e=>e.scrollHeight-e.scrollTop-e.clientHeight')) <= 1
         assert not errors, errors
-        results.append({'width': width, 'mac': mac, 'theme': theme, 'cases': len(cases)+3, 'pass': True})
+        results.append({'width': width, 'mac': mac, 'theme': theme, 'cases': len(cases)+4, 'pass': True})
         page.close()
     browser.close()
 print(json.dumps(results, ensure_ascii=False))
