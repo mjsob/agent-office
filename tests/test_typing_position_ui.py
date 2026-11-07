@@ -1,4 +1,4 @@
-"""상세 문구가 바뀌어도 위 채팅의 화면 위치와 높이가 유지되는지 확인해요."""
+"""빈 상세 줄은 접히고, 읽던 채팅 위치와 맨 아래 따라가기가 유지되는지 확인해요."""
 import argparse
 import json
 from pathlib import Path
@@ -36,6 +36,7 @@ with sync_playwright() as p:
                   path:{tool:{since:now,label:'/home/chan/projects/'+'longpath/'.repeat(100)}},
                   gen:{gen:{kind:'tool',name:'긴 도구 이름 '.repeat(100),chars:123456}},
                   activity:{activity:[{kind:'text',ts:new Date().toLocaleTimeString('en-GB',{hour12:false}),text:'첫 문장 '.repeat(100)+'\\n두 번째 문장'}]},
+                  whitespace:{activity:[{kind:'text',ts:new Date().toLocaleTimeString('en-GB',{hour12:false}),text:String.fromCharCode(32,10,32,9)}]},
                   emptyAgain:{}
                 }[mode];
                 updateTyping(Object.fromEntries(['codex','claude'].slice(0,count).map(n=>[n,{...agent(),...extra}])));
@@ -46,6 +47,7 @@ with sync_playwright() as p:
                 const anchor=ms.find(e=>e.getBoundingClientRect().bottom>s.getBoundingClientRect().top+10);
                 const last=ms.at(-1).getBoundingClientRect();
                 return {typingHeight:t.getBoundingClientRect().height,chatHeight:s.getBoundingClientRect().height,
+                  details:t.querySelectorAll('.tp-act').length,
                   lastTop:last.top,lastBottom:last.bottom,anchorTop:anchor.getBoundingClientRect().top,top:s.scrollTop,
                   gap:s.scrollHeight-s.scrollTop-s.clientHeight,overflow:s.scrollWidth-s.clientWidth,
                   footerGap:document.querySelector('footer').getBoundingClientRect().top-t.getBoundingClientRect().bottom};
@@ -56,18 +58,31 @@ with sync_playwright() as p:
                 return page.evaluate('async()=>{await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return measureTyping()}')
             cases = 0
             for count in (1, 2):
-                for location in ('bottom', 'reading'):
+                for location in ('bottom', 'reading', 'nearBottom'):
                     page.evaluate('count=>setAgents(count,"empty")', count)
-                    page.evaluate("const s=document.querySelector('#tlsec');s.scrollTop=" + ('s.scrollHeight' if location=='bottom' else '300'))
+                    page.evaluate("const s=document.querySelector('#tlsec');s.scrollTop=" + ('s.scrollHeight' if location=='bottom' else 's.scrollHeight-s.clientHeight-80' if location=='nearBottom' else '300'))
                     base = settled_measure()
-                    for mode in ('short', 'long', 'path', 'gen', 'activity', 'emptyAgain'):
+                    assert base['details'] == 0, base
+                    detailed = None
+                    for mode in ('short', 'long', 'path', 'gen', 'activity', 'whitespace', 'emptyAgain'):
                         page.evaluate('a=>setAgents(a.count,a.mode)', {'count': count, 'mode': mode})
                         current = settled_measure()
                         label = {'width': width, 'theme': theme, 'count': count, 'location': location, 'mode': mode}
-                        for key in ('typingHeight', 'chatHeight', 'lastTop', 'lastBottom'):
-                            assert abs(current[key]-base[key]) < 1, (label, key, base, current)
-                        if location == 'reading':
-                            assert current['top'] == base['top'] and abs(current['anchorTop']-base['anchorTop']) < 1, (label, base, current)
+                        has_detail = mode not in ('whitespace', 'emptyAgain')
+                        assert current['details'] == (count if has_detail else 0), (label, current)
+                        if has_detail:
+                            assert current['typingHeight'] > base['typingHeight'] + 10 * count, (label, base, current)
+                            assert current['chatHeight'] < base['chatHeight'] - 10 * count, (label, base, current)
+                            if detailed is None:
+                                detailed = current
+                            for key in ('typingHeight', 'chatHeight', 'lastTop', 'lastBottom'):
+                                assert abs(current[key]-detailed[key]) < 1, (label, key, detailed, current)
+                        else:
+                            for key in ('typingHeight', 'chatHeight'):
+                                assert abs(current[key]-base[key]) < 1, (label, key, base, current)
+                        if location != 'bottom':
+                            for key in ('lastTop', 'lastBottom', 'anchorTop', 'top'):
+                                assert abs(current[key]-base[key]) < 1, (label, key, base, current)
                         else:
                             assert abs(current['gap']) <= 1, (label, current)
                         assert current['overflow'] <= 1 and abs(current['footerGap']) < 1, (label, current)
