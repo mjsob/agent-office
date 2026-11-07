@@ -40,11 +40,6 @@ def helper_call(action, *arguments, timeout=30):
     return result
 
 
-def windows_path(path):
-    return subprocess.run(["wslpath", "-w", str(path)], stdin=subprocess.DEVNULL, capture_output=True,
-                          text=True, check=True, timeout=5).stdout.strip()
-
-
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
