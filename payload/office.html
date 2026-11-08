@@ -2243,28 +2243,13 @@ function updatePulses() {
     el.textContent = d < 300 ? "" : `응답 없음 ${Math.floor(d / 60)}분`;
   });
 }
-// 차례가 끝나도 실행·대기 중인 작업은 상태 줄에 남겨요. 완료·취소·이관한 작업은 빼요.
-function heldTypingRows(agents) {
-  return (lastTasks || []).filter(t => ["doing", "waiting"].includes(t.status) && t.owner
-    && !t.continued_to && !lastJobs.some(j => j.id === t.job && (j.cancelled || j.removed))
-    && (agents?.[t.owner]?.status !== "working" || t.status === "waiting" || t.wait_alive != null)).map(t => {
-    const p = t.progress || {}, stopped = t.wait_alive === false;
-    const waiting = t.wait_kind === "user" || t.wait_kind === "waiting" || p.state === "waiting" || p.resume_at > Date.now()/1000;
-    const running = !stopped && !waiting && t.wait_alive === true;
-    const state = stopped ? "결과 확인 대기" : t.wait_kind === "user" ? "사용자 확인 대기" : running ? "백그라운드 실행 중" : "기다리는 중";
-    const title = `${NAME[t.owner] || t.owner} · ${state} · 작업 ${tno(t)}`;
-    const detail = [...new Set([stopped ? t.wait_detail || t.wait_reason : taskProgressShort(t), p.text, t.title].filter(Boolean))].join(" · ");
-    return `<div class="tp ${running ? "" : "quiet"}" style="--c:var(--${t.owner})" data-held-task="${t.id}"><span class="tp-label" title="${esc(title)}">${esc(title)}</span></div><div class="tp-act" title="${esc(detail)}">${esc(detail)}</div>`;
-  }).join("");
-}
-// 대화창 바닥의 '돌아가는 중' 표시: 일하는 에이전트마다 한 줄 (뭘 하는지·걸린 시간·마지막 움직임). 멈춤·일시정지도 같이
+// 실행 중인 AI 에이전트만 하단에 표시해요.
 function updateTyping(agents) {
   const el = $("#typing"), sec = $("#tlsec");
   const stick = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
   const rows = Object.entries(agents || {}).map(([n, a]) => {
-    if (a.error) return `<div class="tp err" style="--c:var(--warn)">⚠ ${NAME[n]} ${errHelp(n, a).title} — 오른쪽 카드에 해결 방법</div>`;
-    if (a.paused && a.status !== "working") return `<div class="tp quiet">${NAME[n]} 일시정지됨 — 오른쪽 카드에서 재개</div>`;
     if (a.status !== "working") return "";
+    if (a.error) return `<div class="tp err" style="--c:var(--warn)">⚠ ${NAME[n]} ${errHelp(n, a).title} — 오른쪽 카드에 해결 방법</div>`;
     // 마지막 움직임은 에이전트가 중간 신호를 드문드문 보내 믿을 게 못 됨 → 대화창엔 하는 일·걸린 시간만
     const doing = doingText(a.doing);
     // 이번 차례의 가장 최근 활동(중간에 한 말·명령·수정 파일)을 아랫줄에 — 에이전트가 따로 알리지 않아도 진행이 보이게
@@ -2277,8 +2262,7 @@ function updateTyping(agents) {
     const last = liveNow?.trim() ? `<div class="tp-act" title="${esc(liveNow)}">${esc(liveNow)}</div>` : actText.trim() ? `<div class="tp-act" title="${esc(actText)}">${esc(actText.trim().split("\n")[0].slice(0, 160))}</div>` : "";   // 상세가 비어 있으면 줄 자리를 만들지 않고, 맨 아래를 보던 중이면 아래 stick 으로 위치를 유지해요
     return `<div class="tp" style="--c:var(--${n})">${NAME[n]} ${esc(doing || "작업 중")}<span class="nw">· ${elapsedLive(a.since)}</span>${a.paused ? '<span class="nw">· 끝나면 멈춤</span>' : ""}</div>${last}`;
   }).join("");
-  const content = rows + heldTypingRows(agents);
-  setHtmlIfChanged(el, content); el.hidden = !content;
+  setHtmlIfChanged(el, rows); el.hidden = !rows;
   if (stick) sec.scrollTop = sec.scrollHeight;
 }
 // '짧은 제목 — 상세 설명' 문구를 [제목, 상세]로 (구분자 없으면 상세 없음)
@@ -2800,20 +2784,21 @@ function renderResources(r) {
   if (sig === lastResSig) return;
   const wasOpen = box.querySelector("details")?.open;
   lastResSig = sig; box.hidden = false;
-  if (!r.supported) { box.innerHTML = `<b>컴퓨터 사용량 제한</b><div>이 PC에서는 쓸 수 없어요</div><details><summary>이유 보기</summary><div>${esc(r.reason || "")}</div></details>`; return; }
+  if (!r.supported) { box.innerHTML = `<b>Office 전체 사용량 제한</b><div>이 PC에서는 쓸 수 없어요</div><details><summary>이유 보기</summary><div>${esc(r.reason || "")}</div></details>`; return; }
   const gb = x => x == null ? "-" : (x / 1024 ** 3).toFixed(1) + "GB";
   const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
-  const now = r.cpu_usage_percent == null ? "" : `지금 CPU ${Math.round(r.cpu_usage_percent)}% · 메모리 ${gb(r.memory_current_bytes)} 쓰는 중`;
-  box.innerHTML = `<b>컴퓨터 사용량 제한</b>
-    <div>에이전트가 컴퓨터를 너무 많이 쓰지 않게 해요.</div>
-    <div class="row">CPU 최대 <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
+  const now = r.cpu_usage_percent == null ? "" : `지금 CPU 합계 ${Math.round(r.cpu_usage_percent)}% · 메모리 ${gb(r.memory_current_bytes)} 쓰는 중`;
+  box.innerHTML = `<b>Office 전체 사용량 제한</b>
+    <div>이 PC의 Office 작업이 한도를 함께 써요.</div>
+    <div class="row">CPU 합계 최대 <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
     <div class="row"><button onclick="setResCpu(30)">여유롭게</button><button onclick="setResCpu(60)">균형</button><button onclick="setResCpu(100)">빠르게</button></div>
-    <div class="row">메모리 최대 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB</div>
-    <div>0이면 제한하지 않아요. 넘으면 일을 천천히 해요.</div>
+    <div class="row">메모리 합계 기준 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB</div>
+    <div>메모리 기준이 0이면 제한하지 않아요.</div>
+    <div>메모리 기준을 넘으면 처리 속도를 낮춰요.</div>
     <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>${now}</span></div>
-    <div>지금 시작하는 작업부터 적용돼요.</div>
+    <div>모든 대화와 프로젝트에 같은 설정을 적용해요.</div>
     <details><summary>자세히 보기</summary>
-      <div>CPU ${r.cpu_percent}%는 컴퓨터 전체(코어 ${r.logical_cpus ?? "-"}개) 기준이에요.</div>
+      <div>CPU ${r.cpu_percent}%는 컴퓨터 전체(논리 CPU ${r.logical_cpus ?? "-"}개) 기준이에요.</div>
       <div>적용 대상: ${esc(r.applies_to || "")}</div>
       <div>제한하지 못하는 것: ${esc(r.uncontrolled || "")}</div>
     </details>`;
