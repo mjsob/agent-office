@@ -2023,7 +2023,9 @@ function chrono(items) {
   const keys = items.map(y => key.get(y)), later = new Map();
   for (const x of threadsHere) {
     const reps = x.reports.filter(m => m.kind === "report");
-    later.set(x, reps.slice(1).filter(m => keys.some(k => k > reps[0].id && k < m.id)));
+    // 열린 요청의 과거 보고는 실제 도착한 자리에 두고, 현재 진행만 아래에 남겨요.
+    const live = jobStatus(x.job) && jobStatus(x.job) !== "done";
+    later.set(x, live ? (split.has(x) ? reps : []) : reps.slice(1).filter(m => keys.some(k => k > reps[0].id && k < m.id)));
   }
   const out = [];
   for (const x of items) {
@@ -2040,6 +2042,14 @@ function chrono(items) {
 // 답 쪽 맨 위 인용 줄: 어느 요청의 답인지 보여 주고 누르면 그 요청으로 이동
 const quoteHtml = (j, req, ids, what) => `<div class="re-quote" role="button" tabindex="0" title="요청으로 이동" onclick="jumpTo(${j.id})"><b>요청 ${ids.join("·")} ${what}</b>${req ? `<span>· ${esc(firstLine(req.text))}</span>` : ""}</div>`;
 const RECENT_LIVE = 3;   // 진행 중 요청에서 바로 보이는 최근 안내 수
+// 진행 기록은 한 번에 최대 50건씩 열어요. 앞선 기록은 펼칠 때 불러와요.
+function progressStepsHtml(key, steps) {
+  const start = Math.max(0, Math.floor((steps.length - 1) / 50) * 50);
+  const older = steps.slice(0, start), recent = steps.slice(start);
+  return `<div class="steps">${older.length ? fold(key + "-before-" + start,
+    `이전 진행 과정 ${older.length}건을 나눠 봐요`, () => progressStepsHtml(key, older), "progress") : ""}${recent.map(m => msgHtml(m, true)).join("")}</div>`;
+}
+
 function threadHtml(t, part = "full") {
   if (part === "more") return `<div class="thread tail">${quoteHtml(t.job, t.req, [t.job.id], "답")}${msgHtml(t.more)}</div>`;
   // 지나간 경고(예: 'Codex 일시정지')는 그 에이전트가 이후에 다시 움직였으면 해결된 것 → 결과 자리에서 빼서 진행 과정으로 접음
@@ -2084,7 +2094,7 @@ function threadHtml(t, part = "full") {
   const reqIds = [j.id, ...new Set(t.reports.flatMap(m => m.kind === "report" && m.jobs || []).filter(id => id !== j.id))];
   const quote = part === "tail" || reqIds.length > 1 ? quoteHtml(j, t.req, reqIds, live ? "진행 상황" : j.cancelled ? "기록" : "답") : "";
   return `<div class="${cls}${part === "tail" ? " tail" : ""}" id="${part === "tail" ? "ans" : "th"}-${j.id}">${part === "tail" ? "" : req}${quote}${userNeeds}${progress.map(m => msgHtml(m)).join("")}
-    ${steps.length ? fold("j" + j.id, sum, () => `<div class="steps">${steps.map(m => msgHtml(m, true)).join("")}</div>`, "progress") : ""}
+    ${steps.length ? fold("j" + j.id, sum, () => progressStepsHtml("j" + j.id, steps), "progress") : ""}
     ${t.reports.map(m => msgHtml(m)).join("")}${bar}${together}
     ${status === "done" && !j.cancelled && host == null && j.summary && !t.reports.some(m => m.kind === "report" || !("job" in m) && m.kind === "msg")
       ? msgHtml({kind: "report", from: j.finished_by || j.acting_lead || j.lead || "system", to: "user", text: j.summary, ts: ""}) : ""}
@@ -2885,7 +2895,7 @@ function setResCpu(v) {
   $("#resCpu").value = v;
   $("#resCpuV").textContent = v + "%";
   $("#resCpu").style.setProperty("--res-percent", v + "%");
-  $$("#resbox [data-cpu]").forEach(button => button.setAttribute("aria-pressed", String(+button.dataset.cpu === v)));
+  document.querySelectorAll("#resbox [data-cpu]").forEach(button => button.setAttribute("aria-pressed", String(+button.dataset.cpu === v)));
 }
 function setResMemoryMode(mode) {
   $("#resMemMode").value = mode;
