@@ -5067,53 +5067,166 @@ def resource_unit():
     return RESOURCE_SLICE
 
 
+@contextmanager
+def resource_file_lock():
+    """여러 프로젝트가 같은 설정을 바꿀 때 차례로 저장해요."""
+    RESOURCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with RESOURCE_FILE.with_suffix('.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def office_services():
-    """Office 환경값(OFFICE_SESSION·OFFICE_JOB)이 들어 있는 사용자 서비스 이름. 같은 전체 예산에 넣을 대상이에요."""
+    """실제 서비스 환경값에 Office 작업 표식이 있는 항목만 찾아요."""
+    if IS_MAC:
+        return []
     found = set()
-    try:
-        for path in [*SYSTEMD_USER_DIR.glob("*.service"), *SYSTEMD_USER_DIR.glob("*.service.d/*.conf")]:
-            if path.name == RESOURCE_DROPIN or path.is_symlink():
-                continue
-            unit = path.name if path.suffix == ".service" else path.parent.name.removesuffix(".d")
-            if unit.startswith("office-task-"):
-                continue
-            text = path.read_text(errors="ignore")
-            if "OFFICE_SESSION=" in text or "OFFICE_JOB=" in text:
-                found.add(unit)
-    except OSError:
-        pass
+    transient = Path('/run/user') / str(os.getuid()) / 'systemd/transient'
+    paths = [*SYSTEMD_USER_DIR.glob('*.service'), *SYSTEMD_USER_DIR.glob('*.service.d/*.conf'), *transient.glob('*.service')]
+    for path in paths:
+        if path.name == RESOURCE_DROPIN or path.is_symlink():
+            continue
+        unit = path.name if path.suffix == '.service' else path.parent.name.removesuffix('.d')
+        if not re.fullmatch(r'[A-Za-z0-9_.@:-]+\.service', unit) or unit.startswith('office-task-'):
+            continue
+        try:
+            section = ''
+            for raw in path.read_text(errors='ignore').splitlines():
+                line = raw.strip()
+                if not line or line.startswith(('#', ';')):
+                    continue
+                if line.startswith('['):
+                    section = line
+                elif section == '[Service]' and line.startswith('Environment='):
+                    values = shlex.split(line.partition('=')[2])
+                    if any(value.startswith(('OFFICE_SESSION=', 'OFFICE_JOB=')) and value.partition('=')[2] for value in values):
+                        found.add(unit)
+        except (OSError, ValueError):
+            continue
     return sorted(found)
 
 
+def service_properties(unit):
+    result = subprocess.run(['systemctl', '--user', 'show', unit,
+                             '--property=ActiveState,ControlGroup,MainPID'], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=3, check=True)
+    props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    if 'ActiveState' not in props:
+        raise ValueError('service state')
+    return props
+
+
+def service_processes(group):
+    """サービスの子グループも含めて、今いるプロセスを読み取ります。"""
+    if not group.startswith('/') or '..' in group.split('/'):
+        raise ValueError('cgroup path')
+    folder = Path('/sys/fs/cgroup') / group.lstrip('/')
+    pids = set()
+    for path in [folder / 'cgroup.procs', *folder.rglob('cgroup.procs')]:
+        try:
+            pids.update(int(x) for x in path.read_text().split())
+        except FileNotFoundError:
+            continue
+    return sorted(pids)
+
+
+def process_budget_group(pid):
+    try:
+        return next(line.partition('::')[2] for line in (Path('/proc') / str(pid) / 'cgroup').read_text().splitlines() if line.startswith('0::'))
+    except (OSError, StopIteration):
+        return ''
+
+
+def adopt_running_service(unit, props):
+    """실행 중인 작업을 재시작하지 않고 공통 예산으로 옮겨요. 원래 서비스를 멈추면 함께 끝나요."""
+    if IS_MAC or props.get('ActiveState') != 'active':
+        return
+    main = int(props.get('MainPID') or 0)
+    group = props.get('ControlGroup', '')
+    if main <= 0 or not group:
+        return
+    main_group = process_budget_group(main)
+    if RESOURCE_SLICE in main_group.split('/') and not service_processes(group):
+        return
+    if RESOURCE_SLICE in group.split('/'):
+        return
+    scope = 'office-service-' + hashlib.sha256(unit.encode()).hexdigest()[:12] + '-' + str(main) + '.scope'
+    pids = service_processes(group)
+    if not pids:
+        return
+    # 기존 서비스의 메모리·CPU 상한도 유지해요.
+    source = Path('/sys/fs/cgroup') / group.lstrip('/')
+    extra = []
+    for filename, prop in (('memory.max', 'MemoryMax'), ('memory.high', 'MemoryHigh')):
+        value = (source / filename).read_text().strip()
+        if value != 'max':
+            extra.extend([prop, 't', str(int(value))])
+    quota, period = (source / 'cpu.max').read_text().split()
+    if quota != 'max':
+        extra.extend(['CPUQuotaPerSecUSec', 't', str(int(int(quota) * 1000000 / int(period)))])
+    # 이 scope는 원래 서비스의 수명에 묶어요. 서비스를 멈추면 옮긴 자식도 함께 멈춰요.
+    if not main_group.endswith('/' + scope):
+        subprocess.run(['busctl', '--user', 'call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+                    'org.freedesktop.systemd1.Manager', 'StartTransientUnit', 'ssa(sv)a(sa(sv))',
+                    scope, 'fail', str(4 + len(extra) // 3), 'Slice', 's', RESOURCE_SLICE, 'PIDs', 'au', str(len(pids)), *map(str, pids),
+                    'BindsTo', 'as', '1', unit, 'After', 'as', '1', unit, *extra, '0'],
+                   stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=True)
+    subprocess.run(['systemctl', '--user', 'start', scope], stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=True)
+    # 이동 사이에 생긴 자식도 같은 scope로 옮겨요. 부모가 모두 옮겨지면 새 자식도 그 안에서 시작해요.
+    for _ in range(3):
+        remaining = service_processes(group)
+        if not remaining:
+            break
+        subprocess.run(['busctl', '--user', 'call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+                        'org.freedesktop.systemd1.Manager', 'AttachProcessesToUnit', 'ssau', scope, '',
+                        str(len(remaining)), *map(str, remaining)], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=5, check=True)
+    if RESOURCE_SLICE not in process_budget_group(main).split('/') or service_processes(group):
+        raise ValueError('service adoption incomplete')
+
+
 def adopt_services():
-    """Office 서비스가 시작할 때 공통 slice 안에 들어가게 drop-in 을 둬요. 실행 중인 서비스는 끄지 않아요(다음 시작부터 적용)."""
+    """새 실행과 이미 실행 중인 Office 서비스를 같은 예산에 넣어요."""
+    if IS_MAC:
+        return
     changed = False
-    for unit in office_services():
-        folder = SYSTEMD_USER_DIR / (unit + ".d")
-        want = f"[Service]\nSlice={RESOURCE_SLICE}\n"
+    units = office_services()
+    for unit in units:
+        folder = SYSTEMD_USER_DIR / (unit + '.d')
         target = folder / RESOURCE_DROPIN
+        want = f'[Service]\nSlice={RESOURCE_SLICE}\n'
+        if target.is_symlink():
+            continue
         if target.exists() and target.read_text() == want:
             continue
         folder.mkdir(parents=True, exist_ok=True)
         target.write_text(want)
         changed = True
     if changed:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=True)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=True)
+    for unit in units:
+        try:
+            adopt_running_service(unit, service_properties(unit))
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            server_log('resource.service', type(error).__name__)
 
 
 def service_budget_state():
-    """각 Office 서비스가 지금 공통 예산 안에서 도는지: inside(적용 중) / waiting(실행 중이지만 다음 시작부터) / idle(안 도는 중)"""
+    """실제 실행 위치를 확인해 적용 중과 미적용·확인 실패를 구분해요."""
     rows = []
     for unit in office_services():
         try:
-            out = subprocess.run(["systemctl", "--user", "show", unit, "--property=ActiveState,ControlGroup"],
-                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3).stdout
-            props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-        except (OSError, subprocess.SubprocessError):
-            props = {}
-        running = props.get("ActiveState") in ("active", "activating", "reloading")
-        inside = RESOURCE_SLICE in props.get("ControlGroup", "").split("/")
-        rows.append({"unit": unit, "state": "idle" if not running else "inside" if inside else "waiting"})
+            props = service_properties(unit)
+            running = props.get('ActiveState') in ('active', 'activating', 'reloading')
+            main = int(props.get('MainPID') or 0)
+            group = process_budget_group(main) if main else props.get('ControlGroup', '')
+            inside = RESOURCE_SLICE in group.split('/')
+            if inside and RESOURCE_SLICE not in props.get('ControlGroup', '').split('/'):
+                inside = not service_processes(props.get('ControlGroup', ''))
+            state = 'idle' if not running else 'inside' if inside else 'waiting'
+        except (OSError, ValueError, subprocess.SubprocessError):
+            state = 'unknown'
+        rows.append({'unit': unit, 'state': state})
     return rows
 
 
@@ -5124,14 +5237,23 @@ def physical_memory():
         return 0
 
 
-def resource_limits():
+def read_resource_limits_locked():
     saved = read_json_file(RESOURCE_FILE, None)
-    if not isinstance(saved, dict):   # 전체 설정이 아직 없으면 예전 프로젝트별 설정을 이어받아요.
+    if not isinstance(saved, dict):
         saved = read_json_file(D / "resource-limits.json", {})
+        saved = {"cpu_percent": saved.get("cpu_percent", 70), "memory_high_gb": saved.get("memory_high_gb", 0)}
+        atomic_json(RESOURCE_FILE, saved)
     return {"cpu_percent": saved.get("cpu_percent", 70), "memory_high_gb": saved.get("memory_high_gb", 0)}
 
 
+def resource_limits():
+    with resource_file_lock():
+        return read_resource_limits_locked()
+
+
 def apply_resource_limits(cpu_percent, memory_high_gb):
+    if IS_MAC:
+        raise UserError("맥에서는 쓸 수 없는 기능이에요.")
     quota = cpu_percent * (os.cpu_count() or 1)
     memory = str(int(memory_high_gb * 1024**3)) if memory_high_gb else "infinity"
     unit = resource_unit()
@@ -5141,10 +5263,6 @@ def apply_resource_limits(cpu_percent, memory_high_gb):
     subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
                     f"CPUQuota={quota}%", "CPUAccounting=yes", "MemoryAccounting=yes", "MemoryHigh=" + memory],
                    stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=True)
-    try:
-        adopt_services()
-    except (OSError, subprocess.SubprocessError):
-        pass   # 서비스 편입이 안 돼도 에이전트·백그라운드 작업 한도는 그대로 둬요.
 
 
 def resource_status(refresh=False):
@@ -5153,21 +5271,29 @@ def resource_status(refresh=False):
         now = time.time()
         if not refresh and RESOURCE_CACHE.get("root") == str(ROOT) and now - RESOURCE_CACHE.get("at", 0) < 3:
             return dict(RESOURCE_CACHE["value"])
-        limits = resource_limits()
+        limits = {"cpu_percent": 70, "memory_high_gb": 0} if IS_MAC else resource_limits()
         data = {**limits, "supported": False, "reason": "이 PC에서는 작업 리소스 제한을 적용하지 못했어요.",
                 "cpu_quota_percent": limits["cpu_percent"] * (os.cpu_count() or 1),
                 "logical_cpus": os.cpu_count() or 1, "physical_memory_bytes": physical_memory(),
                 "memory_current_bytes": None, "cpu_usage_percent": None,
-                "applies_to": "Office 전체: 새로 시작하는 Linux 에이전트·백그라운드 작업과 Office 서비스",
-                "uncontrolled": "이미 실행 중인 작업·Windows·GPU·원격 API·브라우저", "services": []}
+                "applies_to": "이 PC에서 Office가 실행한 Linux 작업 전체에 함께 적용해요.",
+                "uncontrolled": "Windows 프로그램·GPU·원격 API·브라우저는 제한하지 않아요.", "services": []}
         if IS_MAC:   # 없는 명령을 3초마다 찾지 않아요. 에이전트는 제한 없이 돌아요.
             data["reason"] = "맥에는 작업별 사용량을 제한하는 기능이 없어요."
             RESOURCE_CACHE.update(root=str(ROOT), at=now, value=data)
             return dict(data)
         try:
-            if RESOURCE_CACHE.get("configured") != (limits["cpu_percent"], limits["memory_high_gb"]):
-                apply_resource_limits(**limits)
-                RESOURCE_CACHE["configured"] = (limits["cpu_percent"], limits["memory_high_gb"])
+            with resource_file_lock():
+                limits = read_resource_limits_locked()
+                data.update(limits)
+                data["cpu_quota_percent"] = limits["cpu_percent"] * (os.cpu_count() or 1)
+                if RESOURCE_CACHE.get("configured") != (limits["cpu_percent"], limits["memory_high_gb"]):
+                    apply_resource_limits(**limits)
+                    RESOURCE_CACHE["configured"] = (limits["cpu_percent"], limits["memory_high_gb"])
+            try:
+                adopt_services()
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                server_log("resource.adopt", type(error).__name__)
             result = subprocess.run(["systemctl", "--user", "show", resource_unit(), "--property=ControlGroup"],
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=True)
             group = result.stdout.strip().removeprefix("ControlGroup=")
@@ -6778,7 +6904,7 @@ class Office:
             if type(cpu) is not int or not 1 <= cpu <= 100 or type(memory) not in (int, float) or not math.isfinite(memory) or not 0 <= memory <= physical_memory() / 1024**3:
                 raise UserError("리소스 한도 확인 — CPU는 1~100%, 메모리는 이 PC 용량 안에서 설정하세요. 메모리 0은 한도를 끄는 값이에요.")
             try:
-                with RESOURCE_LOCK:
+                with RESOURCE_LOCK, resource_file_lock():
                     apply_resource_limits(cpu, memory)
                     atomic_json(RESOURCE_FILE, {"cpu_percent": cpu, "memory_high_gb": memory})
                     RESOURCE_CACHE.clear()

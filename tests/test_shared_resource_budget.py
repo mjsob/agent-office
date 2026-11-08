@@ -52,15 +52,22 @@ class Budget(unittest.TestCase):
         (self.units / "b.service.d" / "x.conf").write_text("[Service]\nEnvironment=OFFICE_SESSION=s\n")
         (self.units / "plain.service").write_text("[Service]\nExecStart=/bin/true\n")
         self.assertEqual(o.office_services(), ["a.service", "b.service"])
-        o.adopt_services()
+        with patch.object(o, 'service_properties', return_value={'ActiveState':'inactive'}):
+            o.adopt_services()
         for unit in ("a.service", "b.service"):
             self.assertEqual((self.units / (unit + ".d") / o.RESOURCE_DROPIN).read_text(), "[Service]\nSlice=office-work.slice\n")
         self.assertFalse((self.units / "plain.service.d").exists())
         self.assertEqual(self.calls, [["systemctl", "--user", "daemon-reload"]])
         self.calls.clear()
-        o.adopt_services()   # 이미 들어 있으면 다시 읽지 않아요
+        with patch.object(o, 'service_properties', return_value={'ActiveState':'inactive'}):
+            o.adopt_services()   # 이미 들어 있으면 다시 읽지 않아요
         self.assertEqual(self.calls, [])
         self.assertEqual(o.office_services(), ["a.service", "b.service"])   # 우리 drop-in 은 표식으로 세지 않아요
+
+    def test_failed_query_is_not_reported_idle(self):
+        (self.units / "learn.service").write_text("[Service]\nEnvironment=OFFICE_JOB=1\n")
+        with patch.object(o.subprocess, "run", side_effect=OSError("query failed")):
+            self.assertEqual(o.service_budget_state(), [{"unit":"learn.service", "state":"unknown"}])
 
     def test_status_distinguishes_running_outside_slice(self):
         (self.units / "learn.service").write_text("[Service]\nEnvironment=OFFICE_JOB=1\n")
