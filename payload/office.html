@@ -362,9 +362,7 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 #askbar .row button { flex: none; font-size: 12px; padding: 3px 10px; }
 #askbar .more { font-size: 12px; color: var(--muted); padding-left: 12px; }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
-.settings-panel { --text: #202631; --muted: #637083; --faint: #637083; --bg: #f6f7f9; --panel: #fff; --chip: #f0f2f5; --line: #e3e7ed; --settings-blue: #2563eb; --settings-on-blue: #fff; position: fixed; top: var(--office-header-height, 52px); right: 0; z-index: 20; width: 392px; max-width: 100%; max-height: calc(100dvh - var(--office-header-height, 52px)); overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 20px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0 0 0 16px; background: var(--bg); color: var(--text); box-shadow: -8px 12px 32px #00000012; font-size: 13px; word-break: keep-all; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-:root[data-theme="dark"] .settings-panel { --text: #edf0f6; --muted: #a3adbd; --faint: #a3adbd; --bg: #1b1e24; --panel: #242830; --chip: #2d333d; --line: #373e49; --settings-blue: #89b0ff; --settings-on-blue: #112650; box-shadow: -8px 12px 32px #00000030; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .settings-panel { --text: #edf0f6; --muted: #a3adbd; --faint: #a3adbd; --bg: #1b1e24; --panel: #242830; --chip: #2d333d; --line: #373e49; --settings-blue: #89b0ff; --settings-on-blue: #112650; box-shadow: -8px 12px 32px #00000030; } }
+.settings-panel { --settings-accent: var(--accent); --settings-on-accent: var(--on-accent); position: fixed; top: var(--office-header-height, 52px); right: 0; z-index: 20; width: 392px; max-width: 100%; max-height: calc(100dvh - var(--office-header-height, 52px)); overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 20px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0 0 0 16px; background: var(--bg); color: var(--text); box-shadow: -8px 12px 32px #00000012; font-size: 13px; word-break: keep-all; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 #settingsBtn { white-space: nowrap; flex-shrink: 0; }
 .settings-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; margin: 0 -20px; padding: 20px; background: var(--bg); }
 .settings-panel .settings-heading h3 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.6px; }
@@ -372,8 +370,9 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .settings-panel button.ghost { border-color: transparent; color: var(--muted); }
 .settings-panel button:hover:not(:disabled) { background: var(--chip); }
 .settings-panel button:disabled { cursor: default; opacity: .45; }
-.settings-heading button.ghost { min-height: 32px; width: 32px; padding: 0; border-radius: 50%; }
-.settings-panel :is(button, select, input, summary):focus-visible { outline: 2px solid var(--settings-blue); outline-offset: 3px; }
+.settings-heading .settings-close { min-height: 44px; min-width: 84px; padding: 8px 12px; gap: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); font-weight: 500; }
+.settings-heading .settings-close svg { width: 22px; height: 22px; stroke-width: 2; }
+.settings-panel :is(button, select, input, summary):focus-visible { outline: 2px solid var(--settings-accent); outline-offset: 3px; }
 .settings-general, .storage-settings, #resbox { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
 .settings-general { padding: 0 16px; }
 .settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; margin: 0; }
@@ -381,7 +380,7 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .settings-panel .set-row > span { font-weight: 500; }
 .settings-panel .set-row button { flex: none; max-width: 64%; min-height: 32px; padding: 4px 10px; background: var(--chip); color: var(--text); font-weight: 500; }
 .settings-panel h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 14px; font-weight: 650; letter-spacing: -.25px; }
-.settings-section-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; color: var(--settings-blue); background: color-mix(in srgb, var(--settings-blue) 9%, var(--panel)); }
+.settings-section-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; color: var(--settings-accent); background: color-mix(in srgb, var(--settings-accent) 9%, var(--panel)); }
 .settings-section-icon svg { width: 16px; height: 16px; }
 .storage-settings { margin-top: 16px; padding: 16px; }
 .storage-settings p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
@@ -404,7 +403,7 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .settings-notice .set-row { min-height: 44px; }
 #storagePreferenceStatus { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 #storageSettingsAction:empty, #storageSettingsChecked:empty { display: none; }
-#storageSettingsAction:not(:empty) { border-left: 2px solid var(--settings-blue); padding-left: 10px; font-size: 12px; }
+#storageSettingsAction:not(:empty) { border-left: 2px solid var(--settings-accent); padding-left: 10px; font-size: 12px; }
 #powershellNotice { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
 #resbox { color: var(--text); margin-top: 16px; padding: 16px; }
 #resbox h3 { margin-bottom: 4px; }
@@ -414,23 +413,23 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 #resbox .resource-now::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--muted); }
 #resbox .resource-control { margin: 16px 0; }
 #resbox .resource-label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; font-weight: 500; }
-#resCpuV { padding: 3px 8px; color: var(--settings-blue); background: color-mix(in srgb, var(--settings-blue) 9%, var(--panel)); border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#resCpuV { padding: 3px 8px; color: var(--settings-accent); background: color-mix(in srgb, var(--settings-accent) 9%, var(--panel)); border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 #resbox input[type=range] { --res-percent: 70%; appearance: none; -webkit-appearance: none; display: block; width: 100%; height: 24px; margin: 4px 0 8px; padding: 0; border: 0; background: transparent; cursor: pointer; }
-#resbox input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-blue) var(--res-percent), var(--line) var(--res-percent)); }
-#resbox input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-blue); box-shadow: 0 0 0 1px var(--settings-blue), 0 2px 4px #00000012; }
-#resbox input[type=range]::-moz-range-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-blue) var(--res-percent), var(--line) var(--res-percent)); }
-#resbox input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-blue); box-shadow: 0 0 0 1px var(--settings-blue); }
+#resbox input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-accent) var(--res-percent), var(--line) var(--res-percent)); }
+#resbox input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-accent); box-shadow: 0 0 0 1px var(--settings-accent), 0 2px 4px #00000012; }
+#resbox input[type=range]::-moz-range-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-accent) var(--res-percent), var(--line) var(--res-percent)); }
+#resbox input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-accent); box-shadow: 0 0 0 1px var(--settings-accent); }
 #resbox .resource-presets { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
 #resbox .resource-presets button { flex: 1; min-width: 0; min-height: 30px; padding: 3px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; white-space: nowrap; font-weight: 500; }
 #resbox .resource-presets button[aria-pressed="true"] { border-color: var(--line); background: var(--panel); color: var(--text); box-shadow: 0 1px 3px #0000000a; font-weight: 600; }
 #resbox .resource-memory { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #resbox select, #resbox input[type=number] { max-width: 100%; min-height: 36px; font: inherit; font-size: 12px; color: var(--text); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
-#resbox select { flex: 1; min-width: 132px; appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%236b778b' stroke-width='1.5'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+#resbox select { flex: 1; min-width: 132px; appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%2385827b' stroke-width='1.5'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
 #resbox input[type=number] { width: 68px; font-variant-numeric: tabular-nums; }
 #resMemAmount { flex: none; color: var(--muted); font-size: 11px; }
 #resbox details { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
-.settings-panel #resApply { justify-content: center; width: 100%; min-height: 38px; margin-top: 4px; border: 1px solid transparent; background: var(--settings-blue); color: var(--settings-on-blue); box-shadow: 0 1px 2px #00000012; }
-.settings-panel #resApply:hover { background: color-mix(in srgb, var(--settings-blue) 86%, var(--text)); }
+.settings-panel #resApply { justify-content: center; width: 100%; min-height: 38px; margin-top: 4px; border: 1px solid transparent; background: var(--settings-accent); color: var(--settings-on-accent); box-shadow: 0 1px 2px #00000012; }
+.settings-panel #resApply:hover { background: color-mix(in srgb, var(--settings-accent) 86%, var(--text)); }
 @media (max-width: 760px) { .settings-panel { left: 0; right: 0; width: auto; border-left: 0; border-radius: 0 0 16px 16px; } }
 @media (max-width: 360px) { .settings-panel { padding: 0 12px 12px; } .settings-heading { margin: 0 -12px; padding: 16px 12px; } .settings-general { padding: 0 12px; } .storage-settings, #resbox { padding: 12px; } .storage-stat { padding: 0 10px; } .storage-stat strong { font-size: 19px; } }
 @media (prefers-reduced-motion: reduce) { .settings-panel button { transition: none; } }
@@ -760,8 +759,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   </aside>
 </header>
 
-<section id="settings" class="settings-panel" aria-label="설정" hidden>
-  <div class="settings-heading"><h3>설정</h3><button class="ghost" aria-label="설정 닫기" onclick="toggleSettings(false, true)"><svg class="i sm"><use href="#i-x"/></svg></button></div>
+<section id="settings" class="settings-panel" aria-label="설정" tabindex="-1" hidden>
+  <div class="settings-heading"><h3>설정</h3><button class="settings-close" aria-label="설정 닫기" title="설정 닫기 (Esc)" onclick="toggleSettings(false, true)"><svg class="i" aria-hidden="true" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></svg><span>닫기</span></button></div>
   <div class="settings-general">
   <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
   <div class="set-row" id="attentionRow" hidden><span>작업 표시줄 알림</span><button id="attention" class="ghost" onclick="cycleAttention()"></button></div>
@@ -1352,7 +1351,7 @@ function toggleSettings(force, restoreFocus = false) {
     updatePanelOpen = false;
     reopenedUpdateKey = "";
     renderUpdate();
-    $("#theme").focus({preventScroll: true});
+    p.focus({preventScroll: true});
   } else {
     renderUpdate();
     if (restoreFocus) $("#settingsBtn").focus({preventScroll: true});
