@@ -895,6 +895,13 @@ function doingText(doing) {
   return label && step ? `${label} · ${step}` : label;
 }
 const JOBST = {planning: "계획 세우는 중", working: "작업 중", review: "결과 확인 중", waiting: "기다리는 중", done: "완료"};
+// 대화(에이전트)는 쉬고 백그라운드 계산만 도는 요청은 '작업 중' 대신 '계산 중'으로 보여요
+const BG_COMPUTING = "계산 중 · 대화는 대기";
+function bgComputing(j, tasks = lastTasks) {
+  const open = tasks.filter(t => t.job === j.id && t.status !== "done");
+  return !j.cancelled && open.length > 0 && open.every(t => t.status === "waiting" && t.wait_kind === "working" && t.wait_alive === true);
+}
+const jobLabel = (j, status, tasks = lastTasks) => j.cancelled ? "취소됨" : status === "working" && bgComputing(j, tasks) ? BG_COMPUTING : JOBST[status] ?? status;
 // 남은 작업이 기다리는 상태라면 요청도 완료로 보이지 않게 표시해요.
 function jobStatus(j, tasks = lastTasks) {
   if (j.display_status) return j.display_status;   // 서버가 실제 실행 상태로 계산한 값
@@ -1691,7 +1698,7 @@ function renderAgents(agents) {
     const running = held.some(t => t.wait_alive === true && t.wait_kind !== "waiting" && t.progress?.state !== "waiting");
     const waiting = held.some(t => t.wait_kind === "waiting" || t.progress?.state === "waiting");
     const heldProgress = held.map(t => taskProgressShort(t)).filter(Boolean).join(" · ");
-    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : waiting && !running ? "기다리는 중" + (heldProgress ? ` · ${heldProgress}` : "") : heldProgress ? heldProgress : running ? "백그라운드 실행 중" : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
+    const heldText = stopped ? "백그라운드 작업이 멈췄어요" : waiting && !running ? "기다리는 중" + (heldProgress ? ` · ${heldProgress}` : "") : running ? "계산 중" + (heldProgress ? ` · ${heldProgress}` : "") : heldProgress ? heldProgress : held.length ? held.map(t => t.wait_reason || "결과 기다리는 중").join(" · ") : "";
     const logAt = Math.max(0, ...held.map(t => Number(t.wait_log_at) || 0));
     // 요청은 끝났는데 차례만 마무리 중이면 초록 점멸 대신 회색 '정리 중' (완료 알림과 작업 중 표시가 같이 떠 헷갈리던 문제)
     const djob = a.status === "working" && a.doing?.job ? lastJobs.find(x => x.id === a.doing.job) : null;
@@ -2067,7 +2074,7 @@ function threadHtml(t, part = "full") {
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
   // 중간 설명(질문 답장이 아닌 일반 메시지)은 최신 한 건만 본문에 두고 지난 것은 진행 과정에 접음. 최종 보고·경고·질문 답장은 그대로
   // 진행 중인 요청은 진행 알림과 중간 설명을 합쳐 최근 3건을 밖에 두어 '진짜 진행되는 느낌'을 주고, 끝난 요청은 최신 한 건만 둠
-  const j = t.job, status = jobStatus(j), st = j.cancelled ? "취소됨" : JOBST[status] ?? "";
+  const j = t.job, status = jobStatus(j), st = jobLabel(j, status);
   const live = status && status !== "done";
   const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null);
   const recent = live ? [...t.steps.filter(m => m.kind === "progress"), ...plainMsgs].sort((x, y) => x.id - y.id).slice(-RECENT_LIVE) : [];
@@ -2255,7 +2262,7 @@ function renderBoard(jobs, tasks, resv = [], cur = "") {
   const isOpen = j => j.status !== "done" || pending(j);
   const active = jobs.filter(isOpen), closed = jobs.filter(j => !isOpen(j)).reverse();
   const html = [...active].reverse().map(j => {
-    const status = jobStatus(j, tasks), st = j.cancelled ? "취소됨" : JOBST[status] ?? status;
+    const status = jobStatus(j, tasks), st = jobLabel(j, status, tasks);
     const jt = tasks.filter(t => t.job === j.id);
     return `<div class="job ${status === "done" ? "closed" : ""}">
       <div class="hd"><span class="tx jump" role="button" tabindex="0" title="${esc(j.text)}" onclick="jumpTo(${j.id})">${esc(j.text)}</span><span class="pill ${status}">${st}</span>
