@@ -31,27 +31,51 @@ with sync_playwright() as p:
                 route.fulfill(json=dict(resources={**resource, **{k:data[k] for k in ('cpu_percent','memory_high_gb')}}))
             page.route('**/api', post)
             page.goto('http://office.test/?theme='+theme)
-            page.wait_for_selector('#resbox b', state='attached')
+            page.wait_for_selector('#resbox h3', state='attached')
             page.evaluate('clearInterval(refreshTimer)')
             page.locator('#settingsBtn').click()
             box = page.locator('#resbox')
             assert box.is_visible()
             text = box.inner_text()
-            for expected in ('Office 전체 사용량 제한', 'Office 작업이 한도를 함께 써요', '모든 대화와 프로젝트', 'CPU 합계 최대', '메모리 합계 기준', '지금 CPU 합계 43%'):
+            for expected in ('Office 사용량', '모든 대화·프로젝트에 함께 적용돼요', 'CPU 최대 사용률', '메모리', '지금 CPU 43%'):
                 assert expected in text, (width, theme, expected, text)
             assert '지금 시작하는 작업부터' not in text
             assert page.locator('#resCpu').input_value() == '70'
             assert page.locator('#resMem').input_value() == '0'
             box.locator('summary').click()
-            assert '논리 CPU 12개' in box.inner_text()
+            assert '컴퓨터 전체 기준이에요' in box.inner_text()
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             assert box.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
             page.locator('#resCpu').fill('30')
+            assert page.locator('#resMemMode').input_value() == 'unlimited'
+            assert page.locator('#resMem').is_hidden()
+            page.locator('#resMemMode').select_option('budget')
+            assert page.locator('#resMem').is_visible()
             page.locator('#resMem').fill('2')
             with page.expect_response('**/api'):
                 page.locator('#resApply').click()
             page.wait_for_function('document.querySelector("#resCpu").value==="30"')
             assert writes == [dict(session='s', action='resource_limits', cpu_percent=30, memory_high_gb=2)], writes
+            for label, value in [('여유롭게',30),('균형 있게',60),('빠르게',100)]:
+                box.get_by_role('button', name=label, exact=True).click()
+                assert page.locator('#resCpu').input_value() == str(value)
+            page.locator('#resMemMode').select_option('unlimited')
+            assert page.locator('#resMem').input_value() == '0' and page.locator('#resMem').is_hidden()
+            with page.expect_response('**/api'):
+                page.locator('#resApply').click()
+            assert writes[-1] == dict(session='s', action='resource_limits', cpu_percent=100, memory_high_gb=0)
+            page.locator('#resMemMode').select_option('budget')
+            page.locator('#resMem').fill('0')
+            with page.expect_response('**/api'):
+                page.locator('#resApply').click()
+            assert writes[-1]['memory_high_gb'] == 0
+            assert page.locator('#resMemMode').input_value() == 'unlimited'
+            assert page.locator('#resMem').is_hidden()
+            page.evaluate('document.activeElement.blur()')
+            page.evaluate('r=>{lastResSig="";renderResources(r)}', {**resource, 'memory_high_gb':12.5})
+            assert page.locator('#resMemMode').input_value() == 'budget'
+            assert page.locator('#resMem').input_value() == '12.5' and page.locator('#resMem').is_visible()
+
             page.evaluate('document.activeElement.blur()')
             page.evaluate('r=>renderResources(r)', {**resource, 'services':[{'unit':'ok.service','state':'inside'},{'unit':'idle.service','state':'idle'}]})
             assert box.locator('.resource-warning').count() == 0
@@ -60,7 +84,7 @@ with sync_playwright() as p:
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.evaluate('r=>{lastResSig="";renderResources(r)}', {**resource, 'supported':False, 'reason':'사용량 제한을 적용하지 못했어요.'})
             assert box.locator('input').count() == 0
-            assert '쓸 수 없어요' in box.inner_text()
+            assert '조절할 수 없어요' in box.inner_text()
             page.evaluate('renderResources(null)')
             assert box.is_hidden()
             page.evaluate('r=>{lastResSig="";renderResources(r)}', resource)

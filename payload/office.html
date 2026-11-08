@@ -371,16 +371,29 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 .storage-settings p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
 .storage-settings .storage-setting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .storage-settings .storage-setting-meta { color: var(--muted); font-size: 12px; }
+.storage-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+.storage-stat { padding: 10px; border-radius: 8px; background: var(--chip); min-width: 0; }
+.storage-stat span { display: block; color: var(--muted); font-size: 12px; }
+.storage-stat strong { display: block; margin-top: 4px; font-size: 17px; font-variant-numeric: tabular-nums; }
+.settings-panel details { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.settings-panel summary { cursor: pointer; }
+#storageSettingsAction:empty, #storageSettingsChecked:empty { display: none; }
 .settings-panel h3 { margin: 0 0 10px; font-size: 14px; }
 .settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 @media (max-width: 760px) { .settings-panel { left: 12px; right: 12px; width: auto; } }
-#resbox { font-size: 12px; color: var(--muted); margin: 10px 0; }
-#resbox .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
-#resbox .row button { flex-shrink: 0; white-space: nowrap; }
-#resbox input[type=range] { flex: 1; }
-#resbox details { margin-top: 6px; }
-#resbox summary { cursor: pointer; }
-#resbox input[type=number] { width: 64px; }
+#resbox { color: var(--text); border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
+#resbox .resource-scope, #resbox .resource-hint, #resbox .resource-now { color: var(--muted); font-size: 12px; margin: 6px 0; line-height: 1.5; }
+#resbox .resource-now { background: var(--chip); padding: 8px 10px; border-radius: 8px; margin: 10px 0 14px; font-variant-numeric: tabular-nums; }
+#resbox .resource-control { margin: 12px 0; }
+#resbox .resource-label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+#resbox input[type=range] { display: block; width: 100%; margin: 8px 0; }
+#resbox .resource-presets { display: flex; gap: 6px; }
+#resbox .resource-presets button { flex: 1; padding: 5px 6px; font-size: 12px; white-space: nowrap; }
+#resbox .resource-memory { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#resbox select { max-width: 100%; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+#resbox input[type=number] { width: 72px; }
+#resbox details { margin-top: 10px; }
+#resApply { width: 100%; margin-top: 4px; }
 .job .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 .pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .pill.working, .pill.planning, .pill.review { color: var(--text); }
@@ -717,15 +730,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
   <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
   <div class="storage-settings" aria-labelledby="storageSettingsTitle">
-    <h3 id="storageSettingsTitle">디스크 줄이기</h3>
-    <p id="storageSettingsMetrics" role="status" aria-live="polite">디스크 정보를 불러오고 있어요.</p>
+    <h3 id="storageSettingsTitle">디스크 공간</h3>
+    <div id="storageSettingsMetrics" role="status" aria-live="polite">디스크 정보를 불러오고 있어요.</div>
     <p id="storageSettingsChecked" class="storage-setting-meta"></p>
     <div class="storage-setting-actions">
       <button id="storageRefresh" class="ghost" onclick="refreshStorageCapacity()" disabled>다시 측정</button>
       <button id="storageManualRun" onclick="startStorageCompact(true)" disabled>디스크 줄이기</button>
     </div>
     <p id="storageSettingsAction" role="status" aria-live="polite"></p>
-    <details><summary>줄이기 전에 확인하세요</summary><p>파일을 지우지 않고 가상디스크의 빈 공간을 회수해요.</p><p>회수 추정량은 이전에 줄인 결과나 관리 공간을 반영해 계산해요. 실행해도 확보량이 적거나 없을 수 있어요.</p><p>진행 중인 작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows 창에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요.</p></details>
+    <details><summary>실행 전에 확인하세요</summary><p>파일은 지우지 않아요. 예상보다 적게 확보될 수 있어요.</p><p>작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.</p></details>
   </div>
   </div>
   <div id="resbox" hidden></div>
@@ -2697,15 +2710,19 @@ function renderStorageSettings(notice, action) {
   const measured = ["ok", "suggested"].includes(notice?.status) && Number.isFinite(notice.free_gib);
   const estimated = measured && Number.isFinite(notice.reclaim_gib);
   const metrics = $("#storageSettingsMetrics");
-  metrics.textContent = !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
-    : refreshing ? "디스크 정보를 다시 측정하고 있어요."
-    : estimated ? `${notice.drive} 여유 ${notice.free_gib.toFixed(1)}GiB · 회수 추정 ${notice.reclaim_gib.toFixed(1)}GiB`
-    : measured ? `${notice.drive} 여유 ${notice.free_gib.toFixed(1)}GiB · 회수량을 추정하지 못했어요.`
-    : notice?.status === "stale" ? "지난 측정값이 오래됐어요. 다시 측정한 뒤 실행하세요."
-    : "회수할 공간을 확인하려면 [다시 측정]을 누르세요.";
-  if (available && estimated && notice.reclaim_gib <= 0 && !refreshing) metrics.textContent += " 추가로 확보할 공간이 적을 수 있어요.";
-  $("#storageSettingsChecked").textContent = available && Number.isFinite(notice?.checked_at)
-    ? `최근 측정: ${new Date(notice.checked_at * 1000).toLocaleString("ko-KR")}` : "";
+  if (available && measured && !refreshing) {
+    metrics.innerHTML = `<div class="storage-stats"><div class="storage-stat"><span>${esc(notice.drive || "디스크")} 여유 공간</span><strong>${notice.free_gib.toFixed(1)} GiB</strong></div><div class="storage-stat"><span>확보 예상</span><strong>${estimated ? notice.reclaim_gib.toFixed(1) + " GiB" : "확인 필요"}</strong></div></div>`
+      + (estimated && notice.reclaim_gib <= 0 ? "<p>지금은 확보할 공간이 거의 없어요.</p>" : !estimated ? "<p>다시 측정해 예상 공간을 확인하세요.</p>" : "");
+  } else {
+    metrics.textContent = !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
+      : refreshing ? "디스크 공간을 확인하고 있어요."
+      : notice?.status === "stale" ? "다시 측정해 최신 공간을 확인하세요."
+      : "[다시 측정]으로 확보할 공간을 확인하세요.";
+  }
+  const checked = $("#storageSettingsChecked");
+  checked.textContent = available && Number.isFinite(notice?.checked_at)
+    ? `${new Date(notice.checked_at * 1000).toLocaleString("ko-KR", {month:"numeric", day:"numeric", hour:"numeric", minute:"2-digit"})} 측정했어요.` : "";
+  checked.title = available && Number.isFinite(notice?.checked_at) ? new Date(notice.checked_at * 1000).toLocaleString("ko-KR") : "";
   const refresh = $("#storageRefresh"), run = $("#storageManualRun");
   refresh.disabled = !available || refreshing || storageStarting || !action?.can_start;
   refresh.textContent = refreshing ? "측정 중이에요" : "다시 측정";
@@ -2790,30 +2807,47 @@ function renderResources(r) {
   if (sig === lastResSig) return;
   const wasOpen = box.querySelector("details")?.open;
   lastResSig = sig; box.hidden = false;
-  if (!r.supported) { box.innerHTML = `<b>Office 전체 사용량 제한</b><div>이 PC에서는 쓸 수 없어요</div><details><summary>이유 보기</summary><div>${esc(r.reason || "")}</div></details>`; return; }
-  const gb = x => x == null ? "-" : (x / 1024 ** 3).toFixed(1) + "GB";
+  if (!r.supported) { box.innerHTML = `<h3>Office 사용량</h3><p>이 PC에서는 사용량을 조절할 수 없어요.</p><details><summary>이유를 확인하세요</summary><div>${esc(r.reason || "")}</div></details>`; return; }
+  const gb = x => x == null ? "확인 중" : (x / 1024 ** 3).toFixed(1) + " GB";
   const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
   const pending = (r.services || []).filter(x => !["inside", "idle"].includes(x.state)).length;
-  const now = r.cpu_usage_percent == null ? "" : `지금 CPU 합계 ${Math.round(r.cpu_usage_percent)}% · 메모리 ${gb(r.memory_current_bytes)} 쓰는 중`;
-  box.innerHTML = `<b>Office 전체 사용량 제한</b>
-    <div>이 PC의 Office 작업이 한도를 함께 써요.</div>
-    <div class="row">CPU 합계 최대 <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'"><span id="resCpuV">${r.cpu_percent}%</span></div>
-    <div class="row"><button onclick="setResCpu(30)">여유롭게</button><button onclick="setResCpu(60)">균형</button><button onclick="setResCpu(100)">빠르게</button></div>
-    <div class="row">메모리 합계 기준 <input type="number" id="resMem" min="0" max="${maxGb}" step="0.5" value="${r.memory_high_gb}">GB</div>
-    <div>메모리 기준이 0이면 제한하지 않아요.</div>
-    <div>메모리 기준을 넘으면 처리 속도를 낮춰요.</div>
-    <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>${now}</span></div>
-    <div>모든 대화와 프로젝트에 같은 설정을 적용해요.</div>
+  const unlimited = !(r.memory_high_gb > 0);
+  const memoryDefault = Math.min(maxGb, Math.max(1, Math.ceil((r.memory_current_bytes || maxGb * 1024 ** 3 / 2) / 1024 ** 3)));
+  box.innerHTML = `<h3>Office 사용량</h3>
+    <p class="resource-scope">모든 대화·프로젝트에 함께 적용돼요.</p>
+    <p class="resource-now">지금 CPU ${r.cpu_usage_percent == null ? "확인 중" : Math.round(r.cpu_usage_percent) + "%"} · 메모리 ${gb(r.memory_current_bytes)} 써요.</p>
+    <div class="resource-control">
+      <div class="resource-label"><label for="resCpu">CPU 최대 사용률</label><strong id="resCpuV">${r.cpu_percent}%</strong></div>
+      <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'">
+      <div class="resource-presets"><button onclick="setResCpu(30)">여유롭게</button><button onclick="setResCpu(60)">균형 있게</button><button onclick="setResCpu(100)">빠르게</button></div>
+    </div>
+    <div class="resource-control">
+      <div class="resource-label"><label for="resMemMode">메모리</label></div>
+      <div class="resource-memory">
+        <select id="resMemMode" onchange="setResMemoryMode(this.value)"><option value="unlimited" ${unlimited ? "selected" : ""}>제한 없이 써요</option><option value="budget" ${!unlimited ? "selected" : ""}>기준을 정해요</option></select>
+        <span id="resMemAmount" ${unlimited ? "hidden" : ""}><input aria-label="메모리 기준 (GB)" type="number" id="resMem" min="0" max="${maxGb}" step="0.5" data-default="${memoryDefault}" value="${r.memory_high_gb}"> GB</span>
+      </div>
+      <p id="resMemHint" class="resource-hint" ${unlimited ? "hidden" : ""}>기준을 넘으면 속도를 낮춰요.</p>
+    </div>
+    <button id="resApply" onclick="applyResources()">설정 저장</button>
     ${pending ? `<p class="resource-warning" role="status" style="color:var(--warn)">Office 작업 ${pending}개는 아직 사용량 제한을 확인하지 못했어요.</p>` : ""}
-    <details><summary>자세히 보기</summary>
-      <div>CPU ${r.cpu_percent}%는 컴퓨터 전체(논리 CPU ${r.logical_cpus ?? "-"}개) 기준이에요.</div>
-      <div>적용 대상: ${esc(r.applies_to || "")}</div>
-      <div>제한하지 못하는 것: ${esc(r.uncontrolled || "")}</div>
+    <details><summary>적용 범위를 확인하세요</summary>
+      <div>CPU 사용률은 컴퓨터 전체 기준이에요.</div>
+      <div>${esc(r.applies_to || "")}</div>
+      <div>${esc(r.uncontrolled || "")}</div>
     </details>`;
   if (wasOpen) box.querySelector("details").open = true;
 }
 function setResCpu(v) { $("#resCpu").value = v; $("#resCpuV").textContent = v + "%"; }
+function setResMemoryMode(mode) {
+  $("#resMemMode").value = mode;
+  const unlimited = mode === "unlimited", input = $("#resMem");
+  $("#resMemAmount").hidden = unlimited;
+  $("#resMemHint").hidden = unlimited;
+  input.value = unlimited ? 0 : (+input.value > 0 ? input.value : input.dataset.default);
+}
 async function applyResources() {
+  if (+$("#resMem").value === 0) setResMemoryMode("unlimited");
   lastResSig = "";
   await api({action: "resource_limits", cpu_percent: +$("#resCpu").value, memory_high_gb: +$("#resMem").value});
 }
