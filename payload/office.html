@@ -2787,6 +2787,7 @@ function renderResources(r) {
   if (!r.supported) { box.innerHTML = `<b>Office 전체 사용량 제한</b><div>이 PC에서는 쓸 수 없어요</div><details><summary>이유 보기</summary><div>${esc(r.reason || "")}</div></details>`; return; }
   const gb = x => x == null ? "-" : (x / 1024 ** 3).toFixed(1) + "GB";
   const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
+  const pending = (r.services || []).filter(x => !["inside", "idle"].includes(x.state)).length;
   const now = r.cpu_usage_percent == null ? "" : `지금 CPU 합계 ${Math.round(r.cpu_usage_percent)}% · 메모리 ${gb(r.memory_current_bytes)} 쓰는 중`;
   box.innerHTML = `<b>Office 전체 사용량 제한</b>
     <div>이 PC의 Office 작업이 한도를 함께 써요.</div>
@@ -2797,6 +2798,7 @@ function renderResources(r) {
     <div>메모리 기준을 넘으면 처리 속도를 낮춰요.</div>
     <div class="row"><button id="resApply" onclick="applyResources()">적용</button><span>${now}</span></div>
     <div>모든 대화와 프로젝트에 같은 설정을 적용해요.</div>
+    ${pending ? `<p class="resource-warning" role="status" style="color:var(--warn)">Office 작업 ${pending}개는 아직 사용량 제한을 확인하지 못했어요.</p>` : ""}
     <details><summary>자세히 보기</summary>
       <div>CPU ${r.cpu_percent}%는 컴퓨터 전체(논리 CPU ${r.logical_cpus ?? "-"}개) 기준이에요.</div>
       <div>적용 대상: ${esc(r.applies_to || "")}</div>

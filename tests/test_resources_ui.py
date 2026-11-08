@@ -53,6 +53,11 @@ with sync_playwright() as p:
             page.wait_for_function('document.querySelector("#resCpu").value==="30"')
             assert writes == [dict(session='s', action='resource_limits', cpu_percent=30, memory_high_gb=2)], writes
             page.evaluate('document.activeElement.blur()')
+            page.evaluate('r=>renderResources(r)', {**resource, 'services':[{'unit':'ok.service','state':'inside'},{'unit':'idle.service','state':'idle'}]})
+            assert box.locator('.resource-warning').count() == 0
+            page.evaluate('r=>renderResources(r)', {**resource, 'services':[{'unit':'waiting.service','state':'waiting'},{'unit':'unknown.service','state':'unknown'}]})
+            assert 'Office 작업 2개' in box.locator('.resource-warning').inner_text()
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.evaluate('r=>{lastResSig="";renderResources(r)}', {**resource, 'supported':False, 'reason':'사용량 제한을 적용하지 못했어요.'})
             assert box.locator('input').count() == 0
             assert '쓸 수 없어요' in box.inner_text()
