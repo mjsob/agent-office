@@ -1063,7 +1063,8 @@ function showUpdateNotice() {
   reopenedUpdateKey = updateKey();
   renderUpdate();
   $("#updateNotice").scrollIntoView({block: "nearest"});
-  (updateState.available ? $("#updateButton") : $("#updateCheck")).focus({preventScroll: true});
+  ["updateButton", "updateCheck", "updateKeep", "updateClose"].map(id => $("#" + id))
+    .find(button => !button.hidden && !button.disabled)?.focus({preventScroll: true});
 }
 function resetUpdateNotes() {
   $("#updateDetails").hidden = true;
@@ -1116,7 +1117,7 @@ function renderUpdate(u = updateState) {
   versionButton.setAttribute("aria-label", versionHint);
   $("#updateToday").hidden = busy || failed || reviewVisible || !u.available;
   $("#updateClose").hidden = false;
-  $("#updateButton").hidden = (!u.available && !busy && !failed) || (reviewVisible && !busy && u.review?.state !== "failed");
+  $("#updateButton").hidden = (!u.installable && !busy) || (!u.available && !busy && !failed) || (reviewVisible && !busy && u.review?.state !== "failed");
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
     : u.state === "checking_candidate" ? "합친 사본을 확인해요" : u.state === "conflict" ? "겹치는 변경을 선택하세요" : u.state === "merging" ? "사본에서 합치고 있어요" : u.state === "ready" ? "합친 결과를 확인하세요" : u.state === "applied" ? "업데이트했어요" : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전이에요" : "새 버전을 확인하세요";
   $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
@@ -1134,7 +1135,7 @@ function renderUpdate(u = updateState) {
   $("#updateChecked").textContent = checking ? "확인하는 중…" : age === null ? "아직 확인하지 않았어요" : age === 0 ? "방금 확인" : `마지막 확인 ${age}분 전`;
   $("#updateCheck").disabled = checking || busy;
   $("#updateCheck").textContent = checking ? "확인 중" : "다시 확인";
-  $("#updateCheck").hidden = u.available || busy || failed;
+  $("#updateCheck").hidden = (u.available && u.installable) || busy || (failed && u.installable);
   $("#updateError").hidden = !u.error;
   $("#updateError").textContent = u.error ? `확인 실패: ${u.error}` : "";
   $("#updateNotesToggle").hidden = !u.notes;

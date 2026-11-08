@@ -32,6 +32,7 @@ with sync_playwright() as p:
    context.route('**/api/state*',lambda r:r.fulfill(json=snapshot))
    def post(route):
     payload=route.request.post_data_json; writes.append(payload)
+    if payload['action']=='update_check': snapshot['update'].update(checked_at=time.time(),checking=False)
     route.fulfill(json={'ok':'선택을 받았어요.'})
    context.route('**/api',post)
    font=Path('/mnt/c/Windows/Fonts/malgun.ttf')
@@ -53,6 +54,28 @@ with sync_playwright() as p:
     box=page.locator('#updateNotice').bounding_box()
     assert box and box['x']>=0 and box['x']+box['width']<=width+1,(name,box,width)
     results.append({'case':name,'width':width,'theme':theme,'passed':True})
+   for current,installable,available,state in [
+    ('0.10.0+local',False,True,'idle'),('0.10.0',False,True,'idle'),
+    ('0.11.0+local',False,False,'idle'),('0.10.0',False,True,'failed')]:
+    update={'current':current,'latest':'0.11.0','available':available,'installable':installable,
+            'state':state,'checked_at':time.time(),'message':'이 PC 전용 버전이에요.'}
+    writes.clear(); show(update)
+    assert page.locator('#updateButton').is_hidden()
+    assert page.locator('#updateCheck').is_visible() and page.locator('#updateCheck').is_enabled()
+    page.evaluate('showUpdateNotice()')
+    assert page.locator('#updateCheck').evaluate('(el)=>el===document.activeElement')
+    page.locator('#updateCheck').click();page.wait_for_function('!updateChecking')
+    assert writes and writes[-1]['action']=='update_check'
+    assert not any(row['action']=='update' for row in writes)
+    record('uninstallable-'+current+'-'+state)
+   writes.clear(); show({'current':'0.10.0','latest':'0.11.0','available':True,'installable':True,'state':'idle'})
+   page.evaluate('showUpdateNotice()')
+   assert page.locator('#updateButton').is_visible() and page.locator('#updateButton').is_enabled()
+   assert page.locator('#updateButton').evaluate('(el)=>el===document.activeElement')
+   page.locator('#updateButton').click();page.wait_for_function('!updateSubmitting')
+   assert len(writes)==1 and writes[0]['action']=='update'
+   record('public-update-click')
+   writes.clear()
    show(base)
    assert page.locator('#updateButton').is_hidden()
    for ident in ('updateKeep','updateMerge','updateUpstream'): assert page.locator('#'+ident).is_visible()
