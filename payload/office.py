@@ -5056,8 +5056,65 @@ RESOURCE_CACHE = {}
 RESOURCE_SAMPLE = None
 
 
+# CPU·메모리 예산은 Office 전체에 하나예요. 프로젝트마다 따로 두지 않아요.
+RESOURCE_SLICE = "office-work.slice"
+RESOURCE_FILE = Path(os.environ.get("OFFICE_RESOURCE_LIMITS") or Path.home() / ".config" / "office" / "resource-limits.json")
+SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
+RESOURCE_DROPIN = "office-resource.conf"
+
+
 def resource_unit():
-    return "office-work-" + hashlib.sha256(str(ROOT).encode()).hexdigest()[:12] + ".slice"
+    return RESOURCE_SLICE
+
+
+def office_services():
+    """Office 환경값(OFFICE_SESSION·OFFICE_JOB)이 들어 있는 사용자 서비스 이름. 같은 전체 예산에 넣을 대상이에요."""
+    found = set()
+    try:
+        for path in [*SYSTEMD_USER_DIR.glob("*.service"), *SYSTEMD_USER_DIR.glob("*.service.d/*.conf")]:
+            if path.name == RESOURCE_DROPIN or path.is_symlink():
+                continue
+            unit = path.name if path.suffix == ".service" else path.parent.name.removesuffix(".d")
+            if unit.startswith("office-task-"):
+                continue
+            text = path.read_text(errors="ignore")
+            if "OFFICE_SESSION=" in text or "OFFICE_JOB=" in text:
+                found.add(unit)
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def adopt_services():
+    """Office 서비스가 시작할 때 공통 slice 안에 들어가게 drop-in 을 둬요. 실행 중인 서비스는 끄지 않아요(다음 시작부터 적용)."""
+    changed = False
+    for unit in office_services():
+        folder = SYSTEMD_USER_DIR / (unit + ".d")
+        want = f"[Service]\nSlice={RESOURCE_SLICE}\n"
+        target = folder / RESOURCE_DROPIN
+        if target.exists() and target.read_text() == want:
+            continue
+        folder.mkdir(parents=True, exist_ok=True)
+        target.write_text(want)
+        changed = True
+    if changed:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=True)
+
+
+def service_budget_state():
+    """각 Office 서비스가 지금 공통 예산 안에서 도는지: inside(적용 중) / waiting(실행 중이지만 다음 시작부터) / idle(안 도는 중)"""
+    rows = []
+    for unit in office_services():
+        try:
+            out = subprocess.run(["systemctl", "--user", "show", unit, "--property=ActiveState,ControlGroup"],
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3).stdout
+            props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        except (OSError, subprocess.SubprocessError):
+            props = {}
+        running = props.get("ActiveState") in ("active", "activating", "reloading")
+        inside = RESOURCE_SLICE in props.get("ControlGroup", "").split("/")
+        rows.append({"unit": unit, "state": "idle" if not running else "inside" if inside else "waiting"})
+    return rows
 
 
 def physical_memory():
@@ -5068,7 +5125,9 @@ def physical_memory():
 
 
 def resource_limits():
-    saved = read_json_file(D / "resource-limits.json", {})
+    saved = read_json_file(RESOURCE_FILE, None)
+    if not isinstance(saved, dict):   # 전체 설정이 아직 없으면 예전 프로젝트별 설정을 이어받아요.
+        saved = read_json_file(D / "resource-limits.json", {})
     return {"cpu_percent": saved.get("cpu_percent", 70), "memory_high_gb": saved.get("memory_high_gb", 0)}
 
 
@@ -5082,6 +5141,10 @@ def apply_resource_limits(cpu_percent, memory_high_gb):
     subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
                     f"CPUQuota={quota}%", "CPUAccounting=yes", "MemoryAccounting=yes", "MemoryHigh=" + memory],
                    stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=True)
+    try:
+        adopt_services()
+    except (OSError, subprocess.SubprocessError):
+        pass   # 서비스 편입이 안 돼도 에이전트·백그라운드 작업 한도는 그대로 둬요.
 
 
 def resource_status(refresh=False):
@@ -5095,16 +5158,16 @@ def resource_status(refresh=False):
                 "cpu_quota_percent": limits["cpu_percent"] * (os.cpu_count() or 1),
                 "logical_cpus": os.cpu_count() or 1, "physical_memory_bytes": physical_memory(),
                 "memory_current_bytes": None, "cpu_usage_percent": None,
-                "applies_to": "새로 시작하는 Linux 에이전트·백그라운드 작업",
-                "uncontrolled": "기존 실행·Windows·GPU·원격 API·브라우저"}
+                "applies_to": "Office 전체: 새로 시작하는 Linux 에이전트·백그라운드 작업과 Office 서비스",
+                "uncontrolled": "이미 실행 중인 작업·Windows·GPU·원격 API·브라우저", "services": []}
         if IS_MAC:   # 없는 명령을 3초마다 찾지 않아요. 에이전트는 제한 없이 돌아요.
             data["reason"] = "맥에는 작업별 사용량을 제한하는 기능이 없어요."
             RESOURCE_CACHE.update(root=str(ROOT), at=now, value=data)
             return dict(data)
         try:
-            if RESOURCE_CACHE.get("configured") != (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"]):
+            if RESOURCE_CACHE.get("configured") != (limits["cpu_percent"], limits["memory_high_gb"]):
                 apply_resource_limits(**limits)
-                RESOURCE_CACHE["configured"] = (str(ROOT), limits["cpu_percent"], limits["memory_high_gb"])
+                RESOURCE_CACHE["configured"] = (limits["cpu_percent"], limits["memory_high_gb"])
             result = subprocess.run(["systemctl", "--user", "show", resource_unit(), "--property=ControlGroup"],
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=True)
             group = result.stdout.strip().removeprefix("ControlGroup=")
@@ -5118,6 +5181,7 @@ def resource_status(refresh=False):
                 data["cpu_usage_percent"] = round(max(0, (usage - previous[2]) / ((now-previous[1])*1_000_000*(os.cpu_count() or 1))*100), 1)
             RESOURCE_SAMPLE = (str(ROOT), now, usage)
             data.update(supported=True, reason="CPU는 전체 논리 CPU 기준 평균 상한이에요. 메모리는 느리게 처리하는 소프트 한도예요.")
+            data["services"] = service_budget_state()
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             RESOURCE_CACHE.pop("configured", None)
         RESOURCE_CACHE.update(root=str(ROOT), at=now, value=data)
@@ -6716,11 +6780,11 @@ class Office:
             try:
                 with RESOURCE_LOCK:
                     apply_resource_limits(cpu, memory)
-                    atomic_json(D / "resource-limits.json", {"cpu_percent": cpu, "memory_high_gb": memory})
+                    atomic_json(RESOURCE_FILE, {"cpu_percent": cpu, "memory_high_gb": memory})
                     RESOURCE_CACHE.clear()
             except (OSError, subprocess.SubprocessError):
                 raise UserError("리소스 제한을 적용하지 못했어요. 이 PC의 사용자 systemd·cgroup 지원을 확인하세요.") from None
-            return {"ok": "새로 시작하는 Linux 작업부터 한도를 적용해요.", "resources": resource_status(refresh=True)}
+            return {"ok": "Office 전체에 한도를 적용해요. 이미 실행 중인 작업은 다시 시작할 때부터 들어와요.", "resources": resource_status(refresh=True)}
         elif act == "open_window":
             if not hasattr(self, "http_server") or not open_window(self.http_server.server_address[1], app_only=True):
                 raise UserError("앱 창을 열지 못했어요. Chrome이나 Edge 설치를 확인하세요.")
