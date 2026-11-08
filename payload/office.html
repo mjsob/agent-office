@@ -2717,9 +2717,14 @@ function renderStorageSettings(notice, action) {
 function renderStorageNotice(notice, action, preferences = lastStoragePreferences) {
   lastStorageNotice = notice; lastStorageAction = action;
   const closedKey = storageClosedKey;
+  // 이미 닫은 옛 준비 기록은 첫 상태 확인 전에도 다시 알리지 않아요. 복구·실제 진행 경고는 유지해요.
+  const dismissedPreparation = action?.status === "uncertain" && closedKey && closedKey === storageResultKey(action)
+    && !action.recovery_required && !action.phase && Number.isFinite(action.updated_at)
+    && action.updated_at > 0 && Date.now() - action.updated_at * 1000 > STORAGE_RESULT_MAX_AGE;
+  if (dismissedPreparation) action = {...action, status: "idle"};
   const resultShown = storageResultVisible(action, closedKey);
   if (STORAGE_RESULTS.includes(action?.status) && !resultShown) action = {...action, status: "idle"};   // 실행 가능 여부는 보존하고 결과 문구만 치워요
-  renderStorageSettings(notice, action);
+  renderStorageSettings(notice, dismissedPreparation ? lastStorageAction : action);
   if (preferences && typeof preferences.hidden === "boolean") lastStoragePreferences = preferences;
   const preference = lastStoragePreferences;
   for (const id of ["#storageHideToday", "#storageHideNever", "#storageRestore"]) $(id).disabled = storagePreferenceSaving || !preference;
