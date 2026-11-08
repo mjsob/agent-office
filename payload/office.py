@@ -5157,10 +5157,17 @@ def adopt_running_service(unit, props):
     # 기존 서비스의 메모리·CPU 상한도 유지해요.
     source = Path('/sys/fs/cgroup') / group.lstrip('/')
     extra = []
-    for filename, prop in (('memory.max', 'MemoryMax'), ('memory.high', 'MemoryHigh')):
+    for filename, prop in (('memory.max', 'MemoryMax'), ('memory.high', 'MemoryHigh'),
+                           ('memory.low', 'MemoryLow'), ('memory.min', 'MemoryMin'),
+                           ('cpu.weight', 'CPUWeight'), ('pids.max', 'TasksMax')):
         value = (source / filename).read_text().strip()
         if value != 'max':
             extra.extend([prop, 't', str(int(value))])
+    weights = source / 'io.weight'
+    if weights.exists():
+        default = next((line.split()[1] for line in weights.read_text().splitlines() if line.startswith('default ')), None)
+        if default:
+            extra.extend(['IOWeight', 't', str(int(default))])
     quota, period = (source / 'cpu.max').read_text().split()
     if quota != 'max':
         extra.extend(['CPUQuotaPerSecUSec', 't', str(int(int(quota) * 1000000 / int(period)))])
@@ -6910,7 +6917,7 @@ class Office:
                     RESOURCE_CACHE.clear()
             except (OSError, subprocess.SubprocessError):
                 raise UserError("리소스 제한을 적용하지 못했어요. 이 PC의 사용자 systemd·cgroup 지원을 확인하세요.") from None
-            return {"ok": "Office 전체에 한도를 적용해요. 이미 실행 중인 작업은 다시 시작할 때부터 들어와요.", "resources": resource_status(refresh=True)}
+            return {"ok": "이 PC의 Office 작업이 같은 한도를 함께 써요. 실행 중인 Office 서비스도 함께 적용해요.", "resources": resource_status(refresh=True)}
         elif act == "open_window":
             if not hasattr(self, "http_server") or not open_window(self.http_server.server_address[1], app_only=True):
                 raise UserError("앱 창을 열지 못했어요. Chrome이나 Edge 설치를 확인하세요.")
