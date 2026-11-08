@@ -5431,6 +5431,9 @@ def storage_notice_preferences_view():
 
 
 STORAGE_COMPACT_SCRIPT = HERE / "office_storage_run.sh"
+# 요청 118: WSL이 다시 안 켜지는 문제가 있어 디스크 줄이기를 잠시 막아요. 원인을 찾은 뒤 False 로 바꿔요.
+STORAGE_COMPACT_BLOCKED = True
+STORAGE_COMPACT_BLOCKED_MESSAGE = "디스크 줄이기를 잠시 막아 뒀어요. 원인을 확인한 뒤 다시 열게요."
 STORAGE_COMPACT_DIR = Path.home() / ".local/state/wsl-compact"
 STORAGE_COMPACT_LOCK = threading.RLock()
 STORAGE_COMPACT_PROBE = {}
@@ -5505,7 +5508,7 @@ def compact_progress(value):
 
 def storage_compact_view():
     """창만 조회해도 실행되지 않아요. Windows가 남긴 진행 상태를 읽어요."""
-    available = bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file()
+    available = (not STORAGE_COMPACT_BLOCKED) and bool(os.environ.get("WSL_DISTRO_NAME")) and STORAGE_COMPACT_SCRIPT.is_file()
     with STORAGE_COMPACT_LOCK:
         launch = compact_record(STORAGE_COMPACT_DIR / "office-launch.json")
         external = compact_record(STORAGE_COMPACT_DIR / "status.json")
@@ -5539,7 +5542,7 @@ def storage_compact_view():
                 refresh_later("storage_compact", lambda: probe_storage_compact(rid))
         if value["status"] in STORAGE_COMPACT_ACTIVE and age > 3600:
             value["status"] = "uncertain"
-        view = {"available": available, "status": value["status"],
+        view = {"available": available, "status": value["status"], "blocked": STORAGE_COMPACT_BLOCKED,
                 "updated_at": value.get("updated_at"),
                 "can_start": available and value["status"] not in STORAGE_COMPACT_ACTIVE}
         view.update(compact_progress(value))
@@ -5572,6 +5575,8 @@ def remeasure_storage_notice():
 
 
 def start_storage_compact(confirmed, manual=False):
+    if STORAGE_COMPACT_BLOCKED:
+        raise UserError(STORAGE_COMPACT_BLOCKED_MESSAGE)
     if confirmed is not True:
         raise UserError("WSL 작업이 모두 멈추는 안내를 확인한 뒤 실행하세요.")
     folder = STORAGE_COMPACT_DIR

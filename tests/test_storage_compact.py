@@ -35,7 +35,8 @@ class StorageCompact(unittest.TestCase):
         self.script.write_text('# mock script\n')
         self.env = patch.dict(os.environ, {'WSL_DISTRO_NAME': 'test-only'})
         self.env.start(); self.addCleanup(self.env.stop)
-        self.patches = [patch.object(self.o, 'STORAGE_COMPACT_SCRIPT', self.script),
+        self.patches = [patch.object(self.o, 'STORAGE_COMPACT_BLOCKED', False),
+                  patch.object(self.o, 'STORAGE_COMPACT_SCRIPT', self.script),
                         patch.object(self.o, 'STORAGE_COMPACT_DIR', self.root / 'state'),
                         patch.object(self.o, 'storage_notice_view', return_value={'status': 'suggested'})]
         for p in self.patches:

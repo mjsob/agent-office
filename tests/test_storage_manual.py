@@ -31,6 +31,7 @@ class StorageManual(unittest.TestCase):
         self.now = time.time()
         for p in [patch.dict(os.environ, {'WSL_DISTRO_NAME': 'test-only'}),
                   patch.object(self.o, 'refresh_later'),
+                  patch.object(self.o, 'STORAGE_COMPACT_BLOCKED', False),
                   patch.object(self.o, 'STORAGE_COMPACT_SCRIPT', self.script),
                   patch.object(self.o, 'STORAGE_COMPACT_DIR', self.root / 'state'),
                   patch.object(self.o, 'STORAGE_NOTICE_FILE', self.notice_file)]:

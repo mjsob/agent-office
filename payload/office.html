@@ -2775,7 +2775,7 @@ function renderStorageSettings(notice, action) {
     metrics.innerHTML = `<div class="storage-stats"><div class="storage-stat"><span>${esc(notice.drive || "디스크")} 여유 공간</span><strong>${notice.free_gib.toFixed(1)} GiB</strong></div><div class="storage-stat"><span>확보 예상</span><strong>${estimated ? notice.reclaim_gib.toFixed(1) + " GiB" : "확인 필요"}</strong></div></div>`
       + (estimated && notice.reclaim_gib <= 0 ? "<p>지금은 확보할 공간이 거의 없어요.</p>" : !estimated ? "<p>다시 측정해 예상 공간을 확인하세요.</p>" : "");
   } else {
-    metrics.textContent = !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
+    metrics.textContent = action?.blocked === true ? "디스크 줄이기를 잠시 막아 뒀어요. 원인을 확인한 뒤 다시 열게요." : !available ? "이 PC에서는 디스크 줄이기를 사용할 수 없어요."
       : refreshing ? "디스크 공간을 확인하고 있어요."
       : notice?.status === "stale" ? "다시 측정해 최신 공간을 확인하세요."
       : "[다시 측정]으로 확보할 공간을 확인하세요.";
