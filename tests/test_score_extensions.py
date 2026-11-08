@@ -17,6 +17,11 @@ class Extensions(unittest.TestCase):
  def read(self):return json.loads(self.path.read_text())
  def add(self,**kwargs):
   args=dict(text='작은 비교',to=None,level=None,tag='수정',rework_of=None,ab=True,criteria='같은 입력 3개로 정확한 결과를 확인해요.');args.update(kwargs);return self.o.cmd_add(argparse.Namespace(**args))
+ def test_short_sample_is_neutral_and_distinct_from_unmeasured(self):
+  self.write([self.task(1,duration=0.3),self.task(2,duration=60),dict(id=3,job=1,title='x',owner='codex',status='todo')])
+  line=[l for l in self.o.task_metrics(self.read(),1).splitlines() if l.startswith('codex:')][0]
+  self.assertIn('짧은 표본 1건',line);self.assertIn('확인 필요',line);self.assertNotIn('의심',line);self.assertIn('1건 미측정',line)
+  self.write([self.task(1,duration=60)]);self.assertNotIn('짧은 표본',self.o.task_metrics(self.read(),1))
  def test_auto_correction_requires_explicit_task_reference_and_is_idempotent(self):
   self.write([self.task(1)])
   with self.o.state(True) as s:

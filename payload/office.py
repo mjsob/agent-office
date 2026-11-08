@@ -2130,6 +2130,9 @@ def save_lesson(raw_text, jid):
 
 
 
+LATE_CLAIM_SECONDS = 2   # 이보다 짧은 claim~완료는 작업 뒤 뒤늦게 claim한 것으로 의심
+
+
 def task_metrics(record, jid):
     rows = []
     for name in AGENTS:
@@ -2138,7 +2141,9 @@ def task_metrics(record, jid):
         wait = sum(max(0, t["claimed_at"]-t["created_at"]) for t in tasks if t.get("claimed_at") and t.get("created_at"))
         measured = sum(bool(t.get("done_at") and t.get("claimed_at")) for t in tasks)
         waiting = sum(bool(t.get("claimed_at") and t.get("created_at")) for t in tasks)
-        rows.append(f"{name}: 작업 {len(tasks)}건, 작업시간 {int(elapsed)}초({measured}건 측정·{len(tasks)-measured}건 미측정), 대기 {int(wait)}초({waiting}건 측정)")
+        late = sum(1 for t in tasks if t.get("done_at") and t.get("claimed_at") and 0 <= t["done_at"]-t["claimed_at"] < LATE_CLAIM_SECONDS)
+        late_note = f", 짧은 표본 {late}건({LATE_CLAIM_SECONDS}초 미만, 늦은 claim 여부 확인 필요 — 실제 미측정과 다름, 성과로 해석 금지)" if late else ""
+        rows.append(f"{name}: 작업 {len(tasks)}건, claim~완료 경과 {int(elapsed)}초(외부 대기 포함, {measured}건 측정·{len(tasks)-measured}건 미측정·기록 없는 건 unknown), 배정 대기(생성~claim) {int(wait)}초({waiting}건 측정){late_note}")
     job = next((j for j in record["jobs"] if j["id"] == jid), {})
     for actor, metrics in job.get("execution_metrics", {}).items():
         rows.append(f"{actor} 실행 {metrics['turns']}회·단순대기답변 {metrics['waiting_replies']}회·실행 {metrics['seconds']}초·새 토큰 {metrics['tokens']}")
@@ -2489,6 +2494,8 @@ PROTOCOL = """너는 '{me}'. 동료 '{other}'와 둘이 한 팀으로 이 저장
 - 동료에게 남기는 진행 알림은 office say --info로 남긴다(상대를 깨우지 않음). 일반 say는 질문·막힘·결정 등 상대가 행동해야 할 때만 쓴다. 반영·검수·확인 부탁이나 넘겨줄 결과처럼 상대가 이어받아야 하는 말은 --info로 보내지 마라. 반대로 정정·계약 안내·반영 끝남·알림 확인처럼 상대가 할 일이 없는 말은 일반 say가 아니라 --info로 보내라(일반 say는 상대 차례를 한 번 만들어서 빈 차례가 늘어난다).
 - 동료 작업 결과를 기다리면 `office wait ID "사유" --on 작업번호`로 그 작업을 걸어라. 끝나면 서버가 바로 깨운다. 요청 전체를 대표하는 작업(최종 검수·마감 등)을 기다림으로 걸어 두지 말고, 남은 일은 작은 작업으로 등록해라.
 - 기다리는 결과와 무관한 일은 먼저 해라. OCR 하나·동료 작업 하나에 전체를 묶어 보류하지 말고, 이미 끝난 부분부터 반영해라.
+- 몇 분 넘는 요청은 첫 진행 알림에 바꿀 대상(화면 요소·동작·파일)과 완료 조건 한 줄(예: '상세 문장이 길어져도 채팅 위치 불변')을 적어라. 짧은 요청마다 강제하지 않는다. 모호하면 확인 대상을 하나 지목하고 시작해라.
+- 입력·코드·설정이 그대로인 통과 검증은 다시 돌리지 마라. 새 변경이나 실패가 있을 때만 그 부분부터 범위를 넓혀라. 작업을 먼저 하고 나중에 claim하지 마라(시간이 0초로 찍힌다).
 - 사용자가 진행 상황을 물으면 답만 하고 끝내지 마라. 이어받을 준비가 된 작업이 있으면 답한 뒤 같은 차례에 이어서 진행해라.
 - 사용자에게 확인을 넘기기 전에 스스로 확인할 방법(짧은 구간 재처리·원본 대조 등)을 먼저 해 봐라. 그래도 사용자가 해야 하면 need-user에 무엇을·어디서·어떻게 할지 적어라.
 - 지금 차례의 요청이 아닌 다른 요청(예: 사용자의 새 요청)에 대한 말은 `office say --job 요청번호 ...`로 해당 요청 묶음에 붙인다.
