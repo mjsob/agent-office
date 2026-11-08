@@ -362,38 +362,78 @@ details.turn pre { white-space: pre-wrap; font: inherit; font-size: 13px; color:
 #askbar .row button { flex: none; font-size: 12px; padding: 3px 10px; }
 #askbar .more { font-size: 12px; color: var(--muted); padding-left: 12px; }
 .job .ask { font-size: 12px; margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--chip); color: var(--text); }
-.settings-panel { position: fixed; top: calc(var(--office-header-height, 52px) + 12px); right: 16px; z-index: 20; width: 320px; max-height: calc(100dvh - var(--office-header-height, 52px) - 24px); overflow-y: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 13px; word-break: keep-all; }
+.settings-panel { --text: #202631; --muted: #637083; --faint: #637083; --bg: #f6f7f9; --panel: #fff; --chip: #f0f2f5; --line: #e3e7ed; --settings-blue: #2563eb; --settings-on-blue: #fff; position: fixed; top: var(--office-header-height, 52px); right: 0; z-index: 20; width: 392px; max-width: 100%; max-height: calc(100dvh - var(--office-header-height, 52px)); overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 20px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0 0 0 16px; background: var(--bg); color: var(--text); box-shadow: -8px 12px 32px #00000012; font-size: 13px; word-break: keep-all; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+:root[data-theme="dark"] .settings-panel { --text: #edf0f6; --muted: #a3adbd; --faint: #a3adbd; --bg: #1b1e24; --panel: #242830; --chip: #2d333d; --line: #373e49; --settings-blue: #89b0ff; --settings-on-blue: #112650; box-shadow: -8px 12px 32px #00000030; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .settings-panel { --text: #edf0f6; --muted: #a3adbd; --faint: #a3adbd; --bg: #1b1e24; --panel: #242830; --chip: #2d333d; --line: #373e49; --settings-blue: #89b0ff; --settings-on-blue: #112650; box-shadow: -8px 12px 32px #00000030; } }
 #settingsBtn { white-space: nowrap; flex-shrink: 0; }
-.settings-panel .set-row { margin-bottom: 8px; }
-.settings-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.settings-heading h3 { margin: 0 !important; }
-.storage-settings { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.settings-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; margin: 0 -20px; padding: 20px; background: var(--bg); }
+.settings-panel .settings-heading h3 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.6px; }
+.settings-panel button { justify-content: center; min-height: 36px; padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; line-height: 20px; transition: background .15s, box-shadow .15s; }
+.settings-panel button.ghost { border-color: transparent; color: var(--muted); }
+.settings-panel button:hover:not(:disabled) { background: var(--chip); }
+.settings-panel button:disabled { cursor: default; opacity: .45; }
+.settings-heading button.ghost { min-height: 32px; width: 32px; padding: 0; border-radius: 50%; }
+.settings-panel :is(button, select, input, summary):focus-visible { outline: 2px solid var(--settings-blue); outline-offset: 3px; }
+.settings-general, .storage-settings, #resbox { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.settings-general { padding: 0 16px; }
+.settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; margin: 0; }
+.settings-panel .set-row + .set-row:not([hidden]) { border-top: 1px solid var(--line); }
+.settings-panel .set-row > span { font-weight: 500; }
+.settings-panel .set-row button { flex: none; max-width: 64%; min-height: 32px; padding: 4px 10px; background: var(--chip); color: var(--text); font-weight: 500; }
+.settings-panel h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 14px; font-weight: 650; letter-spacing: -.25px; }
+.settings-section-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; color: var(--settings-blue); background: color-mix(in srgb, var(--settings-blue) 9%, var(--panel)); }
+.settings-section-icon svg { width: 16px; height: 16px; }
+.storage-settings { margin-top: 16px; padding: 16px; }
 .storage-settings p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
-.storage-settings .storage-setting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-.storage-settings .storage-setting-meta { color: var(--muted); font-size: 12px; }
-.storage-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
-.storage-stat { padding: 10px; border-radius: 8px; background: var(--chip); min-width: 0; }
-.storage-stat span { display: block; color: var(--muted); font-size: 12px; }
-.storage-stat strong { display: block; margin-top: 4px; font-size: 17px; font-variant-numeric: tabular-nums; }
-.settings-panel details { color: var(--muted); font-size: 12px; line-height: 1.6; }
-.settings-panel summary { cursor: pointer; }
+.storage-stats { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: 0 0 10px; padding: 14px 0; border-radius: 10px; background: var(--bg); }
+.storage-stat { min-width: 0; padding: 0 14px; }
+.storage-stat + .storage-stat { border-left: 1px solid var(--line); }
+.storage-stat span { display: block; color: var(--muted); font-size: 11px; }
+.storage-stat strong { display: block; margin-top: 6px; font-size: 21px; line-height: 1.3; font-weight: 650; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+.storage-stat small { margin-left: 2px; font-size: 11px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+.storage-settings .storage-setting-meta { margin: 8px 0 12px; color: var(--muted); font-size: 11px; }
+.storage-settings .storage-setting-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.storage-settings #storageManualRun { border-color: var(--line); }
+.settings-panel details { color: var(--muted); font-size: 12px; line-height: 1.65; }
+.settings-panel summary { display: flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; list-style: none; }
+.settings-panel summary::-webkit-details-marker { display: none; }
+.settings-panel summary::before { content: ""; width: 6px; height: 6px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); margin: 0 2px; }
+.settings-panel details[open] > summary::before { transform: rotate(45deg); }
+.settings-panel details > :not(summary) { margin: 8px 0 0; }
+.settings-notice { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; }
+.settings-notice .set-row { min-height: 44px; }
+#storagePreferenceStatus { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 #storageSettingsAction:empty, #storageSettingsChecked:empty { display: none; }
-.settings-panel h3 { margin: 0 0 10px; font-size: 14px; }
-.settings-panel .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-@media (max-width: 760px) { .settings-panel { left: 12px; right: 12px; width: auto; } }
-#resbox { color: var(--text); border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
-#resbox .resource-scope, #resbox .resource-hint, #resbox .resource-now { color: var(--muted); font-size: 12px; margin: 6px 0; line-height: 1.5; }
-#resbox .resource-now { background: var(--chip); padding: 8px 10px; border-radius: 8px; margin: 10px 0 14px; font-variant-numeric: tabular-nums; }
-#resbox .resource-control { margin: 12px 0; }
-#resbox .resource-label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
-#resbox input[type=range] { display: block; width: 100%; margin: 8px 0; }
-#resbox .resource-presets { display: flex; gap: 6px; }
-#resbox .resource-presets button { flex: 1; padding: 5px 6px; font-size: 12px; white-space: nowrap; }
+#storageSettingsAction:not(:empty) { border-left: 2px solid var(--settings-blue); padding-left: 10px; font-size: 12px; }
+#powershellNotice { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+#resbox { color: var(--text); margin-top: 16px; padding: 16px; }
+#resbox h3 { margin-bottom: 4px; }
+#resbox .resource-scope, #resbox .resource-hint, #resbox .resource-now { color: var(--muted); font-size: 11px; margin: 6px 0; line-height: 1.6; }
+#resbox .resource-scope { margin: 0 0 14px 36px; }
+#resbox .resource-now { display: flex; align-items: center; gap: 6px; margin: 0 0 20px; padding: 10px 12px; border-radius: 8px; background: var(--bg); font-variant-numeric: tabular-nums; }
+#resbox .resource-now::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--muted); }
+#resbox .resource-control { margin: 16px 0; }
+#resbox .resource-label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; font-weight: 500; }
+#resCpuV { padding: 3px 8px; color: var(--settings-blue); background: color-mix(in srgb, var(--settings-blue) 9%, var(--panel)); border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#resbox input[type=range] { --res-percent: 70%; appearance: none; -webkit-appearance: none; display: block; width: 100%; height: 24px; margin: 4px 0 8px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+#resbox input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-blue) var(--res-percent), var(--line) var(--res-percent)); }
+#resbox input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-blue); box-shadow: 0 0 0 1px var(--settings-blue), 0 2px 4px #00000012; }
+#resbox input[type=range]::-moz-range-track { height: 4px; border-radius: 8px; background: linear-gradient(to right, var(--settings-blue) var(--res-percent), var(--line) var(--res-percent)); }
+#resbox input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; border: 3px solid var(--panel); background: var(--settings-blue); box-shadow: 0 0 0 1px var(--settings-blue); }
+#resbox .resource-presets { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+#resbox .resource-presets button { flex: 1; min-width: 0; min-height: 30px; padding: 3px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; white-space: nowrap; font-weight: 500; }
+#resbox .resource-presets button[aria-pressed="true"] { border-color: var(--line); background: var(--panel); color: var(--text); box-shadow: 0 1px 3px #0000000a; font-weight: 600; }
 #resbox .resource-memory { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#resbox select { max-width: 100%; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
-#resbox input[type=number] { width: 72px; }
-#resbox details { margin-top: 10px; }
-#resApply { width: 100%; margin-top: 4px; }
+#resbox select, #resbox input[type=number] { max-width: 100%; min-height: 36px; font: inherit; font-size: 12px; color: var(--text); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+#resbox select { flex: 1; min-width: 132px; appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%236b778b' stroke-width='1.5'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+#resbox input[type=number] { width: 68px; font-variant-numeric: tabular-nums; }
+#resMemAmount { flex: none; color: var(--muted); font-size: 11px; }
+#resbox details { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
+.settings-panel #resApply { justify-content: center; width: 100%; min-height: 38px; margin-top: 4px; border: 1px solid transparent; background: var(--settings-blue); color: var(--settings-on-blue); box-shadow: 0 1px 2px #00000012; }
+.settings-panel #resApply:hover { background: color-mix(in srgb, var(--settings-blue) 86%, var(--text)); }
+@media (max-width: 760px) { .settings-panel { left: 0; right: 0; width: auto; border-left: 0; border-radius: 0 0 16px 16px; } }
+@media (max-width: 360px) { .settings-panel { padding: 0 12px 12px; } .settings-heading { margin: 0 -12px; padding: 16px 12px; } .settings-general { padding: 0 12px; } .storage-settings, #resbox { padding: 12px; } .storage-stat { padding: 0 10px; } .storage-stat strong { font-size: 19px; } }
+@media (prefers-reduced-motion: reduce) { .settings-panel button { transition: none; } }
 .job .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 .pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .pill.working, .pill.planning, .pill.review { color: var(--text); }
@@ -722,15 +762,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <section id="settings" class="settings-panel" aria-label="설정" hidden>
   <div class="settings-heading"><h3>설정</h3><button class="ghost" aria-label="설정 닫기" onclick="toggleSettings(false, true)"><svg class="i sm"><use href="#i-x"/></svg></button></div>
+  <div class="settings-general">
   <div class="set-row"><span>화면 색</span><button id="theme" class="ghost" onclick="cycleTheme()"></button></div>
   <div class="set-row" id="attentionRow" hidden><span>작업 표시줄 알림</span><button id="attention" class="ghost" onclick="cycleAttention()"></button></div>
   <div class="set-row" id="appWindowRow" hidden><span>창 모양</span><button id="appWindow" class="ghost" onclick="openAppWindow()">앱 창으로 열기</button></div>
+  </div>
   <p id="powershellNotice" hidden>PowerShell을 쓸 수 없어 작업 표시줄 아이콘과 창 앞으로 가져오기가 적용되지 않아요.</p>
   <div id="storageSettingsGroup" hidden>
-  <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
-  <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
   <div class="storage-settings" aria-labelledby="storageSettingsTitle">
-    <h3 id="storageSettingsTitle">디스크 공간</h3>
+    <h3 id="storageSettingsTitle"><span class="settings-section-icon" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 14h18M7 16.5h.01M10 16.5h.01"/></svg></span>디스크 공간</h3>
     <div id="storageSettingsMetrics" role="status" aria-live="polite">디스크 정보를 불러오고 있어요.</div>
     <p id="storageSettingsChecked" class="storage-setting-meta"></p>
     <div class="storage-setting-actions">
@@ -739,6 +779,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     </div>
     <p id="storageSettingsAction" role="status" aria-live="polite"></p>
     <details><summary>실행 전에 확인하세요</summary><p>파일은 지우지 않아요. 예상보다 적게 확보될 수 있어요.</p><p>작업을 먼저 저장하세요. 실행하면 Office를 포함한 WSL 작업이 모두 멈춰요.</p><p>Windows에서 관리자 권한을 허용하면 1분 뒤 시작해요. 끝나면 Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.</p></details>
+    <div class="settings-notice">
+  <div class="set-row"><span>디스크 알림</span><button id="storageRestore" class="ghost" onclick="setStorageNoticePreference('show')">다시 열기</button></div>
+  <p id="storagePreferenceStatus">알림 설정을 불러오고 있어요.</p>
+    </div>
   </div>
   </div>
   <div id="resbox" hidden></div>
@@ -2807,19 +2851,19 @@ function renderResources(r) {
   if (sig === lastResSig) return;
   const wasOpen = box.querySelector("details")?.open;
   lastResSig = sig; box.hidden = false;
-  if (!r.supported) { box.innerHTML = `<h3>Office 사용량</h3><p>이 PC에서는 사용량을 조절할 수 없어요.</p><details><summary>이유를 확인하세요</summary><div>${esc(r.reason || "")}</div></details>`; return; }
+  if (!r.supported) { box.innerHTML = `<h3><span class="settings-section-icon" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4M18 9h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>Office 사용량</h3><p>이 PC에서는 사용량을 조절할 수 없어요.</p><details><summary>이유를 확인하세요</summary><div>${esc(r.reason || "")}</div></details>`; return; }
   const gb = x => x == null ? "확인 중" : (x / 1024 ** 3).toFixed(1) + " GB";
   const maxGb = Math.max(1, Math.floor((r.physical_memory_bytes || 0) / 1024 ** 3));
   const pending = (r.services || []).filter(x => !["inside", "idle"].includes(x.state)).length;
   const unlimited = !(r.memory_high_gb > 0);
   const memoryDefault = Math.min(maxGb, Math.max(1, Math.ceil((r.memory_current_bytes || maxGb * 1024 ** 3 / 2) / 1024 ** 3)));
-  box.innerHTML = `<h3>Office 사용량</h3>
+  box.innerHTML = `<h3><span class="settings-section-icon" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4M18 9h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>Office 사용량</h3>
     <p class="resource-scope">모든 대화·프로젝트에 함께 적용돼요.</p>
     <p class="resource-now">지금 CPU ${r.cpu_usage_percent == null ? "확인 중" : Math.round(r.cpu_usage_percent) + "%"} · 메모리 ${gb(r.memory_current_bytes)} 써요.</p>
     <div class="resource-control">
       <div class="resource-label"><label for="resCpu">CPU 최대 사용률</label><strong id="resCpuV">${r.cpu_percent}%</strong></div>
-      <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" oninput="$('#resCpuV').textContent=this.value+'%'">
-      <div class="resource-presets"><button onclick="setResCpu(30)">여유롭게</button><button onclick="setResCpu(60)">균형 있게</button><button onclick="setResCpu(100)">빠르게</button></div>
+      <input type="range" id="resCpu" min="1" max="100" value="${r.cpu_percent}" style="--res-percent:${r.cpu_percent}%" oninput="setResCpu(+this.value)">
+      <div class="resource-presets"><button data-cpu="30" aria-pressed="${r.cpu_percent === 30}" onclick="setResCpu(30)">여유롭게</button><button data-cpu="60" aria-pressed="${r.cpu_percent === 60}" onclick="setResCpu(60)">균형 있게</button><button data-cpu="100" aria-pressed="${r.cpu_percent === 100}" onclick="setResCpu(100)">빠르게</button></div>
     </div>
     <div class="resource-control">
       <div class="resource-label"><label for="resMemMode">메모리</label></div>
@@ -2838,7 +2882,12 @@ function renderResources(r) {
     </details>`;
   if (wasOpen) box.querySelector("details").open = true;
 }
-function setResCpu(v) { $("#resCpu").value = v; $("#resCpuV").textContent = v + "%"; }
+function setResCpu(v) {
+  $("#resCpu").value = v;
+  $("#resCpuV").textContent = v + "%";
+  $("#resCpu").style.setProperty("--res-percent", v + "%");
+  $$("#resbox [data-cpu]").forEach(button => button.setAttribute("aria-pressed", String(+button.dataset.cpu === v)));
+}
 function setResMemoryMode(mode) {
   $("#resMemMode").value = mode;
   const unlimited = mode === "unlimited", input = $("#resMem");
