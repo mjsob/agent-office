@@ -2740,7 +2740,12 @@ function storageActionMessage(action) {
         ? `디스크를 줄이고 있어요. Windows가 진행률을 보내지 않아 완료 시간을 계산할 수 없어요.${elapsed}`
         : `디스크를 줄이고 있어요. (${Math.round(action.percent)}%)${elapsed}`,
     cancelling: "취소하고 있어요. WSL을 다시 켤 수 있게 정리해요." + elapsed,
-    completed: Number.isFinite(action.reclaimed_gb) ? `디스크를 ${action.reclaimed_gb}GB 줄였어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.` : "디스크 줄이기가 끝났어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.",
+    completed: action.recovery_required
+      ? "줄이기는 끝났지만 WSL이 안 켜질 수 있어요. Windows 시작 메뉴의 [Office 디스크 복구] 또는 recover-wsl.cmd를 실행하세요."
+      : action.measurement_pending && !action.measurement_confirmed
+        ? "줄이기는 끝났어요. 결과 확인 중이에요. 다음 시작 때 다시 측정해요."
+        : (typeof action.message === "string" && action.message && !Number.isFinite(action.reclaimed_gb)) ? action.message
+        : Number.isFinite(action.reclaimed_gb) ? `완료: ${action.reclaimed_gb}GB 확보했어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.` : "디스크 줄이기가 끝났어요. Office가 새 콘솔에서 다시 열려요. 안 열리면 WSL 터미널에서 office를 실행하세요.",
     cancelled: "실행을 취소했어요." + recovery,
     failed: (typeof action.message === "string" && action.message ? action.message : "디스크를 줄이지 못했어요.") + (action.recovery_required ? " WSL이 안 켜지면 Windows 시작 메뉴의 [Office 디스크 복구]를 실행하세요." : ""),
     uncertain: "실행 상태를 확인하지 못했어요. 다시 누르기 전에 Windows 실행 창을 확인하세요." + recovery
