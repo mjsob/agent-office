@@ -81,7 +81,7 @@ try {
         $detail.Text=if($State -eq 'completed' -and -not $confirmed){'측정을 보류했어요. 다음 WSL 시작 때 다시 측정해요.'}elseif($State -eq 'failed'){$script:finishMessage}else{''}
         $reopen=Read-CompactJson 'reopen-status.json'
         $auto=$State -eq 'completed' -and $reopen.request_id -eq $RequestId -and $reopen.status -in @('waiting','waiting_disk','launching','opened')
-        $hint.Text=if($State -eq 'failed' -or -not $ready){"WSL이 열리지 않으면 $PSScriptRoot\recover-wsl.cmd를 실행하세요. 재부팅이 필요할 수 있어요."}elseif($auto){'디스크 사용 해제를 확인한 뒤 Office를 열어요.'}else{'WSL 터미널을 열고 Office를 다시 켜세요.'}
+        $hint.Text=if($State -eq 'failed' -or -not $ready){"WSL이 열리지 않으면 recover-wsl.cmd를 실행하세요.`r`n파일 사용이 계속되면 Windows를 재부팅하세요."}elseif($auto){'디스크 사용 해제를 확인한 뒤 Office를 열어요.'}else{'WSL 터미널을 열고 Office를 다시 켜세요.'}
         $timing.Text=('걸린 시간: {0:N0}초' -f ((Get-Date)-$script:started).TotalSeconds)
         $cancel.Text='닫기';$cancel.Enabled=$true;$startNow.Visible=$false
         Publish $State $message $info
@@ -103,7 +103,7 @@ try {
     $cancel.Add_Click({Request-Cancel})
     $form.Add_FormClosing({param($sender,$e) if(-not $script:terminal){$e.Cancel=$true;Request-Cancel}})
     $reopenTimer=[Windows.Forms.Timer]::new();$reopenTimer.Interval=1000
-    $reopenTimer.Add_Tick({$r=Read-CompactJson 'reopen-status.json';if($r.request_id -eq $RequestId){if($r.status -eq 'opened'){$hint.Text='Office 창을 열었어요. 새 콘솔은 계속 켜 두세요.';$reopenTimer.Stop()}elseif($r.status -in @('failed','unavailable','reboot_required')){$hint.Text=$r.message+" $PSScriptRoot\recover-wsl.cmd";$reopenTimer.Stop()}}})
+    $reopenTimer.Add_Tick({$r=Read-CompactJson 'reopen-status.json';if($r.request_id -eq $RequestId){if($r.status -eq 'opened'){$hint.Text='Office 창을 열었어요. 새 콘솔은 계속 켜 두세요.';$reopenTimer.Stop()}elseif($r.status -in @('failed','unavailable','reboot_required')){$hint.Text=if($r.status -eq 'reboot_required'){"디스크가 아직 사용 중이에요. Windows를 재부팅하세요.`r`nrecover-wsl.cmd에서 복구 안내를 확인하세요."}else{'Office를 자동으로 열지 못했어요. recover-wsl.cmd를 실행하세요.'};$reopenTimer.Stop()}}})
     $timer=[Windows.Forms.Timer]::new();$timer.Interval=500
     $timer.Add_Tick({
         if($script:tickBusy){return};$script:tickBusy=$true

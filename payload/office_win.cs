@@ -827,7 +827,7 @@ public static class Worker {
         var reopen = OfficeWin.ReadJson(dir, "reopen-status.json");
         string rs = OfficeWin.Str(reopen, "status");
         bool auto = state == "completed" && OfficeWin.Str(reopen, "request_id") == rid && (rs == "waiting" || rs == "waiting_disk" || rs == "launching" || rs == "opened");
-        hint.Text = state == "failed" || !ready ? "WSL이 열리지 않으면 " + Path.Combine(dir, "recover-wsl.cmd") + "를 실행하세요. 재부팅이 필요할 수 있어요."
+        hint.Text = state == "failed" || !ready ? "WSL이 열리지 않으면 recover-wsl.cmd를 실행하세요.\r\n파일 사용이 계속되면 Windows를 재부팅하세요."
             : auto ? "디스크 사용 해제를 확인한 뒤 Office를 열어요." : "WSL 터미널을 열고 Office를 다시 켜세요.";
         timing.Text = string.Format("걸린 시간: {0:N0}초", (DateTime.Now - started).TotalSeconds);
         cancelButton.Text = "닫기"; cancelButton.Enabled = true; startNow.Visible = false;
@@ -928,7 +928,7 @@ public static class Worker {
             if (OfficeWin.Str(r, "request_id") != rid) return;
             string st = OfficeWin.Str(r, "status");
             if (st == "opened") { hint.Text = "Office 창을 열었어요. 새 콘솔은 계속 켜 두세요."; reopenTimer.Stop(); }
-            else if (st == "failed" || st == "unavailable" || st == "reboot_required") { hint.Text = OfficeWin.Str(r, "message") + " " + Path.Combine(dir, "recover-wsl.cmd"); reopenTimer.Stop(); }
+            else if (st == "failed" || st == "unavailable" || st == "reboot_required") { hint.Text = st == "reboot_required" ? "디스크가 아직 사용 중이에요. Windows를 재부팅하세요.\r\nrecover-wsl.cmd에서 복구 안내를 확인하세요." : "Office를 자동으로 열지 못했어요. recover-wsl.cmd를 실행하세요."; reopenTimer.Stop(); }
         };
         timer = new System.Windows.Forms.Timer(); timer.Interval = 500;
         timer.Tick += delegate { Tick(); };
