@@ -553,6 +553,7 @@ body > footer { grid-row: 3; }
 .update-symbol { display: inline-flex; align-items: center; justify-content: center; color: var(--codex); padding-top: 2px; }
 .update-symbol .i { width: 16px; height: 16px; }
 .update-copy { min-width: 0; }
+#updateVersion { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 #updateTitle { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; letter-spacing: 0; }
 .update-meta { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.5; }
 #updateSummary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
@@ -1092,6 +1093,7 @@ function releaseSummary(notes) {
   }
   return "";
 }
+const verText = v => String(v || "").replace(/^v/, "");
 function renderUpdate(u = updateState) {
   if (!u || typeof u !== "object") return;
   updateState = u;
@@ -1126,8 +1128,11 @@ function renderUpdate(u = updateState) {
   $("#updateClose").hidden = false;
   $("#updateButton").hidden = (!u.installable && !busy) || (!u.available && !busy && !failed) || (reviewVisible && !busy && u.review?.state !== "failed");
   $("#updateTitle").textContent = u.state === "restarting" ? "새 버전으로 다시 시작해요"
-    : u.state === "checking_candidate" ? "합친 사본을 확인해요" : u.state === "conflict" ? "겹치는 변경을 선택하세요" : u.state === "merging" ? "사본에서 합치고 있어요" : u.state === "ready" ? "합친 결과를 확인하세요" : u.state === "applied" ? "업데이트했어요" : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? `새 버전 ${String(u.latest || "").replace(/^v/, "")}이 나왔어요` : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전이에요" : "새 버전을 확인하세요";
-  $("#updateVersion").textContent = (v => v ? "v" + String(v).replace(/^v/, "") : "")(u.available ? u.latest : u.current);
+    : u.state === "checking_candidate" ? "합친 사본을 확인해요" : u.state === "conflict" ? "겹치는 변경을 선택하세요" : u.state === "merging" ? "사본에서 합치고 있어요" : u.state === "ready" ? "합친 결과를 확인하세요" : u.state === "applied" ? "업데이트했어요" : busy ? "업데이트하고 있어요" : failed ? "업데이트하지 못했어요" : u.available ? (u.current ? `지금 ${verText(u.current)} · ${verText(u.latest)}로 업데이트할 수 있어요` : `새 버전 ${verText(u.latest)}이 나왔어요`) : u.error ? "새 버전을 확인하지 못했어요" : u.checked_at ? "최신 버전이에요" : "새 버전을 확인하세요";
+  // 새 버전이 있어도 설치 전이면 지금 버전을 같이 보여 줘요 (v0.11.0 → v0.11.1)
+  const verChip = u.available && !busy && u.current && u.state !== "applied" ? `v${verText(u.current)} → v${verText(u.latest)}` : (v => v ? "v" + verText(v) : "")(u.available ? u.latest : u.current);
+  $("#updateVersion").textContent = verChip;
+  $("#updateVersion").hidden = !verChip;
   const summary = releaseSummary(u.notes);
   $("#updateSummary").textContent = busy ? "설치가 끝나면 새 버전으로 다시 시작해요." : failed ? "오류 내용을 확인하고 다시 시도하세요." : u.available ? summary || "변경 내용을 확인하고 새 버전으로 업데이트하세요." : checking ? "새 버전이 있는지 확인하고 있어요." : u.error ? "다시 확인하거나 오류 내용을 확인하세요." : "Office를 최신 상태로 사용하고 있어요.";
   $("#updateDate").hidden = true;
