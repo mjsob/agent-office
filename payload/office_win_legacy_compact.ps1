@@ -2,7 +2,7 @@
     [Parameter(Mandatory=$true)][string]$Vhdx,
     [Parameter(Mandatory=$true)][string]$Distro,
     [string]$RequestId = 'manual',
-    [ValidateSet('none','success','cancel','failure','stall','pending100','unknown')][string]$TestMode = 'none',
+    [ValidateSet('none','success','cancel','failure','stall','pending100','unknown','delayed','unchanged')][string]$TestMode = 'none',
     [int]$TestSeconds = 1
 )
 . "$PSScriptRoot\common.ps1"
@@ -49,28 +49,50 @@ try {
     }
     function Finish([string]$State,[string]$Message) {
         if($script:operation){$script:operation.Dispose();$script:operation=$null}
-        $script:terminal=$true;$script:phase='finished';$timer.Stop();$progressLabel.Text=if($State -eq 'completed'){'완료'}elseif($State -eq 'cancelled'){'중단됨'}else{'오류'}
-        $after=if($testing){if($State -eq 'completed'){8.0}else{10.0}}else{(Get-Item -LiteralPath $Vhdx).Length/1GB}
-        $freeAfter=if($testing){22.0}else{$drive.AvailableFreeSpace/1GB}
-        $info=@{wsl_ready=$true;can_cancel=$false;before_gb=[Math]::Round($script:before,2);after_gb=[Math]::Round($after,2);reclaimed_gb=[Math]::Round([Math]::Max([double]0,[double]($script:before-$after)),2);c_free_before_gb=[Math]::Round($script:freeBefore,2);c_free_after_gb=[Math]::Round($freeAfter,2)}
-        if($State -eq 'completed'){$info.percent=100;$bar.Style='Continuous';$bar.Value=100;$heading.Text='디스크 줄이기가 끝났어요.'}
-        elseif($State -eq 'cancelled'){$heading.Text='중단하고 디스크 사용을 해제했어요.';$bar.Style='Continuous'}
-        else{$heading.Text='디스크를 줄이지 못했어요.';$bar.Style='Continuous'}
-        $detail.Text=$Message+"`r`n"+('디스크 파일 {0:N2}GiB → {1:N2}GiB' -f $script:before,$after)
+        $script:finishState=$State;$script:finishMessage=$Message
+        if($State -eq 'completed'){
+            $script:phase='measuring';$script:measurementStarted=Get-Date;$script:nextMeasurement=[DateTime]::MinValue;$script:measurementAttempts=0
+            $cancel.Enabled=$false;$startNow.Visible=$false;$heading.Text='결과 확인 중이에요.';$detail.Text='';$progressLabel.Text='확인 중';$bar.Style='Marquee';return
+        }
+        $ready=(-not $script:shutdownStarted) -or $testing -or ([CompactOperation]::ProbeReady($Vhdx) -eq 0)
+        Complete-Finish $null $null $ready
+    }
+    function Measure-Result {
+        if((Get-Date) -lt $script:nextMeasurement){return}
+        $script:nextMeasurement=(Get-Date).AddSeconds($(if($testing){0.1}else{2}));$script:measurementAttempts++
+        $after=$null;$freeAfter=$null;$ready=$testing -or ([CompactOperation]::ProbeReady($Vhdx) -eq 0)
+        try{
+            $after=if($testing){if($TestMode -eq 'unchanged' -or ($TestMode -eq 'delayed' -and $script:measurementAttempts -lt 3)){10.0}else{8.0}}else{(Get-Item -LiteralPath $Vhdx).Length/1GB}
+            $freeAfter=if($testing){if($after -eq 10){20.0}else{22.0}}else{$drive.AvailableFreeSpace/1GB}
+        }catch{$script:finishMessage='측정을 다시 시도해요. '+$_.Exception.Message}
+        $confirmed=$null -ne $after -and $null -ne $freeAfter -and $after -lt $script:before -and $freeAfter -gt $script:freeBefore
+        if(($confirmed -and $ready) -or ((Get-Date)-$script:measurementStarted).TotalSeconds -ge $(if($testing){1.5}else{30})){Complete-Finish $after $freeAfter $ready;return}
+        Publish 'running' '결과 확인 중이에요.' @{measurement_pending=$true;can_cancel=$false;measurement_attempts=$script:measurementAttempts}
+    }
+    function Complete-Finish($after,$freeAfter,[bool]$ready) {
+        $State=$script:finishState
+        $confirmed=$State -eq 'completed' -and $ready -and $null -ne $after -and $null -ne $freeAfter -and $after -lt $script:before -and $freeAfter -gt $script:freeBefore
+        $reclaimed=if($confirmed){[Math]::Round([Math]::Min($script:before-$after,$freeAfter-$script:freeBefore),2)}elseif($State -ne 'completed'){0}else{$null}
+        $script:terminal=$true;$script:phase='finished';$timer.Stop()
+        $message=if($State -eq 'completed'){if($confirmed){'완료: {0:N2}GB 확보' -f $reclaimed}else{'결과 확인 중이에요.'}}elseif($State -eq 'cancelled'){'중단했어요.'}else{'디스크를 줄이지 못했어요.'}
+        $info=@{wsl_ready=$ready;recovery_required=(-not $ready);can_cancel=$false;before_gb=[Math]::Round($script:before,2);after_gb=$after;reclaimed_gb=$reclaimed;c_free_before_gb=[Math]::Round($script:freeBefore,2);c_free_after_gb=$freeAfter;measurement_pending=($State -eq 'completed' -and -not $confirmed);measurement_confirmed=$confirmed;measurement_attempts=$script:measurementAttempts;detail=$script:finishMessage}
+        $heading.Text=$message;$bar.Style='Continuous';$progressLabel.Text=if($State -eq 'completed' -and $confirmed){'완료'}elseif($State -eq 'completed'){'확인 중'}elseif($State -eq 'cancelled'){'중단됨'}else{'오류'}
+        if($State -eq 'completed' -and $confirmed){$info.percent=100;$bar.Value=100}
+        $detail.Text=if($State -eq 'completed' -and -not $confirmed){'측정을 보류했어요. 다음 WSL 시작 때 다시 측정해요.'}elseif($State -eq 'failed'){$script:finishMessage}else{''}
         $reopen=Read-CompactJson 'reopen-status.json'
-        $auto=$State -eq 'completed' -and $reopen.request_id -eq $RequestId -and $reopen.status -in @('waiting','launching','opened')
-        $hint.Text=if($auto){'Office를 새 콘솔에서 자동으로 열어요. 이 창은 닫아도 돼요.'}else{'WSL 터미널을 열고 Office를 다시 켜세요. 이 창을 닫아도 돼요.'}
+        $auto=$State -eq 'completed' -and $reopen.request_id -eq $RequestId -and $reopen.status -in @('waiting','waiting_disk','launching','opened')
+        $hint.Text=if($State -eq 'failed' -or -not $ready){"WSL이 열리지 않으면 $PSScriptRoot\recover-wsl.cmd를 실행하세요. 재부팅이 필요할 수 있어요."}elseif($auto){'디스크 사용 해제를 확인한 뒤 Office를 열어요.'}else{'WSL 터미널을 열고 Office를 다시 켜세요.'}
         $timing.Text=('걸린 시간: {0:N0}초' -f ((Get-Date)-$script:started).TotalSeconds)
         $cancel.Text='닫기';$cancel.Enabled=$true;$startNow.Visible=$false
-        Publish $State $Message $info
+        Publish $State $message $info
         [IO.File]::WriteAllText("$PSScriptRoot\result.json",((Read-CompactJson 'status.json')|ConvertTo-Json -Depth 5 -Compress),[Text.UTF8Encoding]::new($false))
-        # The result window can remain open; it no longer owns the operation lock.
         $lock.Dispose();$script:lock=$null
         if($auto -and -not $testing){$reopenTimer.Start()}
         if($testing){$form.Close()}
     }
     function Request-Cancel {
         if($script:terminal){$form.Close();return}
+        if($script:phase -eq 'measuring'){return}
         if($script:cancelRequested){return}
         $script:cancelRequested=$true;$cancel.Enabled=$false;$startNow.Enabled=$false;$heading.Text='안전하게 중단하고 있어요.';$progressLabel.Text='중단 중'
         $hint.Text='중단 완료를 확인할 때까지 창을 유지해요. WSL을 아직 켜지 마세요.'
@@ -81,7 +103,7 @@ try {
     $cancel.Add_Click({Request-Cancel})
     $form.Add_FormClosing({param($sender,$e) if(-not $script:terminal){$e.Cancel=$true;Request-Cancel}})
     $reopenTimer=[Windows.Forms.Timer]::new();$reopenTimer.Interval=1000
-    $reopenTimer.Add_Tick({$r=Read-CompactJson 'reopen-status.json';if($r.request_id -eq $RequestId){if($r.status -eq 'opened'){$hint.Text='Office 창을 열었어요. 새 콘솔은 계속 켜 두세요.';$reopenTimer.Stop()}elseif($r.status -in @('failed','unavailable')){$hint.Text='Office를 자동으로 열지 못했어요. WSL 터미널에서 office를 실행하세요.';$reopenTimer.Stop()}}})
+    $reopenTimer.Add_Tick({$r=Read-CompactJson 'reopen-status.json';if($r.request_id -eq $RequestId){if($r.status -eq 'opened'){$hint.Text='Office 창을 열었어요. 새 콘솔은 계속 켜 두세요.';$reopenTimer.Stop()}elseif($r.status -in @('failed','unavailable','reboot_required')){$hint.Text=$r.message+" $PSScriptRoot\recover-wsl.cmd";$reopenTimer.Stop()}}})
     $timer=[Windows.Forms.Timer]::new();$timer.Interval=500
     $timer.Add_Tick({
         if($script:tickBusy){return};$script:tickBusy=$true
@@ -89,7 +111,8 @@ try {
             $request=Read-CompactJson 'cancel.json'
             if($request.request_id -eq $RequestId){Request-Cancel}
             $elapsed=[int]((Get-Date)-$script:started).TotalSeconds
-            $timing.Text="진행 시간: ${elapsed}초"
+            $timing.Text="${elapsed}초"
+            if($script:phase -eq 'measuring'){Measure-Result;return}
             if($script:phase -eq 'countdown') {
                 if($script:cancelRequested){Finish 'cancelled' 'WSL을 끄기 전에 취소했어요.';return}
                 $left=[Math]::Max(0,[int][Math]::Ceiling(($script:shutdownAt-(Get-Date)).TotalSeconds))
@@ -114,7 +137,7 @@ try {
                 if($script:cancelRequested){Finish 'cancelled' 'WSL 종료 뒤 축소를 시작하기 전에 취소했어요.';return}
                 $script:phase='running';$script:changed=Get-Date;$script:operationStarted=Get-Date
                 if(-not $testing){$script:operation=[CompactOperation]::new($Vhdx)}
-                $heading.Text='디스크를 줄이고 있어요.';$hint.Text='중단할 수 있어요. 중단이 끝난 뒤 WSL을 다시 켜세요.';return
+                $heading.Text='줄이는 중이에요.';$hint.Text='중단할 수 있어요. 중단이 끝난 뒤 WSL을 다시 켜세요.';return
             }
             if($script:phase -in @('running','finalizing')) {
                 if($testing) {
@@ -136,17 +159,17 @@ try {
                 if($percent -ge 100){
                     $script:phase='finalizing'
                     if(-not $script:finalizingStarted){$script:finalizingStarted=Get-Date}
-                    $heading.Text=if($script:cancelRequested){'안전하게 중단하고 있어요.'}else{'디스크 줄이기 진행 중이에요.'}
+                    $heading.Text=if($script:cancelRequested){'안전하게 중단하고 있어요.'}else{'마무리 중이에요.'}
                     $bar.Value=0;$bar.Style='Marquee';$progressLabel.Text=if($script:cancelRequested){'중단 중'}else{'진행 중'}
-                    $detail.Text=''
+                    $detail.Text='';$fields.detail='100%를 받았지만 Windows 완료 신호를 기다려요.'
                 }else{
                     $script:phase='running';$script:finalizingStarted=$null
-                    if(-not $script:cancelRequested){$heading.Text='디스크를 줄이고 있어요.'}
-                    if($percent -ge 0){$bar.Style='Continuous';$bar.Value=$percent;$progressLabel.Text="${percent}%";$detail.Text='';$fields.percent=$percent}else{$bar.Value=0;$bar.Style='Marquee';$progressLabel.Text='진행 중';if(-not $script:cancelRequested){$heading.Text='디스크 줄이기 진행 중이에요.'};$detail.Text=''}
-                    if($percent -ge 0 -and $stalled -ge 30){$detail.Text+="`r`n${stalled}초 동안 같은 진행률이에요. 처리 중에도 숫자가 멈출 수 있어요."}
+                    if(-not $script:cancelRequested){$heading.Text='줄이는 중이에요.'}
+                    if($percent -ge 0){$bar.Style='Continuous';$bar.Value=$percent;$progressLabel.Text="${percent}%";$detail.Text='';$fields.percent=$percent}else{$bar.Value=0;$bar.Style='Marquee';$progressLabel.Text='진행 중';if(-not $script:cancelRequested){$heading.Text='마무리 중이에요.'};$detail.Text=''}
+                    if($percent -ge 0 -and $stalled -ge 30){$fields.detail="${stalled}초 동안 같은 진행률이에요."}
                 }
                 if($script:cancelRequested){$progressLabel.Text='중단 중'}
-                Publish $(if($script:cancelRequested){'cancelling'}else{'running'}) $detail.Text $fields
+                Publish $(if($script:cancelRequested){'cancelling'}else{'running'}) $heading.Text $fields
             }
         } catch {
             $script:errorText=$_.Exception.Message

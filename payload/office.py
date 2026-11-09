@@ -5490,7 +5490,7 @@ def compact_progress(value):
         updated = value.get("updated_at")
         if type(updated) in (int, float) and math.isfinite(updated) and updated > 0:
             out["heartbeat_seconds"] = max(0, int(time.time() - updated))
-    for key in ("can_cancel", "wsl_ready", "recovery_required"):
+    for key in ("can_cancel", "wsl_ready", "recovery_required", "measurement_pending", "measurement_confirmed"):
         if type(value.get(key)) is bool:
             out[key] = value[key]
     for key in ("shutdown_at", "started_at"):

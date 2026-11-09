@@ -67,12 +67,33 @@ class DiskBundle(unittest.TestCase):
         now=time.time()
         d=self.data();d.update(allocated_bytes=100*2**30,logical_bytes=100*2**30)
         pre=dict(request_id='a',distro='test',path=d['path'],trim_ok=True,used_gb=80,recorded_at=now-20)
-        result=dict(request_id='a',status='completed',test_mode=False,recovery_required=False,after_gb=90,updated_at=now-10)
+        result=dict(request_id='a',status='completed',test_mode=False,recovery_required=False,before_gb=100,after_gb=90,c_free_before_gb=30,c_free_after_gb=40,updated_at=now-10)
         self.s.atomic_json(Path(self.tmp.name)/'pre-compact.json',pre)
-        for change in [dict(test_mode=True),dict(status='failed'),dict(request_id='b')]:
+        for change in [dict(test_mode=True),dict(status='failed'),dict(request_id='b'),dict(after_gb=100),dict(c_free_after_gb=30),dict(c_free_after_gb=29),dict(before_gb=None),dict(measurement_pending=True)]:
             self.s.atomic_json(Path(self.tmp.name)/'result.json',{**result,**change});self.s.learn_compact_floor(d)
             self.assertFalse(Path(self.s.COMPACT_FLOOR).exists())
         self.s.atomic_json(Path(self.tmp.name)/'result.json',result);self.s.learn_compact_floor(d)
+        self.assertEqual(json.loads(Path(self.s.COMPACT_FLOOR).read_text())['floor_gib'],10)
+
+    def test_pending_measurement_is_confirmed_on_next_wsl_measurement(self):
+        now=time.time();d=self.data();d.update(logical_bytes=90*2**30,allocated_bytes=90*2**30,c_free_gb=40)
+        pre=dict(request_id='a',distro=d['distro'],path=d['path'],trim_ok=True,used_gb=80,recorded_at=now-20)
+        result=dict(request_id='a',status='completed',test_mode=False,recovery_required=True,measurement_pending=True,
+                    before_gb=100,after_gb=100,c_free_before_gb=30,c_free_after_gb=30,reclaimed_gb=None,updated_at=now-10)
+        for name,data in [('pre-compact.json',pre),('result.json',result),('status.json',result)]:
+            self.s.atomic_json(Path(self.tmp.name)/name,data)
+        self.s.refresh_pending_compact_result({**d,'logical_bytes':100*2**30})
+        self.assertTrue(json.loads((Path(self.tmp.name)/'result.json').read_text())['measurement_pending'])
+        self.assertTrue(json.loads((Path(self.tmp.name)/'result.json').read_text())['wsl_ready'])
+        self.s.refresh_pending_compact_result({**d,'c_free_gb':30})
+        self.assertTrue(json.loads((Path(self.tmp.name)/'result.json').read_text())['measurement_pending'])
+        self.s.refresh_pending_compact_result({**d,'distro':'different'})
+        self.assertTrue(json.loads((Path(self.tmp.name)/'result.json').read_text())['measurement_pending'])
+        self.s.refresh_pending_compact_result(d)
+        checked=json.loads((Path(self.tmp.name)/'result.json').read_text())
+        self.assertEqual((checked['measurement_pending'],checked['after_gb'],checked['reclaimed_gb']),(False,90,10))
+        self.assertEqual(checked['updated_at'],result['updated_at'])
+        self.s.learn_compact_floor(d)
         self.assertEqual(json.loads(Path(self.s.COMPACT_FLOOR).read_text())['floor_gib'],10)
 
 

@@ -76,6 +76,33 @@ def ext4_metadata_gib(st, root='/'):
     metadata = device_bytes - st.f_blocks * st.f_frsize
     return metadata / 2**30 if device_bytes > 0 and metadata >= 0 else None
 
+def refresh_pending_compact_result(d):
+    status_path = Path(os.path.realpath(os.path.join(COMPACT_STATE, 'status.json')))
+    result_path = status_path.with_name('result.json')
+    result, pre = read_json(result_path), read_json(Path(COMPACT_STATE) / 'pre-compact.json')
+    if not result or not pre or result.get('status') != 'completed' or result.get('measurement_pending') is not True:
+        return
+    if (result.get('test_mode') is not False or result.get('request_id') != pre.get('request_id')
+            or pre.get('distro') != d.get('distro') or pre.get('path') != d.get('path')):
+        return
+    before, free_before = result.get('before_gb'), result.get('c_free_before_gb')
+    after, free_after = d.get('logical_bytes', 0) / 2**30, d.get('c_free_gb')
+    confirmed = (all(is_number(v) for v in (before, free_before, after, free_after))
+                 and 0 < after < before and free_after > free_before)
+    if not confirmed and result.get('wsl_ready') is True and result.get('recovery_required') is False:
+        return
+    # 같은 WSL에서 측정에 성공했다면 시작 가능 여부는 확보량과 별개로 확인됐어요.
+    result.update(wsl_ready=True, recovery_required=False)
+    if confirmed:
+        result.update(after_gb=after, c_free_after_gb=free_after, reclaimed_gb=min(before-after, free_after-free_before),
+                      measurement_pending=False, measurement_confirmed=True, measured_at=time.time())
+        result['message'] = f"완료: {result['reclaimed_gb']:.2f}GB 확보"
+    atomic_json(result_path, result)
+    status = read_json(status_path)
+    if status and status.get('request_id') == result['request_id'] and status.get('status') == 'completed':
+        atomic_json(status_path, result)
+
+
 def learn_compact_floor(d):
     """정상으로 끝난 새 줄이기가 있으면 고정분을 갱신해요. 시험·실패·fstrim 실패·sparse 는 쓰지 않아요."""
     if abs(d.get('logical_bytes', 0) - d['allocated_bytes']) > COMPACT_SPARSE_GAP:
@@ -89,12 +116,15 @@ def learn_compact_floor(d):
     if result['request_id'] == floor.get('request_id'):
         return
     after, used, finished = result.get('after_gb'), pre.get('used_gb'), result.get('updated_at')
+    before, free_before, free_after = result.get('before_gb'), result.get('c_free_before_gb'), result.get('c_free_after_gb')
     recorded = pre.get('recorded_at')
     if (result.get('status') != 'completed' or result.get('test_mode') is not False
             or result.get('recovery_required') is not False or pre.get('trim_ok') is not True
             or pre.get('distro') != d.get('distro')
             or not d.get('path') or pre.get('path') != d['path']
-            or not all(is_number(v) for v in (after, used, finished, recorded))
+            or result.get('measurement_pending') is True
+            or not all(is_number(v) for v in (after, used, finished, recorded, before, free_before, free_after))
+            or after >= before or free_after <= free_before
             or used <= 0 or after < used or not recorded < finished <= time.time() + 300
             or (is_number(floor.get('compacted_at')) and finished <= floor['compacted_at'])):
         return
@@ -192,6 +222,7 @@ def disk_snapshot():
         d['used_gb'] = (st.f_blocks - st.f_bfree) * st.f_frsize / 2**30
         d['vhdx_gb'] = d['allocated_bytes'] / 2**30
         d['c_free_gb'] = d['free_bytes'] / 2**30
+        refresh_pending_compact_result(d)
         d['floor_gib'], d['reclaim_basis'] = compact_floor(d, ext4_metadata_gib(st))
         return d
     except (RuntimeError, OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:

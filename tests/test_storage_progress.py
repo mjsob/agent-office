@@ -19,6 +19,9 @@ assert bad == {}, bad
 done = o.compact_progress({"status": "completed", "started_at": now - 50, "reclaimed_gb": 31.234, "wsl_ready": True})
 assert "elapsed_seconds" not in done and done["reclaimed_gb"] == 31.2 and done["wsl_ready"] is True   # 끝난 뒤엔 경과 시간을 안 보여요
 assert o.compact_progress({"status": "running", "elapsed_seconds": 70})["elapsed_seconds"] == 70
+pending = o.compact_progress({"status":"completed", "measurement_pending":True, "measurement_confirmed":False, "reclaimed_gb":None})
+assert pending == {"measurement_pending":True, "measurement_confirmed":False}, pending
+assert "measurement_pending" not in o.compact_progress({"measurement_pending":"true"})
 print("storage progress ok")
 # 취소 요청: 진행 중이면서 can_cancel 일 때만 스크립트 --cancel 을 불러요
 import os, tempfile

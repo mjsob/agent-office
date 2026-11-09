@@ -50,6 +50,7 @@ public static class OfficeWin {
                 case "install-recovery": return InstallRecovery();
                 case "selftest-make-vhdx": return SelfTest.MakeVhdx(rest);
                 case "selftest-compact": return SelfTest.Compact(rest);
+                case "selftest-disk-ready": return SelfTest.DiskReady(rest);
                 default: Console.Error.WriteLine("알 수 없는 명령이에요: " + cmd); return 64;
             }
         } catch (Exception e) {
@@ -623,15 +624,31 @@ public static class OfficeWin {
                 if (Str(rec, "request_id") == rid) {
                     string st = Str(rec, "status");
                     if (st == "cancelled" || st == "failed") { SetReopen(rid, "skipped", "줄이기가 끝나지 않아 Office 자동 열기를 생략했어요."); return 0; }
-                    if (st == "completed" && IsTrue(rec, "wsl_ready") && !IsLocked(dataDir, "active.lock")) break;
+                    if (st == "completed" && !IsLocked(dataDir, "active.lock")) break;
                 }
                 Thread.Sleep(1000);
             }
             var done = ReadJson(dataDir, "status.json");
-            if (Str(done, "request_id") != rid || Str(done, "status") != "completed" || !IsTrue(done, "wsl_ready") || IsLocked(dataDir, "active.lock")) throw new Exception("완료와 디스크 사용 해제를 확인하지 못했어요.");
+            if (Str(done, "request_id") != rid || Str(done, "status") != "completed" || IsLocked(dataDir, "active.lock")) throw new Exception("완료와 디스크 사용 해제를 확인하지 못했어요.");
             if (Str(ReadJson(dataDir, "restore-office.json"), "request_id") != rid) return 0;
             string server = Str(cfg, "server_windows");
             if (OfficeReady(server)) { SetReopen(rid, "opened", "Office가 이미 열려 있어요. 기존 창을 사용하세요."); return 0; }
+            var target = ReadJson(dataDir, "target.json");
+            string diskPath = Str(target, "path");
+            if (Str(target, "request_id") != rid || string.IsNullOrEmpty(diskPath)) throw new Exception("디스크 파일 정보를 확인하지 못했어요. recover-wsl.cmd를 실행하세요.");
+            SetReopen(rid, "waiting_disk", "디스크 사용이 끝나기를 기다려요.");
+            DateTime deadline = DateTime.UtcNow.AddSeconds(Math.Min(120, waitSeconds));
+            uint openError;
+            do {
+                if (Str(ReadJson(dataDir, "restore-office.json"), "request_id") != rid) return 0;
+                openError = CompactOperation.ProbeReady(diskPath);
+                if (openError == 0) break;
+                Thread.Sleep(2000);
+            } while (DateTime.UtcNow < deadline);
+            if (openError != 0) {
+                string text = "디스크가 아직 사용 중이에요. 재부팅이 필요해요. recover-wsl.cmd에서 복구 안내를 확인하세요.";
+                SetReopen(rid, "reboot_required", text + " Windows 오류: " + openError); return 4;
+            }
             SetReopen(rid, "launching", "Office를 새 콘솔에서 열고 있어요.");
             string args = "-d " + Quote(Str(cfg, "distro")) + " -u " + Quote(Str(cfg, "linux_user")) + " --exec /bin/bash " + Quote(Str(cfg, "script_linux"));
             StartVisibleConsole(Path.Combine(Environment.GetEnvironmentVariable("WINDIR") ?? @"C:\Windows", @"System32\wsl.exe"), args);
@@ -668,6 +685,17 @@ public sealed class CompactOperation : IDisposable {
     public uint ErrorCode { get; private set; }
     public int Percent { get; private set; }
     public bool CancelRequested { get; private set; }
+    // 열기만 확인하고 바로 닫아요. 연결·축소·파일 내용 변경은 하지 않아요.
+    public static uint ProbeReady(string path) {
+        IntPtr handle = IntPtr.Zero;
+        try {
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            var storage = new StorageType { DeviceId = 3, VendorId = new Guid("EC984AEC-A0F9-47e9-901F-71415A66345B") };
+            var open = new OpenParameters { Version = 1, RWDepth = 1 };
+            return OpenVirtualDisk(ref storage, path, 0x00020000, 0, ref open, out handle);
+        } catch (Exception e) { return (uint)(Marshal.GetHRForException(e) & 0xffff); }
+        finally { if (handle != IntPtr.Zero) CloseHandle(handle); }
+    }
     public CompactOperation(string path) {
         Percent = -1;
         var storage = new StorageType { DeviceId = 3, VendorId = new Guid("EC984AEC-A0F9-47e9-901F-71415A66345B") };
@@ -731,6 +759,9 @@ public static class Worker {
     static DateTime? finalizingStarted;
     static int lastPercent = -1, countdown;
     static double before, freeBefore;
+    static string finishState, finishMessage;
+    static DateTime measurementStarted, nextMeasurement;
+    static int measurementAttempts;
     static DriveInfo drive;
     static string errorText = "";
     static Form form;
@@ -754,33 +785,61 @@ public static class Worker {
 
     static void Finish(string state, string message) {
         if (operation != null) { operation.Dispose(); operation = null; }
+        finishState = state; finishMessage = message;
+        if (state == "completed") {
+            phase = "measuring"; measurementStarted = DateTime.UtcNow; nextMeasurement = DateTime.MinValue; measurementAttempts = 0;
+            cancelButton.Enabled = false; startNow.Visible = false;
+            heading.Text = "결과 확인 중이에요."; detail.Text = ""; progressLabel.Text = "확인 중";
+            bar.Style = ProgressBarStyle.Marquee;
+            return;
+        }
+        CompleteFinish(null, null, !shutdownStarted || testing || CompactOperation.ProbeReady(vhdx) == 0);
+    }
+    static void MeasureResult() {
+        if (DateTime.UtcNow < nextMeasurement) return;
+        nextMeasurement = DateTime.UtcNow.AddSeconds(testing ? 0.1 : 2); measurementAttempts++;
+        double? after = null, freeAfter = null;
+        bool ready = testing || CompactOperation.ProbeReady(vhdx) == 0;
+        try {
+            after = testing ? (testMode == "unchanged" || testMode == "delayed" && measurementAttempts < 3 ? 10.0 : 8.0) : new FileInfo(vhdx).Length / 1073741824.0;
+            freeAfter = testing ? (after == 10.0 ? 20.0 : 22.0) : drive.AvailableFreeSpace / 1073741824.0;
+        } catch (Exception e) { finishMessage = "측정을 다시 시도해요. " + OfficeWin.OneLine(e.Message); }
+        bool confirmed = after.HasValue && freeAfter.HasValue && after.Value < before && freeAfter.Value > freeBefore;
+        if (confirmed && ready || (DateTime.UtcNow - measurementStarted).TotalSeconds >= (testing ? 1.5 : 30)) {
+            CompleteFinish(after, freeAfter, ready); return;
+        }
+        Publish("running", "결과 확인 중이에요.", OfficeWin.Obj("measurement_pending", true, "can_cancel", false, "measurement_attempts", measurementAttempts));
+    }
+    static void CompleteFinish(double? after, double? freeAfter, bool ready) {
+        string state = finishState;
+        bool confirmed = state == "completed" && ready && after.HasValue && freeAfter.HasValue && after.Value < before && freeAfter.Value > freeBefore;
+        double? reclaimed = confirmed ? (double?)Round2(Math.Min(before - after.Value, freeAfter.Value - freeBefore)) : state != "completed" ? (double?)0.0 : null;
         terminal = true; phase = "finished"; timer.Stop();
-        progressLabel.Text = state == "completed" ? "완료" : (state == "cancelled" ? "중단됨" : "오류");
-        double after = testing ? (state == "completed" ? 8.0 : 10.0) : new FileInfo(vhdx).Length / 1073741824.0;
-        double freeAfter = testing ? 22.0 : drive.AvailableFreeSpace / 1073741824.0;
-        var info = OfficeWin.Obj("wsl_ready", true, "can_cancel", false, "before_gb", Round2(before), "after_gb", Round2(after),
-            "reclaimed_gb", Round2(Math.Max(0.0, before - after)), "c_free_before_gb", Round2(freeBefore), "c_free_after_gb", Round2(freeAfter));
+        string message = state == "completed" ? (confirmed ? "완료: " + reclaimed.Value.ToString("N2") + "GB 확보" : "결과 확인 중이에요.") : state == "cancelled" ? "중단했어요." : "디스크를 줄이지 못했어요.";
+        var info = OfficeWin.Obj("wsl_ready", ready, "recovery_required", !ready, "can_cancel", false, "before_gb", Round2(before), "after_gb", after.HasValue ? (object)Round2(after.Value) : null,
+            "reclaimed_gb", reclaimed, "c_free_before_gb", Round2(freeBefore), "c_free_after_gb", freeAfter.HasValue ? (object)Round2(freeAfter.Value) : null,
+            "measurement_pending", state == "completed" && !confirmed, "measurement_confirmed", confirmed, "measurement_attempts", measurementAttempts,
+            "detail", finishMessage);
+        heading.Text = message; progressLabel.Text = state == "completed" && confirmed ? "완료" : state == "completed" ? "확인 중" : state == "cancelled" ? "중단됨" : "오류";
         bar.Style = ProgressBarStyle.Continuous;
-        if (state == "completed") { OfficeWin.Set(info, "percent", 100); bar.Value = 100; heading.Text = "디스크 줄이기가 끝났어요."; }
-        else if (state == "cancelled") heading.Text = "중단하고 디스크 사용을 해제했어요.";
-        else heading.Text = "디스크를 줄이지 못했어요.";
-        detail.Text = message + "\r\n" + string.Format("디스크 파일 {0:N2}GiB → {1:N2}GiB", before, after);
+        if (state == "completed" && confirmed) { OfficeWin.Set(info, "percent", 100); bar.Value = 100; }
+        detail.Text = state == "completed" && !confirmed ? "측정을 보류했어요. 다음 WSL 시작 때 다시 측정해요." : state == "failed" ? finishMessage : "";
         var reopen = OfficeWin.ReadJson(dir, "reopen-status.json");
         string rs = OfficeWin.Str(reopen, "status");
-        bool auto = state == "completed" && OfficeWin.Str(reopen, "request_id") == rid && (rs == "waiting" || rs == "launching" || rs == "opened");
-        hint.Text = auto ? "Office를 새 콘솔에서 자동으로 열어요. 이 창은 닫아도 돼요." : "WSL 터미널을 열고 Office를 다시 켜세요. 이 창을 닫아도 돼요.";
+        bool auto = state == "completed" && OfficeWin.Str(reopen, "request_id") == rid && (rs == "waiting" || rs == "waiting_disk" || rs == "launching" || rs == "opened");
+        hint.Text = state == "failed" || !ready ? "WSL이 열리지 않으면 " + Path.Combine(dir, "recover-wsl.cmd") + "를 실행하세요. 재부팅이 필요할 수 있어요."
+            : auto ? "디스크 사용 해제를 확인한 뒤 Office를 열어요." : "WSL 터미널을 열고 Office를 다시 켜세요.";
         timing.Text = string.Format("걸린 시간: {0:N0}초", (DateTime.Now - started).TotalSeconds);
         cancelButton.Text = "닫기"; cancelButton.Enabled = true; startNow.Visible = false;
         Publish(state, message, info);
-        // 결과는 status.json 내용을 그대로 복사해 둬요.
         OfficeWin.WriteAtomic(dir, "result.json", File.ReadAllText(Path.Combine(dir, "status.json"), Encoding.UTF8).TrimStart('\uFEFF'));
-        // 결과 창이 열려 있어도 이 창은 더 이상 작업 잠금을 쥐지 않아요.
         if (lockStream != null) { lockStream.Dispose(); lockStream = null; }
         if (auto && !testing) reopenTimer.Start();
         if (testing) form.Close();
     }
     static void RequestCancel() {
         if (terminal) { form.Close(); return; }
+        if (phase == "measuring") return;
         if (cancelRequested) return;
         cancelRequested = true; cancelButton.Enabled = false; startNow.Enabled = false; heading.Text = "안전하게 중단하고 있어요."; progressLabel.Text = "중단 중";
         hint.Text = "중단 완료를 확인할 때까지 창을 유지해요. WSL을 아직 켜지 마세요.";
@@ -869,7 +928,7 @@ public static class Worker {
             if (OfficeWin.Str(r, "request_id") != rid) return;
             string st = OfficeWin.Str(r, "status");
             if (st == "opened") { hint.Text = "Office 창을 열었어요. 새 콘솔은 계속 켜 두세요."; reopenTimer.Stop(); }
-            else if (st == "failed" || st == "unavailable") { hint.Text = "Office를 자동으로 열지 못했어요. WSL 터미널에서 office를 실행하세요."; reopenTimer.Stop(); }
+            else if (st == "failed" || st == "unavailable" || st == "reboot_required") { hint.Text = OfficeWin.Str(r, "message") + " " + Path.Combine(dir, "recover-wsl.cmd"); reopenTimer.Stop(); }
         };
         timer = new System.Windows.Forms.Timer(); timer.Interval = 500;
         timer.Tick += delegate { Tick(); };
@@ -887,7 +946,8 @@ public static class Worker {
             var request = OfficeWin.ReadJson(dir, "cancel.json");
             if (OfficeWin.Str(request, "request_id") == rid) RequestCancel();
             int elapsed = (int)(DateTime.Now - started).TotalSeconds;
-            timing.Text = "전체 " + elapsed + "초 · " + PhaseName() + " " + (int)(DateTime.Now - phaseStart).TotalSeconds + "초째";
+            timing.Text = elapsed + "초";
+            if (phase == "measuring") { MeasureResult(); return; }
             if (phase == "countdown") {
                 if (cancelRequested) { Finish("cancelled", "WSL을 끄기 전에 취소했어요."); return; }
                 int left = Math.Max(0, (int)Math.Ceiling((shutdownAt - DateTime.Now).TotalSeconds));
@@ -917,7 +977,7 @@ public static class Worker {
                 if (cancelRequested) { Finish("cancelled", "WSL 종료 뒤 축소를 시작하기 전에 취소했어요."); return; }
                 phase = "running"; changed = DateTime.Now; operationStarted = DateTime.Now;
                 if (!testing) operation = new CompactOperation(vhdx);
-                heading.Text = "디스크를 줄이고 있어요."; hint.Text = "중단할 수 있어요. 중단이 끝난 뒤 WSL을 다시 켜세요."; return;
+                heading.Text = "줄이는 중이에요."; hint.Text = "중단할 수 있어요. 중단이 끝난 뒤 WSL을 다시 켜세요."; return;
             }
             if (phase == "running" || phase == "finalizing") {
                 int percent; bool complete; uint code;
@@ -942,18 +1002,18 @@ public static class Worker {
                 if (percent >= 100) {
                     phase = "finalizing";
                     if (!finalizingStarted.HasValue) finalizingStarted = DateTime.Now;
-                    heading.Text = cancelRequested ? "안전하게 중단하고 있어요." : "디스크 줄이기 진행 중이에요.";
+                    heading.Text = cancelRequested ? "안전하게 중단하고 있어요." : "마무리 중이에요.";
                     bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = cancelRequested ? "중단 중" : "진행 중";
-                    detail.Text = "100%를 넘겨 Windows가 끝났다고 알리기를 기다려요. 이 단계는 오래 걸려도 정상일 수 있어요.";
+                    detail.Text = ""; OfficeWin.Set(fields, "detail", "100%를 받았지만 Windows 완료 신호를 기다려요.");
                 } else {
                     phase = "running"; finalizingStarted = null;
-                    if (!cancelRequested) heading.Text = "디스크를 줄이고 있어요.";
+                    if (!cancelRequested) heading.Text = "줄이는 중이에요.";
                     if (percent >= 0) { bar.Style = ProgressBarStyle.Continuous; bar.Value = percent; progressLabel.Text = percent + "%"; detail.Text = ""; OfficeWin.Set(fields, "percent", percent); }
-                    else { bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = "진행 중"; if (!cancelRequested) heading.Text = "디스크 줄이기 진행 중이에요."; detail.Text = "Windows가 진행률을 알려 주지 않는 단계예요. 오래 걸려도 멈춘 게 아닐 수 있어요."; }
-                    if (percent >= 0 && stalled >= 30) detail.Text += "\r\n" + stalled + "초 동안 같은 진행률이에요. 처리 중에도 숫자가 멈출 수 있어요.";
+                    else { bar.Value = 0; bar.Style = ProgressBarStyle.Marquee; progressLabel.Text = "진행 중"; if (!cancelRequested) heading.Text = "마무리 중이에요."; detail.Text = ""; OfficeWin.Set(fields, "detail", "Windows가 진행률을 알려 주지 않는 단계예요."); }
+                    if (percent >= 0 && stalled >= 30) OfficeWin.Set(fields, "detail", stalled + "초 동안 같은 진행률이에요.");
                 }
                 if (cancelRequested) progressLabel.Text = "중단 중";
-                Publish(cancelRequested ? "cancelling" : "running", detail.Text, fields);
+                Publish(cancelRequested ? "cancelling" : "running", heading.Text, fields);
             }
         } catch (Exception e) {
             errorText = e.Message;
@@ -977,6 +1037,21 @@ public static class SelfTest {
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     static void RequireTemp(string path) {
         if (!Path.GetFullPath(path).StartsWith(OfficeWin.TempRoot(), StringComparison.OrdinalIgnoreCase) || !path.EndsWith(".vhdx", StringComparison.OrdinalIgnoreCase)) throw new Exception("시험 디스크는 임시 폴더의 .vhdx만 써요.");
+    }
+    public static int DiskReady(List<string> args) {
+        if (args.Count < 1) return 64;
+        RequireTemp(args[0]);
+        if (args.Contains("--locked")) {
+            using (var file = new FileStream(args[0], FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                OfficeWin.Print(OfficeWin.Obj("error", CompactOperation.ProbeReady(args[0])));
+        } else if (args.Contains("--mapped")) {
+            using (var map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(args[0], FileMode.Open))
+            using (var view = map.CreateViewAccessor()) {
+                map.Dispose();
+                OfficeWin.Print(OfficeWin.Obj("error", CompactOperation.ProbeReady(args[0])));
+            }
+        } else OfficeWin.Print(OfficeWin.Obj("error", CompactOperation.ProbeReady(args[0])));
+        return 0;
     }
     public static int MakeVhdx(List<string> a) {
         if (a.Count < 1) return 64; RequireTemp(a[0]);

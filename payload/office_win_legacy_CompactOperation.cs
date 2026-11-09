@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
@@ -21,6 +22,17 @@ public sealed class CompactOperation : IDisposable {
     public uint ErrorCode { get; private set; }
     public int Percent { get; private set; }
     public bool CancelRequested { get; private set; }
+    // 열기만 확인하고 바로 닫아요. 연결·축소·파일 내용 변경은 하지 않아요.
+    public static uint ProbeReady(string path) {
+        IntPtr handle = IntPtr.Zero;
+        try {
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            var storage = new StorageType { DeviceId = 3, VendorId = new Guid("EC984AEC-A0F9-47e9-901F-71415A66345B") };
+            var open = new OpenParameters { Version = 1, RWDepth = 1 };
+            return OpenVirtualDisk(ref storage, path, 0x00020000, 0, ref open, out handle);
+        } catch (Exception e) { return (uint)(Marshal.GetHRForException(e) & 0xffff); }
+        finally { if (handle != IntPtr.Zero) CloseHandle(handle); }
+    }
     public CompactOperation(string path) {
         Percent = -1;
         var storage = new StorageType { DeviceId = 3, VendorId = new Guid("EC984AEC-A0F9-47e9-901F-71415A66345B") };

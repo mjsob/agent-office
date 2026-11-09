@@ -67,6 +67,41 @@ class WindowsHelper(unittest.TestCase):
     if status=='completed':self.assertEqual((res['reclaimed_gb'],res['percent']),(2,100))
     else:self.assertEqual(res['reclaimed_gb'],0)
     s=json.loads(self.run_exe('status','--dir',self.win(d)).stdout);self.assertFalse(s['running'])
+ def test_delayed_or_unchanged_measurement_is_not_reported_as_zero(self):
+  d,res=self.worker('delayed','delayed')
+  self.assertTrue(res['measurement_confirmed']);self.assertGreaterEqual(res['measurement_attempts'],3)
+  self.assertEqual(res['reclaimed_gb'],2)
+  d,res=self.worker('unchanged','unchanged')
+  self.assertEqual(res['status'],'completed');self.assertTrue(res['measurement_pending'])
+  self.assertIsNone(res['reclaimed_gb']);self.assertNotIn('0GB',res['message'])
+ def test_legacy_measurement_delayed_unchanged_and_failure(self):
+  if not shutil.which('powershell.exe'):self.skipTest('PowerShell이 없어요')
+  probe=cmd('powershell.exe','-NoProfile','-NonInteractive','-Command','$ExecutionContext.SessionState.LanguageMode')
+  if probe.returncode or 'FullLanguage' not in probe.stdout:self.skipTest('PowerShell 전체 언어 모드가 아니에요')
+  for mode in ('delayed','unchanged','failure'):
+   d=self.work('legacy-'+mode)
+   for name in ('compact.ps1','common.ps1','CompactOperation.cs','OfficeConsole.cs'):
+    shutil.copy2(PAYLOAD/('office_win_legacy_'+name),d/name)
+   r=cmd('powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',self.win(d/'compact.ps1'),'-Vhdx','C:\\test.vhdx','-Distro','test','-RequestId','legacy-'+mode,'-TestMode',mode,'-TestSeconds','0',timeout=45)
+   self.assertEqual(r.returncode,0,r.stderr)
+   value=json.loads((d/'result.json').read_text('utf-8-sig'))
+   if mode=='delayed':self.assertEqual(value['reclaimed_gb'],2);self.assertGreaterEqual(value['measurement_attempts'],3)
+   elif mode=='unchanged':self.assertTrue(value['measurement_pending']);self.assertIsNone(value['reclaimed_gb'])
+   else:self.assertEqual(value['status'],'failed');self.assertEqual(value['reclaimed_gb'],0)
+ def test_readiness_probe_waits_for_locked_and_mapped_disk(self):
+  disk=self.work('readiness')/'sample.vhdx'
+  self.assertEqual(self.run_exe('selftest-make-vhdx',self.win(disk)).returncode,0)
+  for mode in ('--locked','--mapped'):
+   with self.subTest(mode=mode):self.assertNotEqual(json.loads(self.run_exe('selftest-disk-ready',self.win(disk),mode).stdout)['error'],0)
+  self.assertEqual(json.loads(self.run_exe('selftest-disk-ready',self.win(disk)).stdout)['error'],0)
+ def test_reopen_reports_reboot_instead_of_launching_a_locked_disk(self):
+  d=self.work('reopen-blocked');w=self.win(d)
+  (d/'restore-office.json').write_text(json.dumps({'request_id':'locked','available':True,'distro':'Ubuntu','linux_user':'u','script_linux':'/not-run.sh','server_windows':'C:\\none.json'}))
+  (d/'status.json').write_text(json.dumps({'request_id':'locked','status':'completed','wsl_ready':False}))
+  (d/'target.json').write_text(json.dumps({'request_id':'locked','path':'C:\\not-present.vhdx'}))
+  self.assertEqual(self.run_exe('reopen','locked','1','--dir',w).returncode,4)
+  result=json.loads((d/'reopen-status.json').read_text())
+  self.assertEqual(result['status'],'reboot_required');self.assertIn('recover-wsl.cmd',result['message'])
  def test_external_cancel_while_running(self):
   def act(d,w):
    deadline=time.time()+20

@@ -1,5 +1,6 @@
 ﻿param([Parameter(Mandatory=$true)][string]$RequestId, [ValidateRange(1,28800)][int]$WaitSeconds=28800)
 . "$PSScriptRoot\common.ps1"
+Add-Type -Path "$PSScriptRoot\CompactOperation.cs"
 function Set-ReopenStatus([string]$State,[string]$Message) {
     $current=Read-CompactJson 'restore-office.json'
     if($current.request_id -cne $RequestId){return}
@@ -22,14 +23,25 @@ try {
         $record=Read-CompactJson 'status.json'
         if($record.request_id -eq $RequestId){
             if($record.status -in @('cancelled','failed')){Set-ReopenStatus 'skipped' '줄이기가 끝나지 않아 Office 자동 열기를 생략했어요.';exit 0}
-            if($record.status -eq 'completed' -and $record.wsl_ready -eq $true -and -not (Test-CompactLock 'active.lock')){break}
+            if($record.status -eq 'completed' -and -not (Test-CompactLock 'active.lock')){break}
         }
         Start-Sleep -Seconds 1
     }
     $record=Read-CompactJson 'status.json'
-    if($record.request_id -cne $RequestId -or $record.status -ne 'completed' -or $record.wsl_ready -ne $true -or (Test-CompactLock 'active.lock')){throw '완료와 디스크 사용 해제를 확인하지 못했어요.'}
+    if($record.request_id -cne $RequestId -or $record.status -ne 'completed' -or (Test-CompactLock 'active.lock')){throw '완료와 디스크 사용 해제를 확인하지 못했어요.'}
     if((Read-CompactJson 'restore-office.json').request_id -cne $RequestId){exit 0}
     if(Test-OfficeReady $config.server_windows){Set-ReopenStatus 'opened' 'Office가 이미 열려 있어요. 기존 창을 사용하세요.';exit 0}
+    $target=Read-CompactJson 'target.json'
+    if($target.request_id -cne $RequestId -or -not $target.path){throw '디스크 파일 정보를 확인하지 못했어요. recover-wsl.cmd를 실행하세요.'}
+    Set-ReopenStatus 'waiting_disk' '디스크 사용이 끝나기를 기다려요.'
+    $deadline=(Get-Date).AddSeconds([Math]::Min(120,$WaitSeconds))
+    do {
+        if((Read-CompactJson 'restore-office.json').request_id -cne $RequestId){exit 0}
+        $openError=[CompactOperation]::ProbeReady($target.path)
+        if($openError -eq 0){break}
+        Start-Sleep -Seconds 2
+    } while((Get-Date) -lt $deadline)
+    if($openError -ne 0){Set-ReopenStatus 'reboot_required' "디스크가 아직 사용 중이에요. 재부팅이 필요해요. recover-wsl.cmd에서 복구 안내를 확인하세요. Windows 오류: $openError";exit 4}
     Set-ReopenStatus 'launching' 'Office를 새 콘솔에서 열고 있어요.'
     # No redirection, hidden window, or background Linux server: Office owns this visible console.
     function Console-Argument([string]$Value){if($Value -match '\s'){return '"'+$Value+'"'};return $Value}
