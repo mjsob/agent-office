@@ -2069,11 +2069,15 @@ function threadHtml(t, part = "full") {
   const all = [...t.steps, ...t.reports];
   // '파일 대기 중 — 파일명…' 경고는 같은 파일의 '파일 예약 풀림 — 파일명…' 알림이 뒤에 오면 해결
   const waitFile = (m, head) => m.kind === "event" && m.to === "user" && m.text.startsWith(head) && m.text.slice(head.length).match(/^(\S+?)(?:을|를)?(?:\s|$)/)?.[1];
+  const loginNotice = /^\S+ 로그인 (?:필요|풀림)/, loginLink = t => /로그인|login/i.test(t) && /https?:\/\//.test(t);
+  const loginDone = m => all.some(x => x.kind === "event" && x.to === "user" && x.id > m.id && x.text.startsWith((NAME[m.from] || "") + " 로그인 완료"));
   const resolved = m => m.kind === "event" && m.to === "user" && (() => {
     if (m.resolved) return true;   // 서버가 해결 표시한 경고(예: 예약 해제된 파일 대기)
     const file = waitFile(m, "파일 대기 중 — ");
     if (file) return all.some(x => x.id > m.id && waitFile(x, "파일 예약 풀림 — ") === file);
     const who = ["claude", "codex"].find(n => m.text.startsWith(NAME[n]));
+    // 로그인 필요·풀림 알림은 같은 에이전트의 '로그인 완료' 알림이 뒤에 올 때까지 접지 않아요
+    if (loginNotice.test(m.text)) return !!who && all.some(x => x.kind === "event" && x.to === "user" && x.id > m.id && x.text.startsWith(NAME[who] + " 로그인 완료"));
     return who && all.some(x => x.from === who && x.id > m.id);
   })();
   t = {...t, steps: [...t.steps, ...t.reports.filter(resolved)].sort((a, b) => a.id - b.id), reports: t.reports.filter(m => !resolved(m))};
@@ -2081,7 +2085,8 @@ function threadHtml(t, part = "full") {
   // 진행 중인 요청은 진행 알림과 중간 설명을 합쳐 최근 3건을 밖에 두어 '진짜 진행되는 느낌'을 주고, 끝난 요청은 최신 한 건만 둠
   const j = t.job, status = jobStatus(j), st = jobLabel(j, status);
   const live = status && status !== "done";
-  const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null);
+  // 로그인 링크가 든 메시지는 로그인 완료 알림이 오기 전엔 접지 않고 본문에 둬요
+  const plainMsgs = t.reports.filter(m => m.kind === "msg" && m.re == null && !(loginLink(m.text || "") && !loginDone(m)));
   const recent = live ? [...t.steps.filter(m => m.kind === "progress"), ...plainMsgs].sort((x, y) => x.id - y.id).slice(-RECENT_LIVE) : [];
   const foldedMsgs = live ? plainMsgs.filter(m => !recent.includes(m)) : plainMsgs.slice(0, -1);
   if (live) t = {...t, reports: t.reports.filter(m => !recent.includes(m))};
