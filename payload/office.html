@@ -479,6 +479,12 @@ details.older { align-self: stretch; padding-bottom: 10px; border-bottom: 1px so
 .oldrow .q { color: var(--text); flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oldrow .a { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oldlist .thread { margin: 6px 0; }
+.oldopen { margin: 6px 0; }
+.oldopen > .thread { margin-top: 2px; }
+.oldbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 8px; font-size: 12.5px; color: var(--faint); }
+.oldclose, .oldcollapse { font: inherit; font-size: 12px; color: var(--muted); background: var(--chip); border: 0; border-radius: 6px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
+.oldclose:hover, .oldcollapse:hover { color: var(--text); }
+.oldcollapse { margin-left: 8px; }
 .livebar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); background: var(--chip); border-radius: 8px; padding: 5px 6px 5px 10px; }
 .livebar { flex-wrap: wrap; }
 .livebar .lb-text { flex: 1; min-width: 180px; }
@@ -2124,7 +2130,8 @@ function renderTimeline(msgs, jobs) {
   const tl = $("#timeline"), sec = tl.parentElement;
   lazyFoldBodies.clear();
   const rv = restoreView && !restoreView.tlDone ? restoreView : null;   // 대화를 옮긴 직후: 그 대화에서 보던 위치로
-  const stick = rv ? rv.bottom || forceBottom : forceBottom || sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
+  const pin = pinOld; pinOld = null;   // 지난 요청을 접은 직후: 접은 줄이 같은 자리에 오게
+  const stick = pin ? false : rv ? rv.bottom || forceBottom : forceBottom || sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
   forceBottom = false;
   if (rv) rv.tlDone = true;
   // 위쪽을 읽던 중이면, 보던 요청 묶음이 다시 그린 뒤에도 같은 위치에 오게 기억 (위 요청이 접혀도 화면이 안 튀게)
@@ -2150,16 +2157,21 @@ function renderTimeline(msgs, jobs) {
   }
   const old = head.filter(x => oldSet.has(x)), oldN = old.filter(x => !x.m).length;
   const rest = head.filter(x => !oldSet.has(x)).concat(items.slice(cut));
-  const oldRow = x => expandedOld.has(x.job.id) ? threadHtml(x)
-    : `<div class="oldrow" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
+  // 펼친 지난 요청은 위에 '접기'를 두고, 펼친 게 2건 이상이면 '이전 요청 N건' 줄에 '모두 접기'를 둬요
+  const oldRow = x => expandedOld.has(x.job.id) ? `<div class="oldopen" data-old="${x.job.id}"><div class="oldbar"><span>요청 ${x.job.id}</span><button type="button" class="oldclose" onclick="collapseOld(${x.job.id}, this)">접기</button></div>${threadHtml(x)}</div>`
+    : `<div class="oldrow" data-old="${x.job.id}" role="button" tabindex="0" onclick="expandedOld.add(${x.job.id});lastSig='';refresh()">
         <span class="no">${x.job.id}</span><span class="q">${esc(firstLine(x.req?.text || x.job.text))}</span>
         ${briefOf(x.job) ? `<span class="a">→ ${esc(briefOf(x.job))}</span>` : ""}</div>`;
-  const oldBlock = old.length ? fold("old", oldN ? `이전 요청 ${oldN}건` : `이전 대화 ${old.length}건`, () => `<div class="oldlist">${old.map(x => x.m ? msgHtml(x.m, true) : oldRow(x)).join("")}</div>`, "older") : "";
+  const openedOld = old.filter(x => !x.m && expandedOld.has(x.job.id)).length;
+  const collapseAll = openedOld >= 2 ? `<button type="button" class="oldcollapse" onclick="collapseAllOld(event, this)">모두 접기</button>` : "";
+  const oldBlock = old.length ? fold("old", (oldN ? `이전 요청 ${oldN}건` : `이전 대화 ${old.length}건`) + collapseAll, () => `<div class="oldlist">${old.map(x => x.m ? msgHtml(x.m, true) : oldRow(x)).join("")}</div>`, "older") : "";
   const empty = !items.length;
   tl.classList.toggle("empty-timeline", empty);
   tl.innerHTML = empty ? '<div class="empty-conversation">대화가 없어요</div>' : oldBlock + chrono(rest).map(x => x.m ? msgHtml(x.m) : threadHtml(x, x.part)).join("");
   bindTimelineFolds(tl);
-  if (stick) sec.scrollTop = sec.scrollHeight;
+  const pinEl = pin && (pin.id === "old" ? tl.querySelector('details.fold[data-k="old"]') : tl.querySelector(`.oldrow[data-old="${pin.id}"]`));
+  if (pinEl) sec.scrollTop += pinEl.getBoundingClientRect().top - sec.getBoundingClientRect().top - pin.top;
+  else if (stick) sec.scrollTop = sec.scrollHeight;
   else if (rv) {
     const saved = rv.anchorId && document.getElementById(rv.anchorId);
     if (saved) sec.scrollTop += saved.getBoundingClientRect().top - sec.getBoundingClientRect().top - rv.anchorTop;
@@ -2173,6 +2185,19 @@ function renderTimeline(msgs, jobs) {
   }
   lastMsgs = msgs.length;
   onTimelineScroll();
+}
+// 펼친 지난 요청을 다시 한 줄로 접어요. 접은 뒤에도 그 줄이 화면 같은 자리에 오게 위치를 기억해요
+let pinOld = null;
+function collapseOld(id, btn) {
+  const sec = $("#timeline").parentElement, box = btn.closest(".oldopen") || btn;
+  pinOld = {id, top: box.getBoundingClientRect().top - sec.getBoundingClientRect().top};
+  expandedOld.delete(id); lastSig = ""; refresh();
+}
+function collapseAllOld(ev, btn) {
+  ev.preventDefault(); ev.stopPropagation();   // '이전 요청 N건' 접힘은 그대로 열어 둬요
+  const sec = $("#timeline").parentElement, box = btn.closest("details.fold") || btn;
+  pinOld = {id: "old", top: box.getBoundingClientRect().top - sec.getBoundingClientRect().top};
+  expandedOld.clear(); lastSig = ""; refresh();
 }
 function onTimelineScroll() {
   const sec = $("#timeline").parentElement, atBottom = sec.scrollHeight - sec.scrollTop - sec.clientHeight < 40;
