@@ -5809,13 +5809,17 @@ def limited_command(command):
             "--unit=office-task-" + uuid.uuid4().hex + ".scope", "--", *command]
 
 
-def focus_explorer_path(windows, is_folder):
+def focus_explorer_path(windows, is_folder, existing=False):
     """눌러서 연 경로의 탐색기를 복원하고 앞으로 가져와요.
     판정은 마지막에 맨 앞 창이 그 경로를 연 탐색기인지로만 해요(누가 앞으로 가져왔는지는 안 따져요).
-    돌려주는 값: focused(앞에 옴) / behind(창은 찾았는데 다른 창이 앞) / unknown(확인 못 함)"""
-    native = native_windows_call("focus", windows, "folder" if is_folder else "file")
-    if isinstance(native, dict) and native.get("result") in ("focused", "behind", "no-match"):
-        return native["result"] if native["result"] != "no-match" else "unknown"
+    existing=True면 새 창을 열기 전에 이미 열린 창만 찾아요. 파일은 그 파일이 든 폴더 창에서 선택해요.
+    돌려주는 값: focused(앞에 옴) / behind(창은 찾았는데 다른 창이 앞) / none(existing에서 열린 창 없음) / unknown(확인 못 함)"""
+    native = native_windows_call("focus", windows, "folder" if is_folder else "file", *(["existing"] if existing else []))
+    if isinstance(native, dict) and native.get("result") in ("focused", "behind", "none", "no-match"):
+        result = native["result"]
+        if result == "no-match":   # 창을 못 찾음: 열기 전이면 '없음', 연 뒤면 늦게 떴을 수 있어 '모름'
+            return "none" if existing else "unknown"
+        return result if existing or result != "none" else "unknown"
     import base64
     target = base64.b64encode(windows.encode("utf-8")).decode("ascii")
     script = r'''
@@ -5833,6 +5837,7 @@ public class OfficeFocus {
 '@
 $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TARGET__'))
 $folder = __FOLDER__
+$existing = __EXISTING__
 function Normalize($p) { ($p -replace '\\+', '\').TrimEnd('\') }
 $want = Normalize $target
 $parent = if ($folder) { $null } else { Normalize ([IO.Path]::GetDirectoryName($target)) }
@@ -5851,14 +5856,29 @@ function Find-Windows {
  }
  if ($exact.Count) { return ,$exact } else { return ,$near }
 }
+if ($existing) {
+ # 이미 열린 창만 찾아요. 없으면 바로 끝내서 그때만 새 창을 열게 해요
+ if (-not (Find-Windows).Count) { Write-Output 'none'; exit 0 }
+ if (-not $folder) {
+  foreach ($w in @($shell.Windows())) {
+   try {
+    if ((Normalize $w.Document.Folder.Self.Path) -ne $parent) { continue }
+    $item = $w.Document.Folder.ParseName([IO.Path]::GetFileName($want))
+    if ($item) { $w.Document.SelectItem($item, 29); break }
+   } catch { }
+  }
+ }
+}
 $tries = 0
 for ($i=0; $i -lt 25; $i++) {
  $hs = Find-Windows
  if ($hs.Count) {
-  if ($hs -contains [OfficeFocus]::GetForegroundWindow()) { Write-Output 'focused'; exit 0 }
+  # 최소화된 창은 맨 앞이어도 안 보여서, 복원될 때까지 '앞에 옴'으로 치지 않아요
+  $fg = [OfficeFocus]::GetForegroundWindow()
+  if (($hs -contains $fg) -and -not [OfficeFocus]::IsIconic($fg)) { Write-Output 'focused'; exit 0 }
   if ($tries -ge 3) { break }
   $tries++
-  $h = $hs[0]
+  $h = if ($hs -contains $fg) { $fg } else { $hs[0] }
   if ([OfficeFocus]::IsIconic($h)) { [void][OfficeFocus]::ShowWindowAsync($h,9) }
   [OfficeFocus]::keybd_event(0x12,0,0,[UIntPtr]::Zero)
   [OfficeFocus]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
@@ -5868,10 +5888,11 @@ for ($i=0; $i -lt 25; $i++) {
 }
 Start-Sleep -Milliseconds 200
 $hs = Find-Windows
-if ($hs.Count -and ($hs -contains [OfficeFocus]::GetForegroundWindow())) { Write-Output 'focused' }
+$fg = [OfficeFocus]::GetForegroundWindow()
+if ($hs.Count -and ($hs -contains $fg) -and -not [OfficeFocus]::IsIconic($fg)) { Write-Output 'focused' }
 elseif ($hs.Count) { Write-Output 'behind' }
 else { Write-Output 'no-match' }
-'''.replace("__TARGET__", target).replace("__FOLDER__", "$true" if is_folder else "$false")
+'''.replace("__TARGET__", target).replace("__FOLDER__", "$true" if is_folder else "$false").replace("__EXISTING__", "$true" if existing else "$false")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
@@ -5887,9 +5908,11 @@ else { Write-Output 'no-match' }
             server_log(f"explorer.focus.failed.exit={result.returncode}", windows_error_text(result))
         words = result.stdout.decode("utf-8", "replace").split()
         # 비정상 종료면 중간까지 찍힌 출력은 믿지 않아요
-        reason = words[-1] if result.returncode == 0 and words and words[-1] in ("focused", "behind", "no-match") else "error"
+        reason = words[-1] if result.returncode == 0 and words and words[-1] in ("focused", "behind", "none", "no-match") else "error"
     if reason == "focused":
         return "focused"
+    if existing and reason in ("none", "no-match"):
+        return "none"
     server_log("explorer.focus." + reason)
     return "behind" if reason == "behind" else "unknown"
 
@@ -5927,6 +5950,15 @@ def open_report_path(raw, sid):
         windows = result.stdout.strip()
         if not windows:
             raise ValueError("empty path")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise UserError("경로를 열지 못했어요. 경로와 WSL 연결을 확인하거나 경로를 복사하세요.") from None
+    # 같은 경로를 연 탐색기 창이 있으면 새 창을 열지 않고 그 창만 앞으로 가져와요(파일은 그 창에서 선택)
+    found = focus_explorer_path(windows, path.is_dir(), existing=True)
+    if found == "focused":
+        return {"ok": "열려 있던 탐색기를 앞으로 가져왔어요."}
+    if found == "behind":
+        raise UserError("탐색기는 열려 있지만 창을 앞으로 가져오지 못했어요. 작업 표시줄에서 탐색기를 선택하세요.")
+    try:
         args = ["explorer.exe", windows] if path.is_dir() else ["explorer.exe", "/select,", windows]
         # Explorer may return 1 after handing the request to an existing window.
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/mnt/c")

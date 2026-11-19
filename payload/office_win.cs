@@ -340,20 +340,40 @@ public static class OfficeWin {
         }
         return exact.Count > 0 ? exact : near;
     }
+    // 파일이 든 폴더 창이 이미 열려 있으면 새 창 대신 그 창에서 파일을 선택해요
+    static void SelectInOpenFolder(dynamic shell, string target, string want, string parent) {
+        foreach (dynamic w in shell.Windows()) {
+            try {
+                if (!string.Equals(NormalizePath((string)w.Document.Folder.Self.Path), parent, StringComparison.OrdinalIgnoreCase)) continue;
+                dynamic item = w.Document.Folder.ParseName(Path.GetFileName(want));
+                if (item == null) continue;
+                w.Document.SelectItem(item, 1 | 4 | 8 | 16); // 선택 · 다른 선택 해제 · 보이게 · 포커스
+                return;
+            } catch (Exception) { }
+        }
+    }
     static int Focus() {
         if (rest.Count < 2) { Console.Error.WriteLine("경로와 종류(file|folder)가 필요해요."); return 64; }
         string target = rest[0]; bool folder = rest[1] == "folder";
+        // existing: 이미 열린 창만 찾아요. 없으면 바로 "none"을 돌려줘서 그때만 새 창을 열게 해요
+        bool existing = rest.Count > 2 && rest[2] == "existing";
         string want = NormalizePath(target);
         string parent = folder ? null : NormalizePath(Path.GetDirectoryName(target));
         dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+        if (existing) {
+            if (FindExplorerWindows(shell, want, parent, folder).Count == 0) { Print(Obj("result", "none")); return 0; }
+            if (!folder) SelectInOpenFolder(shell, target, want, parent);
+        }
         int tries = 0;
         for (int i = 0; i < 25; i++) {
             var hs = FindExplorerWindows(shell, want, parent, folder);
             if (hs.Count > 0) {
-                if (hs.Contains(GetForegroundWindow())) { Print(Obj("result", "focused")); return 0; }
+                // 최소화된 창은 맨 앞이어도 화면에 안 보여서, 복원될 때까지 '앞에 옴'으로 치지 않아요
+                IntPtr fg = GetForegroundWindow();
+                if (hs.Contains(fg) && !IsIconic(fg)) { Print(Obj("result", "focused")); return 0; }
                 if (tries >= 3) break;
                 tries++;
-                IntPtr h = hs[0];
+                IntPtr h = hs.Contains(fg) ? fg : hs[0];
                 if (IsIconic(h)) ShowWindowAsync(h, 9);
                 keybd_event(0x12, 0, 0, UIntPtr.Zero);
                 keybd_event(0x12, 0, 2, UIntPtr.Zero);
@@ -363,7 +383,8 @@ public static class OfficeWin {
         }
         Thread.Sleep(200);
         var fin = FindExplorerWindows(shell, want, parent, folder);
-        string result = fin.Count > 0 && fin.Contains(GetForegroundWindow()) ? "focused" : (fin.Count > 0 ? "behind" : "no-match");
+        IntPtr last = GetForegroundWindow();
+        string result = fin.Count > 0 && fin.Contains(last) && !IsIconic(last) ? "focused" : (fin.Count > 0 ? "behind" : "no-match");
         Print(Obj("result", result));
         return 0;
     }
