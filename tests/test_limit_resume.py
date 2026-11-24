@@ -173,9 +173,45 @@ class LimitResume(unittest.TestCase):
         result = subprocess.CompletedProcess(["powershell.exe"], 1, stdout=b"behind\n", stderr=b"script error")
         with patch.object(o.subprocess, "run", return_value=result):
             self.assertEqual(o.focus_explorer_path("C:\\Temp", True), "unknown")
-        values = [subprocess.CompletedProcess([], 0, stdout="C:\\Temp", stderr=""), result]
-        with patch.object(o.subprocess, "run", side_effect=values), patch.object(o.subprocess, "Popen"):
+        # 순서: wslpath → 기존 창 확인 → (없으면) 새로 열기 → 열린 뒤 확인
+        values = [subprocess.CompletedProcess([], 0, stdout="C:\\Temp", stderr=""), self.ps(b"no-match\n"), result]
+        with patch.object(o.subprocess, "run", side_effect=values), patch.object(o.subprocess, "Popen") as popen:
             self.assertEqual(o.open_report_path(self.tmp.name, "test"), {"ok": "탐색기에서 경로를 열었어요."})
+        popen.assert_called_once()
+
+    def ps(self, out, code=0):
+        return subprocess.CompletedProcess(["powershell.exe"], code, stdout=out, stderr=b"")
+
+    def open_with(self, *ps_results):
+        o = self.o
+        values = [subprocess.CompletedProcess([], 0, stdout="C:\\Temp", stderr=""), *ps_results]
+        with patch.object(o.subprocess, "run", side_effect=values), patch.object(o.subprocess, "Popen") as popen:
+            try:
+                return o.open_report_path(self.tmp.name, "test"), popen
+            except o.UserError as error:
+                return error, popen
+
+    def test_existing_explorer_window_is_reused_without_new_window(self):
+        out, popen = self.open_with(self.ps(b"focused\n"))
+        self.assertEqual(out, {"ok": "열려 있던 탐색기를 앞으로 가져왔어요."})
+        popen.assert_not_called()
+
+    def test_existing_window_stuck_behind_reports_without_new_window(self):
+        out, popen = self.open_with(self.ps(b"behind\n"))
+        self.assertIsInstance(out, self.o.UserError)
+        self.assertIn("앞으로 가져오지 못했어요", str(out))
+        popen.assert_not_called()
+
+    def test_existing_check_failure_falls_back_to_opening_new_window(self):
+        out, popen = self.open_with(self.ps(b"focused\n", 1), self.ps(b"focused\n"))
+        self.assertEqual(out, {"ok": "탐색기에서 경로를 열었어요."})
+        popen.assert_called_once()
+
+    def test_new_window_left_behind_other_windows_is_reported(self):
+        out, popen = self.open_with(self.ps(b"no-match\n"), self.ps(b"behind\n"))
+        self.assertIsInstance(out, self.o.UserError)
+        self.assertIn("열렸지만", str(out))
+        popen.assert_called_once()
 
 
 if __name__ == "__main__":
